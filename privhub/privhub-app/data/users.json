@@ -1,0 +1,42 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "password": "620946c48b53ed67accc615cf0759c5f:6e08b3c5c8c551cdfa33532a1975d96bbb7206e203be893205cb6b5fb7eea6c367281a22eab68651c2090f18acb001f90e58ca99ee364bb34d745d2ae351f87a",
+      "displayName": "系统管理员",
+      "role": "admin",
+      "projects": []
+    },
+    {
+      "username": "user1",
+      "password": "af6ec0305cd6612930569831ca49a7a5:3e71a31450cce2f923a7d9ba872e07345c02d7a1f66ca07dc15393786e768f87945d8b2ca57d4550f769b931d8c6ffd8f6fafe6d4f51608846ba75a64fc647e8",
+      "displayName": "普通员工",
+      "role": "user",
+      "projects": [
+        "公共",
+        "A项目"
+      ]
+    },
+    {
+      "username": "khddjj",
+      "password": "cf35cb16756cb7276a7be0249e276f98:bb7a96a0038dc138617f2d7e5d6d3af72401259bbde6327b3a21d6d1fa464248b4e27cd0c881b91f49955f46cb75a26c85e041fdf9ac62dc1b339695e5804e19",
+      "displayName": "mjgyhb",
+      "role": "user",
+      "projects": [
+        "公共",
+        "小说"
+      ]
+    },
+    {
+      "username": "user2",
+      "password": "240503b2076d80bb14a89d2f2cac6ffe:abe100e44a9f0538989445ad0f5a78315257425ab55c88523693f40cd7483c4c5edd0dc668efe665173594f684a7ea2835bcf9f29bd03227ce04c3353efc08ec",
+      "displayName": "user2",
+      "role": "user",
+      "projects": [
+        "公共",
+        "小说",
+        "生图"
+      ]
+    }
+  ]
+}

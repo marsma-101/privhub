@@ -1,0 +1,9 @@
+# 私域枢纽后端接口插件 bundle patch
+# 作为 bundle 挂载：insert 本插件行。
+# usersFile / dataRoot 留空，由插件代码按项目内部相对路径解析默认值。
+- insert:
+    - id: privhub-server
+      name: privhub-server
+      config:
+        usersFile: ''
+        dataRoot: ''

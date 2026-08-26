@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "password": "620946c48b53ed67accc615cf0759c5f:6e08b3c5c8c551cdfa33532a1975d96bbb7206e203be893205cb6b5fb7eea6c367281a22eab68651c2090f18acb001f90e58ca99ee364bb34d745d2ae351f87a",
+      "displayName": "系统管理员",
+      "role": "admin",
+      "projects": []
+    },
+    {
+      "username": "user1",
+      "password": "af6ec0305cd6612930569831ca49a7a5:3e71a31450cce2f923a7d9ba872e07345c02d7a1f66ca07dc15393786e768f87945d8b2ca57d4550f769b931d8c6ffd8f6fafe6d4f51608846ba75a64fc647e8",
+      "displayName": "普通员工",
+      "role": "user",
+      "projects": [
+        "公共",
+        "A项目"
+      ]
+    }
+  ]
+}

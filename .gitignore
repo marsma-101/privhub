@@ -1,0 +1,29 @@
+# ===== 依赖与构建产物 =====
+node_modules/
+*.tsbuildinfo
+
+# ===== 运行时数据（不进版本控制） =====
+data-files/
+.workbuddy/
+**/sessions.json
+**/trash.json
+**/.trash/
+
+# ===== 便携 node 运行时 =====
+node-runtime/
+
+# ===== privhub 底座自带内容（从 DSH 复制，非本项目自有代码，不纳入版本控制） =====
+privhub/packages/
+privhub/apps/
+privhub/docs/
+privhub/examples/
+privhub/website/
+privhub/vendor/
+privhub/python/
+privhub/native/
+privhub/assets/
+privhub/scripts/
+privhub/patches/
+privhub/.github/
+privhub/.agents/
+privhub/.claude/
