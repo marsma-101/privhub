@@ -1,11 +1,10 @@
 @echo off
-chcp 65001 >nul
-title ç§åŸŸæž¢çº½ PrivHub - å¯åŠ¨å™¨ (ç«¯å£ 3181)
+title Ë½ÓòÊàÅ¦ PrivHub - Æô¶¯Æ÷ (¶Ë¿Ú 3181)
 
-REM è¿›å…¥è„šæœ¬æ‰€åœ¨ç›®å½•ï¼ˆä¿è¯ç›¸å¯¹è·¯å¾„æ­£ç¡®ï¼‰
+REM ½øÈë½Å±¾ËùÔÚÄ¿Â¼£¨±£Ö¤Ïà¶ÔÂ·¾¶ÕýÈ·£©
 cd /d "%~dp0"
 
-REM é€‰æ‹© nodeï¼šä¼˜å…ˆä½¿ç”¨è‡ªå¸¦è¿è¡Œæ—¶ï¼Œå¦åˆ™ç”¨ç³»ç»Ÿ PATH ä¸­çš„ node
+REM Ñ¡Ôñ node£ºÓÅÏÈÊ¹ÓÃ×Ô´øÔËÐÐÊ±£¬·ñÔòÓÃÏµÍ³ PATH ÖÐµÄ node
 set "NODE_BIN="
 if exist "%~dp0node-runtime\node.exe" (
   set "NODE_BIN=%~dp0node-runtime\node.exe"
@@ -13,49 +12,49 @@ if exist "%~dp0node-runtime\node.exe" (
   set "NODE_BIN=node"
 )
 
-REM çŽ¯å¢ƒå˜é‡ï¼šå‘Šè¯‰åº•åº§åŽ»å“ªæ‰¾ profile ä¸Žå‰ç«¯é™æ€ç›®å½•ï¼›
-REM PRIVHUB_ROOT é”šå®šåŒ…æ ¹ï¼Œè´¦å·/ä¼šè¯/æ–‡ä»¶å­˜å‚¨ä¸ä¾èµ–è¿›ç¨‹ cwdï¼ˆå‹¿åˆ ï¼‰
+REM »·¾³±äÁ¿£º¸æËßµ××ùÈ¥ÄÄÕÒ profile ÓëÇ°¶Ë¾²Ì¬Ä¿Â¼£»
+REM PRIVHUB_ROOT Ãª¶¨°ü¸ù£¬ÕËºÅ/»á»°/ÎÄ¼þ´æ´¢²»ÒÀÀµ½ø³Ì cwd£¨ÎðÉ¾£©
 set "PRIVHUB_ROOT=%~dp0"
 set "DSH_HOME=%~dp0home"
 set "PRIVHUB_FRONTEND_DIR=%~dp0privhub-app\frontend"
 set "PRIVHUB_PORT=3181"
 
 echo ============================================
-echo   ç§åŸŸæž¢çº½ PrivHub å¯åŠ¨ä¸­
-echo   ç«¯å£: %PRIVHUB_PORT%
-echo   æœ¬æœºè®¿é—®:   http://127.0.0.1:%PRIVHUB_PORT%
-echo   å±€åŸŸç½‘è®¿é—®: http://^<æœ¬æœºIP^>:%PRIVHUB_PORT%
+echo   Ë½ÓòÊàÅ¦ PrivHub Æô¶¯ÖÐ
+echo   ¶Ë¿Ú: %PRIVHUB_PORT%
+echo   ±¾»ú·ÃÎÊ:   http://127.0.0.1:%PRIVHUB_PORT%
+echo   ¾ÖÓòÍø·ÃÎÊ: http://^<±¾»úIP^>:%PRIVHUB_PORT%
 echo ============================================
 
-REM é¦–æ¬¡è¿è¡Œï¼šè‹¥ä¾èµ–æœªå®‰è£…åˆ™è‡ªåŠ¨å®‰è£…ï¼ˆå®¿ä¸»æœºéœ€è”ç½‘ï¼‰
+REM Ê×´ÎÔËÐÐ£ºÈôÒÀÀµÎ´°²×°Ôò×Ô¶¯°²×°£¨ËÞÖ÷»úÐèÁªÍø£©
 if not exist "%~dp0node_modules\@deepseek-ai\dsh" (
-  echo [ä¿¡æ¯] æœªæ£€æµ‹åˆ°ä¾èµ–ï¼Œæ­£åœ¨å®‰è£…ï¼ˆéœ€è¦ç½‘ç»œï¼Œä½¿ç”¨ npmï¼‰...
+  echo [ÐÅÏ¢] Î´¼ì²âµ½ÒÀÀµ£¬ÕýÔÚ°²×°£¨ÐèÒªÍøÂç£¬Ê¹ÓÃ npm£©...
   call npm install
   if errorlevel 1 (
-    echo [é”™è¯¯] ä¾èµ–å®‰è£…å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œ / npm æºåŽé‡è¯•ã€‚
-    echo         è‹¥ @deepseek-ai/dsh* åº•åº§åŒ…ä¸åœ¨å…¬å…±æºï¼Œè¯·é…ç½®å†…éƒ¨æºæˆ–æœ¬åœ°åŒ…ã€‚
+    echo [´íÎó] ÒÀÀµ°²×°Ê§°Ü£¬Çë¼ì²éÍøÂç / npm Ô´ºóÖØÊÔ¡£
+    echo         Èô @deepseek-ai/dsh* µ××ù°ü²»ÔÚ¹«¹²Ô´£¬ÇëÅäÖÃÄÚ²¿Ô´»ò±¾µØ°ü¡£
     pause
     exit /b 1
   )
 )
 
-REM å®šä½ dsh å…¥å£ï¼šå‘å¸ƒæ€ä¸º lib/bin.jsï¼Œæºç æ€ä¸º src/bin.tsï¼ˆä¸¤è€…çš†å¯è¢« tsx åŠ è½½ï¼‰
+REM ¶¨Î» dsh Èë¿Ú£º·¢²¼Ì¬Îª lib/bin.js£¬Ô´ÂëÌ¬Îª src/bin.ts£¨Á½Õß½Ô¿É±» tsx ¼ÓÔØ£©
 set "DSH_BIN="
 if exist "%~dp0node_modules\@deepseek-ai\dsh\lib\bin.js" (
   set "DSH_BIN=%~dp0node_modules\@deepseek-ai\dsh\lib\bin.js"
 ) else if exist "%~dp0node_modules\@deepseek-ai\dsh\src\bin.ts" (
   set "DSH_BIN=%~dp0node_modules\@deepseek-ai\dsh\src\bin.ts"
 ) else (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° @deepseek-ai/dsh å…¥å£ï¼Œè¯·å…ˆè¿è¡Œä¾èµ–å®‰è£…ã€‚
+  echo [´íÎó] Î´ÕÒµ½ @deepseek-ai/dsh Èë¿Ú£¬ÇëÏÈÔËÐÐÒÀÀµ°²×°¡£
   pause
   exit /b 1
 )
 
-REM å¯åŠ¨æœåŠ¡ï¼štsx è´Ÿè´£åŠ è½½ TypeScript æ’ä»¶(privhub-server)
-REM æ³¨æ„ï¼šrc.7 åº•åº§ç¦æ­¢å‘½ä»¤è¡Œä¼  --host 0.0.0.0ï¼ˆå®‰å…¨é™åˆ¶ï¼Œä¼šç›´æŽ¥æŠ¥é”™é€€å‡ºï¼‰ã€‚
-REM       å±€åŸŸç½‘ç»‘å®šæ”¹ç”± home/profiles/privhub/cordis.patch.yml é‡Œçš„ host: 0.0.0.0 å®žçŽ°ï¼Œå‹¿åœ¨å‘½ä»¤è¡Œå†åŠ  --hostã€‚
+REM Æô¶¯·þÎñ£ºtsx ¸ºÔð¼ÓÔØ TypeScript ²å¼þ(privhub-server)
+REM ×¢Òâ£ºrc.7 µ××ù½ûÖ¹ÃüÁîÐÐ´« --host 0.0.0.0£¨°²È«ÏÞÖÆ£¬»áÖ±½Ó±¨´íÍË³ö£©¡£
+REM       ¾ÖÓòÍø°ó¶¨¸ÄÓÉ home/profiles/privhub/cordis.patch.yml ÀïµÄ host: 0.0.0.0 ÊµÏÖ£¬ÎðÔÚÃüÁîÐÐÔÙ¼Ó --host¡£
 "%NODE_BIN%" --import tsx/esm "%DSH_BIN%" --profile privhub --port %PRIVHUB_PORT%
 
 echo.
-echo æœåŠ¡å·²åœæ­¢ï¼ˆé€€å‡ºç  %errorlevel%ï¼‰ã€‚
+echo ·þÎñÒÑÍ£Ö¹£¨ÍË³öÂë %errorlevel%£©¡£
 pause

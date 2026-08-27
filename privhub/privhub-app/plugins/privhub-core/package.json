@@ -1,6 +1,6 @@
 {
-  "name": "privhub-server",
-  "description": "私域枢纽后端接口插件：登录校验、当前用户、目录列表，通过底座 webServer 注册 HTTP 接口",
+  "name": "privhub-core",
+  "description": "私域枢纽核心插件：账号/会话/回收站存储与文件根服务（ctx.privhub），供各业务插件消费",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
