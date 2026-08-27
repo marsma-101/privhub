@@ -2,6 +2,9 @@
 node_modules/
 *.tsbuildinfo
 
+# ===== 被锁定的清理残留（重启后可删） =====
+.locked-leftovers/
+
 # ===== 运行时数据（不进版本控制） =====
 data-files/
 .workbuddy/
