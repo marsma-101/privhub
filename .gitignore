@@ -16,16 +16,20 @@ node-runtime/
 references/
 
 # ===== 与运行无关的临时产物（不进 git，也不上 GitHub） =====
-# 验收截图 / 验证截图
+# 验收/验证截图（统一放 screenshots/；根目录散落的 png 也一律忽略）
+screenshots/
 /*.png
 # 一次性清理工具（junction 删除脚本）
 clean_junctions.cjs
-# 冒烟/测试脚本及其专用依赖声明（运行代码不含它们）
-privhub/privhub-app/*.mjs
-privhub/privhub-app/package.json
-privhub/privhub-app/package-lock.json
+# 冒烟/测试脚本及其依赖（统一放 tests/，运行代码不含它们）
+tests/
 # 备份文件（含账号数据的旧快照）
 *.bak*
+
+# ===== 目录分工 =====
+# docs/        设计文档（进 git，不上 GitHub）
+# tests/       测试脚本（不进 git）
+# screenshots/ 截图（不进 git）
 
 # ===== 运行期账号/会话数据（首次启动自动生成种子账号，不进 git） =====
 privhub/privhub-app/data/
