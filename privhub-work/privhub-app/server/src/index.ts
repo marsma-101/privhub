@@ -43,9 +43,14 @@ export interface TrashRecord {
   relPath: string
   name: string
   isDir: boolean
+  /** 是否为「整个项目」被删除（relPath 为 ''） */
+  isProject?: boolean
   deletedBy: string
   deletedAt: number
 }
+
+/** 单文件上传大小上限（2GB，受 Node Buffer 上限约束）。 */
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 export interface Config {
   usersFile: string
@@ -57,9 +62,12 @@ export const Config: z<Config> = z.object({
   dataRoot: z.string().default(''),
 })
 
+/** 项目根：由启动脚本注入 PRIVHUB_ROOT；缺省回退 cwd，兼容旧启动方式。 */
+const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
 function resolvePath(value: string, fallback: string): string {
   const t = value.trim()
-  return t === '' ? join(process.cwd(), fallback) : resolve(t)
+  return t === '' ? join(rootDir, fallback) : resolve(t)
 }
 
 interface UserView {
@@ -83,6 +91,25 @@ function readBody(req: IncomingMessage): Promise<string> {
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => ok(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+/** 读取原始字节请求体（文件上传用），超限则拒绝并断开。 */
+function readBodyRaw(req: IncomingMessage, max: number): Promise<Buffer> {
+  return new Promise((ok, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > max) {
+        reject(new Error('文件过大（超过 2GB 上限）'))
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => ok(Buffer.concat(chunks)))
     req.on('error', reject)
   })
 }
@@ -119,7 +146,7 @@ export class PrivHubService {
   constructor(config: Config) {
     this.usersFile = resolvePath(config.usersFile, join('privhub-app', 'data', 'users.json'))
     this.dataRoot = resolvePath(config.dataRoot, 'data-files')
-    this.dataDir = join(process.cwd(), 'privhub-app', 'data')
+    this.dataDir = join(rootDir, 'privhub-app', 'data')
     this.sessionsFile = join(this.dataDir, 'sessions.json')
     this.trashFile = join(this.dataDir, 'trash.json')
     this.trashDir = join(this.dataRoot, '.trash')
@@ -262,6 +289,23 @@ export class PrivHubService {
     await rmdir(dir, { recursive: true })
     return true
   }
+  /** 项目软删除：整个项目文件夹移入回收站（可恢复）。 */
+  async moveProjectToTrash(project: string, operator: string): Promise<boolean> {
+    if (!this.isValidProjectName(project)) return false
+    const target = resolve(this.dataRoot, project)
+    if (!existsSync(target)) return false
+    const id = `${Date.now()}_${randomBytes(4).toString('hex')}`
+    const dest = join(this.trashDir, id + '_' + project)
+    await mkdir(this.trashDir, { recursive: true })
+    await rename(target, dest)
+    const list = await this.loadTrash()
+    list.push({
+      id, project, relPath: '', name: project, isDir: true, isProject: true,
+      deletedBy: operator, deletedAt: Date.now(),
+    })
+    await this.saveTrash(list)
+    return true
+  }
   /** 在项目内某子目录下新建文件夹 */
   async createFolder(project: string, subPath: string, name: string): Promise<boolean> {
     if (!this.isValidName(name)) return false
@@ -317,9 +361,11 @@ export class PrivHubService {
     const dest = resolve(this.dataRoot, rec.project, rec.relPath)
     // 若原位置已有同名，恢复失败（避免覆盖）
     if (existsSync(dest)) return false
-    await mkdir(resolve(this.dataRoot, rec.project), { recursive: true })
-    const parent = dirname(dest)
-    await mkdir(parent, { recursive: true })
+    if (rec.relPath !== '') {
+      // 普通条目：确保项目目录与上级目录存在；整项目恢复时不能先建空目录（会挡住 rename）
+      await mkdir(resolve(this.dataRoot, rec.project), { recursive: true })
+      await mkdir(dirname(dest), { recursive: true })
+    }
     await rename(src, dest)
     await this.saveTrash(list.filter((r) => r.id !== id))
     return true
@@ -514,6 +560,26 @@ export function apply(ctx: Context, config: Config): void {
     res.end(body)
   }, 'preview-raw')
 
+  /* 上传文件（raw body：project/path/name 走查询参数，文件内容作为请求体） */
+  route(ctx, '/privhub/api/upload', async (req, res) => {
+    const u = requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    try {
+      const url = new URL(req.url ?? '/', 'http://x')
+      const project = url.searchParams.get('project') ?? ''
+      const subPath = url.searchParams.get('path') ?? ''
+      const name = url.searchParams.get('name') ?? ''
+      if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限上传到该项目' })
+      if (!svc.isValidName(name)) return json(res, 400, { ok: false, error: '文件名无效' })
+      const dir = svc.resolveInProject(project, subPath)
+      if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+      const body = await readBodyRaw(req, MAX_UPLOAD_BYTES)
+      await writeFile(join(dir, name), body)
+      json(res, 200, { ok: true, size: body.length })
+    } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '上传失败' }) }
+  }, 'upload')
+
   /* 新建项目（管理员） */
   route(ctx, '/privhub/api/project-create', async (req, res) => {
     const u = requireUser(req, res)
@@ -525,15 +591,15 @@ export function apply(ctx: Context, config: Config): void {
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '项目名无效或已存在' })
   }, 'project-create')
 
-  /* 删除项目（管理员） */
+  /* 删除项目（管理员）——软删除，整个项目进回收站，可恢复 */
   route(ctx, '/privhub/api/project-delete', async (req, res) => {
     const u = requireUser(req, res)
     if (!u) return
     if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可删除项目' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
-    const ok = await svc.deleteProject(String(body.name ?? ''))
-    json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '删除失败' })
+    const ok = await svc.moveProjectToTrash(String(body.name ?? ''), u.username)
+    json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '移入回收站失败' })
   }, 'project-delete')
 
   /* 新建文件夹（支持在子路径 path 下创建） */

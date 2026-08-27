@@ -133,6 +133,8 @@
     .ctx-item { padding: 9px 16px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
     .ctx-item:hover { background: var(--panel); }
     .ctx-item.danger { color: var(--danger); }
+    /* 长按菜单遮罩：点空白处关闭菜单（透明，仅拦截点击） */
+    .ctx-mask { position: fixed; inset: 0; z-index: 999; }
 
     /* ============ 弹窗 ============ */
     .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1100; }
@@ -269,6 +271,11 @@
           viewMode: 'grid',    // 视图：grid 网格 / list 列表
           checked: {},         // 多选：name -> true
           treeLoaded: {},      // key: project/path -> { expanded: bool, children: 子目录列表 }
+          trashView: false,    // 是否处于回收站视图
+          trashList: [],       // 回收站条目列表
+          uploading: false,    // 正在批量上传文件
+          uploadDone: 0,       // 已上传文件数
+          uploadTotal: 0,      // 本批待上传总数
         }
       },
       computed: {
@@ -320,6 +327,7 @@
         },
         // 进入某项目某子路径，中间显示其内容
         async openDir(project, path) {
+          this.trashView = false
           this.currentProject = project
           this.currentPath = path || ''
           this.selected = null; this.preview = null; this.rightOpen = false
@@ -334,6 +342,7 @@
           await this.openDir(name, '')
         },
         async backToWelcome() {
+          this.trashView = false
           this.currentProject = null; this.currentPath = ''
           this.entries = []; this.selected = null; this.preview = null; this.rightOpen = false
         },
@@ -408,7 +417,7 @@
           }
         },
 
-        /* 长按 2 秒弹菜单 */
+        /* 长按 1.5 秒弹菜单 */
         startPress(e, el) {
           pressTimer = setTimeout(() => {
             const rect = el.getBoundingClientRect()
@@ -417,7 +426,7 @@
               y: Math.min(rect.top + 20, window.innerHeight - 150),
               entry: e,
             }
-          }, 2000)
+          }, 1500)
         },
         cancelPress() { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null } },
         closeMenu() { this.ctxMenu = null },
@@ -439,7 +448,7 @@
           const e = this.ctxMenu ? this.ctxMenu.entry : null
           this.ctxMenu = null
           if (!e) return
-          if (!confirm('确认删除 ' + e.name + ' ？')) return
+          if (!confirm('将「' + e.name + '」移入回收站？')) return
           const rel = this.relPathOf(e.name)
           const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: this.currentProject, path: rel }) })
           if (r.ok) await this.openDir(this.currentProject, this.currentPath)
@@ -458,7 +467,7 @@
           else alert(r.error || '新建失败')
         },
         async delProject(name) {
-          if (!confirm('确认删除项目 ' + name + ' 及其所有文件？')) return
+          if (!confirm('将项目「' + name + '」及其所有文件移入回收站？')) return
           const r = await api('/privhub/api/project-delete', { method: 'POST', body: JSON.stringify({ name }) })
           if (r.ok) { await this.loadProjects(); if (this.currentProject === name) this.backToWelcome() }
           else alert(r.error || '删除失败')
@@ -518,6 +527,75 @@
           if (this.treeLoaded[pkey]) this.treeLoaded[pkey].children = []
         },
 
+        /* ============ 回收站 ============ */
+        fmtTime(ts) {
+          const d = new Date(ts)
+          const p = n => String(n).padStart(2, '0')
+          return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+        },
+        async openTrash() {
+          this.trashView = true
+          this.currentProject = null; this.currentPath = ''
+          this.entries = []; this.selected = null; this.preview = null; this.rightOpen = false
+          await this.loadTrash()
+        },
+        async loadTrash() {
+          const r = await api('/privhub/api/trash-list')
+          if (r.ok) this.trashList = r.trash
+        },
+        async restoreTrash(t) {
+          const r = await api('/privhub/api/trash-restore', { method: 'POST', body: JSON.stringify({ id: t.id }) })
+          if (!r.ok) { alert(r.error || '恢复失败'); return }
+          this.treeLoaded = {} // 恢复后目录树缓存全部失效，下次展开重新拉取
+          if (t.relPath === '') await this.loadProjects() // 整项目记录：刷新左侧项目列表
+          // 若恢复目标的上级目录正是当前打开的目录，即时刷新文件列表
+          const parent = t.relPath.includes('/') ? t.relPath.slice(0, t.relPath.lastIndexOf('/')) : ''
+          if (t.project === this.currentProject && parent === this.currentPath) await this.openDir(this.currentProject, this.currentPath)
+          await this.loadTrash()
+        },
+        async purgeTrash(t) {
+          if (!confirm('彻底删除「' + t.name + '」？此操作不可恢复！')) return
+          const r = await api('/privhub/api/trash-purge', { method: 'POST', body: JSON.stringify({ id: t.id }) })
+          if (!r.ok) { alert(r.error || '删除失败'); return }
+          await this.loadTrash()
+        },
+        async cleanExpiredTrash() {
+          if (!confirm('清理在回收站中超过 30 天的条目（物理删除，不可恢复）？')) return
+          const r = await api('/privhub/api/trash-clean', { method: 'POST', body: '{}' })
+          if (r.ok) { alert('已清理 ' + (r.purged || 0) + ' 条'); await this.loadTrash() }
+          else alert(r.error || '清理失败')
+        },
+
+        /* ============ 上传文件 ============ */
+        addFile() {
+          if (!this.currentProject) return
+          this.$refs.fileInput.click()
+        },
+        async onFilesPicked(e) {
+          const files = Array.from(e.target.files || [])
+          e.target.value = ''
+          if (!files.length || !this.currentProject) return
+          const dest = this.currentPath ? this.currentProject + '/' + this.currentPath : this.currentProject
+          if (!confirm('上传 ' + files.length + ' 个文件到「' + dest + '」？同名文件将被覆盖。')) return
+          this.uploading = true; this.uploadDone = 0; this.uploadTotal = files.length
+          let okCount = 0
+          for (const f of files) {
+            try {
+              const r = await fetch('/privhub/api/upload?project=' + encodeURIComponent(this.currentProject) + '&path=' + encodeURIComponent(this.currentPath) + '&name=' + encodeURIComponent(f.name), {
+                method: 'POST',
+                headers: { authorization: 'Bearer ' + AUTH.token, 'content-type': 'application/octet-stream' },
+                body: f,
+              })
+              const j = await r.json().catch(() => ({}))
+              if (j.ok) okCount++
+            } catch { /* 单个文件失败不中断批量 */ }
+            this.uploadDone++
+          }
+          this.uploading = false
+          alert('已上传 ' + okCount + '/' + files.length + ' 个文件')
+          await this.openDir(this.currentProject, this.currentPath)
+        },
+
         async doLogout() {
           try { await api('/privhub/api/logout') } catch {}
           logout()
@@ -563,8 +641,11 @@
                 <span class="side-title">文件目录</span>
                 <button v-if="isAdmin" class="small-btn" @click="newProject" title="新建项目">＋项目</button>
               </div>
-              <div class="tree-item" :class="{ active: currentProject === null }" @click="backToWelcome">
+              <div class="tree-item" :class="{ active: currentProject === null && !trashView }" @click="backToWelcome">
                 <span>🏠</span><span class="name">欢迎</span>
+              </div>
+              <div class="tree-item" :class="{ active: trashView }" @click="openTrash">
+                <span>🗑️</span><span class="name">回收站</span>
               </div>
               <div v-for="p in projects" :key="p">
                 <tree-node
@@ -579,8 +660,39 @@
 
             <!-- 中间 -->
             <div class="main">
+              <!-- 回收站视图 -->
+              <template v-if="trashView">
+                <div class="main-head">
+                  <span class="breadcrumb"><span style="color:var(--text)">🗑️ 回收站</span></span>
+                  <span class="crumb" style="margin-left:8px">共 {{ trashList.length }} 项（{{ isAdmin ? '全部用户' : '仅我删除的' }}）</span>
+                  <span class="spacer"></span>
+                  <button v-if="isAdmin" class="icon-btn" @click="cleanExpiredTrash">🧹 清空 30 天前条目</button>
+                </div>
+                <div class="main-body">
+                  <div v-if="trashList.length === 0" class="empty">回收站是空的</div>
+                  <div v-else class="file-table-wrap">
+                    <div class="file-table-head" style="grid-template-columns:1fr 110px 130px 140px 170px">
+                      <span class="col-name">名称</span>
+                      <span class="col-size">来源项目</span>
+                      <span class="col-type">删除人</span>
+                      <span class="col-time">删除时间</span>
+                      <span class="col-time">操作</span>
+                    </div>
+                    <div v-for="t in trashList" :key="t.id" class="file-table-row" style="grid-template-columns:1fr 110px 130px 140px 170px;cursor:default">
+                      <span class="col-name" :title="t.relPath === '' ? '整个项目' : ('原路径：' + (t.relPath || '项目根目录'))"><span class="tico">{{ t.relPath === '' ? '📦' : (t.isDir ? '📁' : '📄') }}</span>{{ t.name }}</span>
+                      <span class="col-size">{{ t.relPath === '' ? '（项目本身）' : t.project }}</span>
+                      <span class="col-type">{{ t.deletedBy }}</span>
+                      <span class="col-time">{{ fmtTime(t.deletedAt) }}</span>
+                      <span>
+                        <button class="small-btn" @click="restoreTrash(t)">↩ 恢复</button>
+                        <button class="small-btn danger" style="margin-left:6px" @click="purgeTrash(t)">彻底删除</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </template>
               <!-- 欢迎语 -->
-              <div v-if="currentProject === null" class="main-welcome">
+              <div v-else-if="currentProject === null" class="main-welcome">
                 <div class="big">欢迎使用私域枢纽 · 公司文件管理系统</div>
                 <div>请在左侧选择项目文件夹开始浏览文件</div>
               </div>
@@ -603,6 +715,8 @@
                   <button class="icon-btn" @click="setViewMode('grid')" :class="{on: viewMode==='grid'}">▦</button>
                   <button class="icon-btn" @click="setViewMode('list')" :class="{on: viewMode==='list'}">☰</button>
                   <button class="icon-btn" @click="submitMkdir">＋新建文件夹</button>
+                  <button class="icon-btn" @click="addFile">＋添加文件</button>
+                  <span v-if="uploading" class="crumb">上传中 {{ uploadDone }}/{{ uploadTotal }}…</span>
                 </div>
                 <div class="main-body">
                   <div v-if="listLoading" class="empty">加载中…</div>
@@ -683,6 +797,12 @@
 
           <!-- 左下角设置 -->
           <div class="settings-fab" @click="settingsOpen = true">⚙ 设置</div>
+
+          <!-- 隐藏文件选择器（添加文件用，多选） -->
+          <input ref="fileInput" type="file" multiple style="display:none" @change="onFilesPicked" />
+
+          <!-- 长按菜单遮罩：菜单打开时点击空白处关闭 -->
+          <div v-if="ctxMenu" class="ctx-mask" @click="closeMenu"></div>
 
           <!-- 长按菜单 -->
           <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>

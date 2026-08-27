@@ -13,7 +13,9 @@ if exist "%~dp0node-runtime\node.exe" (
   set "NODE_BIN=node"
 )
 
-REM 环境变量：告诉底座去哪找 profile 与前端静态目录
+REM 环境变量：告诉底座去哪找 profile 与前端静态目录；
+REM PRIVHUB_ROOT 锚定包根，账号/会话/文件存储不依赖进程 cwd（勿删）
+set "PRIVHUB_ROOT=%~dp0"
 set "DSH_HOME=%~dp0home"
 set "PRIVHUB_FRONTEND_DIR=%~dp0privhub-app\frontend"
 set "PRIVHUB_PORT=3181"
@@ -50,7 +52,9 @@ if exist "%~dp0node_modules\@deepseek-ai\dsh\lib\bin.js" (
 )
 
 REM 启动服务：tsx 负责加载 TypeScript 插件(privhub-server)
-"%NODE_BIN%" --import tsx/esm "%DSH_BIN%" --profile privhub --port %PRIVHUB_PORT% --host 0.0.0.0
+REM 注意：rc.7 底座禁止命令行传 --host 0.0.0.0（安全限制，会直接报错退出）。
+REM       局域网绑定改由 home/profiles/privhub/cordis.patch.yml 里的 host: 0.0.0.0 实现，勿在命令行再加 --host。
+"%NODE_BIN%" --import tsx/esm "%DSH_BIN%" --profile privhub --port %PRIVHUB_PORT%
 
 echo.
 echo 服务已停止（退出码 %errorlevel%）。

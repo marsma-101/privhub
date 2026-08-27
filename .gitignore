@@ -12,18 +12,25 @@ data-files/
 # ===== 便携 node 运行时 =====
 node-runtime/
 
+# ===== 参考代码（第三方开源项目副本，只读参考，不进 git） =====
+references/
+
+# ===== 与运行无关的临时产物（不进 git，也不上 GitHub） =====
+# 验收截图 / 验证截图
+/*.png
+# 一次性清理工具（junction 删除脚本）
+clean_junctions.cjs
+# 冒烟/测试脚本及其专用依赖声明（运行代码不含它们）
+privhub/privhub-app/*.mjs
+privhub/privhub-app/package.json
+privhub/privhub-app/package-lock.json
+# 备份文件（含账号数据的旧快照）
+*.bak*
+
+# ===== 运行期账号/会话数据（首次启动自动生成种子账号，不进 git） =====
+privhub/privhub-app/data/
+privhub-work/privhub-app/data/
+
 # ===== privhub 底座自带内容（从 DSH 复制，非本项目自有代码，不纳入版本控制） =====
-privhub/packages/
-privhub/apps/
-privhub/docs/
-privhub/examples/
-privhub/website/
-privhub/vendor/
-privhub/python/
-privhub/native/
-privhub/assets/
-privhub/scripts/
-privhub/patches/
-privhub/.github/
-privhub/.agents/
-privhub/.claude/
+# 底座已整体移入 privhub/engine/，旧路径 privhub/packages 等规则已失效
+privhub/engine/

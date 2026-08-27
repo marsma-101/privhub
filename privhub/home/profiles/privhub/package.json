@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "dependencies": {
-    "privhub-server": "file:F:/program/dsh-SQL/privhub/privhub-app/server"
+    "privhub-server": "file:../../../privhub-app/server"
   },
   "dsh": {
     "profile": {

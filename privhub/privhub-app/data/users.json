@@ -16,27 +16,6 @@
         "公共",
         "A项目"
       ]
-    },
-    {
-      "username": "khddjj",
-      "password": "cf35cb16756cb7276a7be0249e276f98:bb7a96a0038dc138617f2d7e5d6d3af72401259bbde6327b3a21d6d1fa464248b4e27cd0c881b91f49955f46cb75a26c85e041fdf9ac62dc1b339695e5804e19",
-      "displayName": "mjgyhb",
-      "role": "user",
-      "projects": [
-        "公共",
-        "小说"
-      ]
-    },
-    {
-      "username": "user2",
-      "password": "240503b2076d80bb14a89d2f2cac6ffe:abe100e44a9f0538989445ad0f5a78315257425ab55c88523693f40cd7483c4c5edd0dc668efe665173594f684a7ea2835bcf9f29bd03227ce04c3353efc08ec",
-      "displayName": "user2",
-      "role": "user",
-      "projects": [
-        "公共",
-        "小说",
-        "生图"
-      ]
     }
   ]
 }

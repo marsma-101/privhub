@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       privhub-server:
-        specifier: file:F:/program/dsh-SQL/privhub/privhub-app/server
+        specifier: file:../../../privhub-app/server
         version: file:../../../privhub-app/server
 
 packages:
