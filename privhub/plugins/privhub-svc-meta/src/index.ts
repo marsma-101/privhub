@@ -10,7 +10,7 @@
  * @module privhub-svc-meta
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join, resolve, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
@@ -113,9 +113,16 @@ export class MetaService extends Service {
     } catch { this.data = {} }
   }
 
+  /** A12：原子写（临时文件 + rename），避免整文件覆写中途崩溃损坏。 */
+  private async atomicWrite(file: string, data: string): Promise<void> {
+    await mkdir(dirname(file), { recursive: true })
+    const tmp = file + '.tmp'
+    await writeFile(tmp, data, 'utf8')
+    await rename(tmp, file)
+  }
+
   private async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+    await this.atomicWrite(this.file, JSON.stringify(this.data, null, 2))
   }
 
   async loadTemplates(): Promise<void> {
@@ -133,8 +140,7 @@ export class MetaService extends Service {
   }
 
   private async saveTemplates(): Promise<void> {
-    await mkdir(dirname(this.templatesFile), { recursive: true })
-    await writeFile(this.templatesFile, JSON.stringify(this.templatesData, null, 2), 'utf8')
+    await this.atomicWrite(this.templatesFile, JSON.stringify(this.templatesData, null, 2))
   }
 
   /** 读取某文件/目录的标签（无标签返回空数组）。 */

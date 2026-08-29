@@ -100,9 +100,16 @@ export class WebServerService extends Service {
       const s = await stat(target)
       if (s.isDirectory()) { res.writeHead(404); res.end('not found'); return }
       const body = await readFile(target)
+      const ext = extname(target).toLowerCase()
+      const isHtml = ext === '.html'
       res.writeHead(200, {
-        'content-type': MIME[extname(target).toLowerCase()] ?? 'application/octet-stream',
+        'content-type': MIME[ext] ?? 'application/octet-stream',
         'content-length': body.length,
+        // A13：安全响应头基线（HTML 附加宽松 CSP；Vue 运行时模板编译需 unsafe-eval，迁移到 SFC 预编译后可移除）
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'no-referrer',
+        ...(isHtml ? { 'content-security-policy': "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:" } : {}),
       })
       res.end(body)
     } catch {

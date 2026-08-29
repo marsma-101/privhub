@@ -7,11 +7,12 @@
  * @module privhub-files
  */
 
-import { writeFile, readFile, stat, rename } from 'node:fs/promises'
+import { writeFile, readFile, stat, rename, unlink } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
 import { join, resolve, extname, sep, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody, readBodyRaw, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
+import { json, readBody, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files'
 export const inject = ['privhub', 'audit']
@@ -77,7 +78,14 @@ export function apply(ctx: Context): void {
       svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', pdf: 'application/pdf',
     }
     const body = await readFile(target)
-    res.writeHead(200, { 'content-type': mime[ext] ?? 'application/octet-stream', 'content-length': body.length })
+    // A13：SVG 可携带脚本 → 沙箱响应头禁止脚本执行；其余类型加 nosniff
+    const headers: Record<string, string | number> = {
+      'content-type': mime[ext] ?? 'application/octet-stream',
+      'content-length': body.length,
+      'x-content-type-options': 'nosniff',
+    }
+    if (ext === 'svg') headers['content-security-policy'] = "default-src 'none'; sandbox"
+    res.writeHead(200, headers)
     res.end(body)
   }, 'preview-raw')
 
@@ -95,10 +103,30 @@ export function apply(ctx: Context): void {
       if (!svc.isValidName(name)) return json(res, 400, { ok: false, error: '文件名无效' })
       const dir = svc.resolveInProject(project, subPath)
       if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
-      const body = await readBodyRaw(req, MAX_UPLOAD_BYTES)
-      await writeFile(join(dir, name), body)
-      json(res, 200, { ok: true, size: body.length })
-      void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + body.length)
+      // A11：流式落盘（写 .part 临时文件 → rename），不整读进内存；超限中断并清理
+      const target = join(dir, name)
+      const tmp = target + '.part'
+      const size = await new Promise<number>((ok, fail) => {
+        let written = 0
+        let aborted = false
+        const ws = createWriteStream(tmp, { flags: 'w' })
+        ws.on('error', (e) => { aborted = true; fail(e) })
+        req.on('data', (c: Buffer) => {
+          written += c.length
+          if (written > MAX_UPLOAD_BYTES && !aborted) {
+            aborted = true
+            ws.destroy()
+            req.destroy()
+            fail(new Error('文件过大（超过 2GB 上限）'))
+          }
+        })
+        req.on('error', (e) => { if (!aborted) { aborted = true; ws.destroy(); fail(e) } })
+        req.pipe(ws)
+        ws.on('finish', () => { if (!aborted) ok(written) })
+      }).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
+      await rename(tmp, target)
+      json(res, 200, { ok: true, size })
+      void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + size)
     } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '上传失败' }) }
   }, 'upload')
 

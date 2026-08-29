@@ -55,11 +55,14 @@ export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 export interface Config {
   usersFile: string
   dataRoot: string
+  /** 会话有效天数（A8：会话 TTL + 滑动续期），默认 7 */
+  sessionTtlDays: number
 }
 
 export const Config: z<Config> = z.object({
   usersFile: z.string().default(''),
   dataRoot: z.string().default(''),
+  sessionTtlDays: z.number().default(7),
 })
 
 /** 项目根：由启动脚本注入 PRIVHUB_ROOT；缺省回退 cwd，兼容旧启动方式。 */
@@ -84,6 +87,10 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
+    // A13：安全响应头基线
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
   })
   res.end(payload)
 }
@@ -154,16 +161,25 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+/** 会话条目（A8：TTL + 滑动续期）。 */
+export interface SessionEntry {
+  username: string
+  /** epoch 毫秒过期时间 */
+  expiresAt: number
+}
+
 export class PrivHubStore extends Service {
   readonly usersFile: string
   readonly dataRoot: string
   users: Map<string, UserRecord> = new Map()
-  sessions: Map<string, string> = new Map() // token -> username
+  sessions: Map<string, SessionEntry> = new Map() // token -> { username, expiresAt }
   loginFails: Map<string, { count: number; until: number }> = new Map()
   private readonly dataDir: string
   private readonly sessionsFile: string
   private readonly trashFile: string
   readonly trashDir: string
+  /** 会话 TTL 毫秒（auth 登录写入、me 滑动续期共用） */
+  readonly sessionTtlMs: number
 
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'privhub')
@@ -173,6 +189,7 @@ export class PrivHubStore extends Service {
     this.sessionsFile = join(this.dataDir, 'sessions.json')
     this.trashFile = join(this.dataDir, 'trash.json')
     this.trashDir = join(this.dataRoot, '.trash')
+    this.sessionTtlMs = (config.sessionTtlDays > 0 ? config.sessionTtlDays : 7) * 24 * 3600 * 1000
   }
 
   /** 注册一条 exact 路由（业务插件共用入口，可随插件停用回收）。 */
@@ -213,19 +230,33 @@ export class PrivHubStore extends Service {
   }
 
   async saveUsers(): Promise<void> {
-    await writeFile(this.usersFile, JSON.stringify({ users: [...this.users.values()] }, null, 2), 'utf8')
+    await this.atomicWrite(this.usersFile, JSON.stringify({ users: [...this.users.values()] }, null, 2))
   }
 
   async loadSessions(): Promise<void> {
     if (existsSync(this.sessionsFile)) {
       try {
         const raw = await readFile(this.sessionsFile, 'utf8')
-        this.sessions = new Map(Object.entries(JSON.parse(raw) as Record<string, string>))
+        const parsed = JSON.parse(raw) as Record<string, string | SessionEntry>
+        this.sessions = new Map()
+        for (const [token, v] of Object.entries(parsed)) {
+          // 兼容旧格式（纯 username 字符串 → 视为剩余 TTL 全量）
+          if (typeof v === 'string') this.sessions.set(token, { username: v, expiresAt: Date.now() + this.sessionTtlMs })
+          else if (v && typeof v === 'object' && typeof v.username === 'string') this.sessions.set(token, { username: v.username, expiresAt: Number(v.expiresAt) || Date.now() + this.sessionTtlMs })
+        }
       } catch { /* 损坏则忽略 */ }
     }
   }
   async saveSessions(): Promise<void> {
-    await writeFile(this.sessionsFile, JSON.stringify(Object.fromEntries(this.sessions), null, 2), 'utf8')
+    await this.atomicWrite(this.sessionsFile, JSON.stringify(Object.fromEntries(this.sessions), null, 2))
+  }
+
+  /** A12：原子写（临时文件 + rename），避免整文件覆写中途崩溃导致数据损坏。 */
+  private async atomicWrite(file: string, data: string): Promise<void> {
+    await mkdir(dirname(file), { recursive: true })
+    const tmp = file + '.tmp'
+    await writeFile(tmp, data, 'utf8')
+    await rename(tmp, file)
   }
 
   /* ---------- 权限辅助 ---------- */
@@ -253,11 +284,22 @@ export class PrivHubStore extends Service {
     return user.projects.includes(project)
   }
 
+  /** A8：会话 TTL + 滑动续期。过期删除；剩余不足一半时续期（内存更新 + 异步落盘）。 */
   me(token: string | undefined): UserRecord | null {
     if (!token) return null
-    const username = this.sessions.get(token)
-    if (!username) return null
-    return this.users.get(username) ?? null
+    const entry = this.sessions.get(token)
+    if (!entry) return null
+    const now = Date.now()
+    if (entry.expiresAt <= now) {
+      this.sessions.delete(token)
+      void this.saveSessions()
+      return null
+    }
+    if (entry.expiresAt - now < this.sessionTtlMs / 2) {
+      entry.expiresAt = now + this.sessionTtlMs
+      void this.saveSessions()
+    }
+    return this.users.get(entry.username) ?? null
   }
 
   /* ---------- 文件与项目操作 ---------- */
@@ -270,24 +312,29 @@ export class PrivHubStore extends Service {
     return target
   }
 
+  /** A14/A22：并行 stat（Promise.all，千级目录不串行卡顿）；mtime 返回完整 ISO 时间戳。 */
   async listFiles(project: string, subPath = ''): Promise<{ name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[]> {
     const dir = this.resolveInProject(project, subPath)
     if (dir === null || !existsSync(dir)) return []
     const ents = await readdir(dir, { withFileTypes: true })
-    const out: { name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[] = []
-    for (const e of ents) {
-      if (e.name.startsWith('.')) continue
+    const stats = await Promise.all(ents.map(async (e) => {
+      if (e.name.startsWith('.')) return null
       const full = join(dir, e.name)
-      let size = 0
-      let mtime = ''
-      try { const s = await stat(full); size = s.isDirectory() ? 0 : s.size; mtime = s.mtime.toISOString().slice(0, 10) } catch { /* 忽略 */ }
+      try {
+        const s = await stat(full)
+        return { name: e.name, isDir: s.isDirectory(), size: s.isDirectory() ? 0 : s.size, mtime: s.mtime.toISOString() }
+      } catch { return null }
+    }))
+    const out: { name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[] = []
+    for (const s of stats) {
+      if (!s) continue
       out.push({
-        name: e.name,
-        isDir: e.isDirectory(),
-        size,
-        sizeText: e.isDirectory() ? '—' : fmtSize(size),
-        mtime,
-        type: e.isDirectory() ? '文件夹' : (extname(e.name).slice(1).toUpperCase() || '文件'),
+        name: s.name,
+        isDir: s.isDir,
+        size: s.size,
+        sizeText: s.isDir ? '—' : fmtSize(s.size),
+        mtime: s.mtime,
+        type: s.isDir ? '文件夹' : (extname(s.name).slice(1).toUpperCase() || '文件'),
       })
     }
     return out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
@@ -372,7 +419,7 @@ export class PrivHubStore extends Service {
     } catch { return [] }
   }
   async saveTrash(list: TrashRecord[]): Promise<void> {
-    await writeFile(this.trashFile, JSON.stringify(list, null, 2), 'utf8')
+    await this.atomicWrite(this.trashFile, JSON.stringify(list, null, 2))
   }
 
   /** 软删除：把项目内条目移入 .trash，并记一条回收站记录。 */

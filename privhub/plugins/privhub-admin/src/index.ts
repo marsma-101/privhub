@@ -103,8 +103,8 @@ export function apply(ctx: Context): void {
     if (!rec) return json(res, 404, { ok: false, error: '用户不存在' })
     rec.password = hashPassword(newPassword)
     // 重置后强制该用户所有会话失效（安全）
-    for (const [token, uname] of svc.sessions) {
-      if (uname === username) svc.sessions.delete(token)
+    for (const [token, entry] of svc.sessions) {
+      if (entry.username === username) svc.sessions.delete(token)
     }
     await svc.saveUsers()
     await svc.saveSessions()

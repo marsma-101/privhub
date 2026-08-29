@@ -101,7 +101,7 @@ const FilePanel = {
     },
   },
   methods: {
-    /* 长按 1.5 秒弹菜单 */
+    /* 长按 1.5 秒弹菜单（移动端补充；桌面端用右键 A17） */
     startPress(e, el) {
       this.pressTimer = setTimeout(() => {
         const rect = el.getBoundingClientRect()
@@ -113,6 +113,15 @@ const FilePanel = {
       }, 1500)
     },
     cancelPress() { if (this.pressTimer) { clearTimeout(this.pressTimer); this.pressTimer = null } },
+    /* A17：右键呼出同一操作菜单（替代被禁用的系统菜单） */
+    openCtxMenu(e, ev) {
+      this.cancelPress()
+      this.ctxMenu = {
+        x: Math.min(ev.clientX, window.innerWidth - 170),
+        y: Math.min(ev.clientY, window.innerHeight - 150),
+        entry: e,
+      }
+    },
     closeMenu() { this.ctxMenu = null },
     openDetail() { this.detailTarget = this.ctxMenu ? this.ctxMenu.entry : null; this.ctxMenu = null },
     doRename() {
@@ -286,7 +295,7 @@ const FilePanel = {
             @mousedown="startPress(e, $event.currentTarget)"
             @mouseup="cancelPress"
             @mouseleave="cancelPress"
-            @contextmenu.prevent
+            @contextmenu.prevent="openCtxMenu(e, $event)"
           >
             <input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="position:absolute;left:8px;top:8px;cursor:pointer" />
             <div class="file-ico">{{ e.isDir ? '📁' : fileIcon(e.type) }}</div>
@@ -312,13 +321,13 @@ const FilePanel = {
             @mousedown="startPress(e, $event.currentTarget)"
             @mouseup="cancelPress"
             @mouseleave="cancelPress"
-            @contextmenu.prevent
+            @contextmenu.prevent="openCtxMenu(e, $event)"
           >
             <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
             <span class="col-name"><span class="tico">{{ e.isDir ? '📁' : fileIcon(e.type) }}</span>{{ e.name }}</span>
             <span class="col-size">{{ e.sizeText }}</span>
             <span class="col-type">{{ e.type }}</span>
-            <span class="col-time">{{ e.mtime || '—' }}</span>
+            <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
           </div>
         </div>
       </div>

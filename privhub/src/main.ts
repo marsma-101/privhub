@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
 
   /* 3. L1 六枢纽 */
-  await mount(core, { usersFile: '', dataRoot: '' })
+  await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })
   /* F14 ACL 守卫必须在 auth/files/trash/admin 注册路由之前挂载（它包装 svc.route） */
   await mount(adminAcl)
   await mount(auth)

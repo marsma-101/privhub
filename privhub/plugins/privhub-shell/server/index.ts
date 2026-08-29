@@ -34,9 +34,15 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
+/** A15：manifest 聚合缓存（目录扫描较重，5s TTL + 按需失效）。 */
+let manifestCache: { at: number; value: ShellManifest[] } | null = null
+const CACHE_TTL = 5000
+
 async function collectManifests(): Promise<ShellManifest[]> {
+  if (manifestCache && Date.now() - manifestCache.at < CACHE_TTL) return manifestCache.value
   const pluginsDir = join(rootDir, 'plugins')
   const out: ShellManifest[] = []
+  const seenViews = new Map<string, string>() // view -> 插件 id（A19：barItems 冲突检测；同 slot 多组件是设计特性，不视为冲突）
   if (!existsSync(pluginsDir)) return out
   const entries = await readdir(pluginsDir, { withFileTypes: true })
   for (const ent of entries) {
@@ -46,6 +52,13 @@ async function collectManifests(): Promise<ShellManifest[]> {
     try {
       const raw = JSON.parse(await readFile(mf, 'utf8')) as Partial<ShellManifest>
       if (!raw.id || !Array.isArray(raw.slots)) continue
+      // A19：barItems view 冲突检测（view 决定图标栏点击分发，重复会被后者覆盖）
+      for (const bi of raw.barItems ?? []) {
+        const view = (bi as { view?: string }).view ?? bi.slot
+        const prev = seenViews.get(view)
+        if (prev && prev !== raw.id) console.warn(`[shell] barItems 冲突：view "${view}" 由 ${prev} 与 ${raw.id} 同时声明，后者将覆盖前者`)
+        else seenViews.set(view, raw.id)
+      }
       out.push({
         id: raw.id,
         title: raw.title ?? ent.name,
@@ -57,6 +70,7 @@ async function collectManifests(): Promise<ShellManifest[]> {
       })
     } catch { /* skip broken manifest */ }
   }
+  manifestCache = { at: Date.now(), value: out }
   return out
 }
 

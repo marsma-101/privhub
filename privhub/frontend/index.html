@@ -279,13 +279,24 @@
     async function api(path, opts = {}) {
       const headers = { 'content-type': 'application/json', ...(opts.headers || {}) }
       if (AUTH.token) headers['authorization'] = 'Bearer ' + AUTH.token
-      const res = await fetch(path, { ...opts, headers })
+      let res
+      try {
+        res = await fetch(path, { ...opts, headers })
+      } catch (e) {
+        // A6：网络错误归一，避免调用点静默假空
+        return { ok: false, error: '网络错误：' + (e && e.message ? e.message : '无法连接服务器') }
+      }
       // E6：401 统一处理（登录/注册除外，其 401 为表单预期反馈）
       if (res.status === 401 && !path.includes('/privhub/api/login') && !path.includes('/privhub/api/register')) {
         logout()
         toast('登录已过期，请重新登录', 'warn')
       }
-      return res.json()
+      try {
+        return await res.json()
+      } catch {
+        // 非 JSON 响应（网关/静态兜底）归一
+        return { ok: false, error: '服务器返回异常（HTTP ' + res.status + '）' }
+      }
     }
 
     /* E1/E2：全局 toast 反馈（替换成功/提示类 alert；window.PrivHub.toast 供插件调用） */
@@ -370,6 +381,8 @@
         const r = await api('/privhub/api/list?project=' + encodeURIComponent(project) + q)
         nav.listLoading = false
         nav.entries = r.ok ? r.entries : []
+        // A6：接口失败不再静默假空
+        if (!r.ok && r.error) toast(r.error, 'error')
         bus.emit('file:opened', { project, path: nav.path })
       },
       async openProject(name) {

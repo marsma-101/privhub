@@ -23,26 +23,29 @@ export function apply(ctx: Context): void {
     if (rec) ctx.emit('audit:logged', rec)
   }
 
-  /* 登录 */
+  /* 登录（A10：限流按 用户名+IP 双维度，防换账号/重启绕过） */
   svc.route('/privhub/api/login', async (req, res) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const username = String(body.username ?? '')
     const password = String(body.password ?? '')
+    const ip = String(req.socket.remoteAddress ?? '')
+    const failKey = username + '|' + ip
     const now = Date.now()
-    const fail = svc.loginFails.get(username)
+    const fail = svc.loginFails.get(failKey)
     if (fail && fail.until > now) return json(res, 429, { ok: false, error: '尝试过于频繁，请稍后再试' })
     const rec = svc.users.get(username)
     if (!rec || !verifyPassword(password, rec.password)) {
-      const f = svc.loginFails.get(username)
+      const f = svc.loginFails.get(failKey)
       const count = (f?.count ?? 0) + 1
-      svc.loginFails.set(username, { count, until: now + (count >= 5 ? 60000 : 0) })
+      svc.loginFails.set(failKey, { count, until: now + (count >= 5 ? 60000 : 0) })
       return json(res, 401, { ok: false, error: '用户名或密码错误' })
     }
-    svc.loginFails.delete(username)
+    svc.loginFails.delete(failKey)
     const token = randomBytes(24).toString('hex')
-    svc.sessions.set(token, username)
+    // A8：会话带过期时间（TTL 由 core config sessionTtlDays 控制，me() 滑动续期）
+    svc.sessions.set(token, { username, expiresAt: now + svc.sessionTtlMs })
     await svc.saveSessions()
     json(res, 200, { ok: true, token, user: svc.userView(rec) })
     void audit(username, 'login', '')
@@ -76,9 +79,9 @@ export function apply(ctx: Context): void {
   /* 退出登录 */
   svc.route('/privhub/api/logout', async (req, res) => {
     const t = tokenOf(req)
-    const uname = t ? svc.sessions.get(t) : undefined
+    const entry = t ? svc.sessions.get(t) : undefined
     if (t) { svc.sessions.delete(t); await svc.saveSessions() }
     json(res, 200, { ok: true })
-    if (uname) void audit(uname, 'logout', '')
+    if (entry) void audit(entry.username, 'logout', '')
   }, 'logout')
 }
