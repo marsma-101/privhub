@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-edit-md",
+  "title": "Markdown 编辑",
+  "icon": "📝",
+  "description": "Markdown 在线编辑（F16/C14）：编辑/预览分栏、frontmatter、双链、版本历史 20 版、冲突检测",
+  "slots": ["md-editor"]
+}

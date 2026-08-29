@@ -210,6 +210,23 @@
     .swatch-dark { background: #232834; border: 1px solid #414a5c; }
 
     /* 水印叠加层（F05 插件用） */
+
+    /* Markdown preview styles (F16 files-edit-md) */
+    .md-preview h1,.md-preview h2,.md-preview h3,.md-preview h4 { margin: 14px 0 8px; line-height: 1.4; }
+    .md-preview h1 { font-size: 22px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+    .md-preview h2 { font-size: 18px; }
+    .md-preview h3 { font-size: 16px; }
+    .md-preview p { margin: 8px 0; }
+    .md-preview code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; }
+    .md-preview pre { background: #1e1e2e; color: #e4e4e7; padding: 12px 14px; border-radius: 8px; overflow: auto; }
+    .md-preview pre code { background: none; padding: 0; color: inherit; }
+    .md-preview table { border-collapse: collapse; margin: 10px 0; }
+    .md-preview th,.md-preview td { border: 1px solid var(--line); padding: 5px 10px; font-size: 13px; }
+    .md-preview th { background: var(--bg); }
+    .md-preview blockquote { border-left: 3px solid var(--accent); margin: 8px 0; padding: 2px 12px; color: var(--muted); background: var(--bg); border-radius: 0 6px 6px 0; }
+    .md-preview hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
+    .md-preview .md-wikilink { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); cursor: pointer; }
+    .md-preview ul,.md-preview ol { padding-left: 22px; margin: 8px 0; }
     .watermark-overlay {
       position: fixed; right: 12px; bottom: 10px; pointer-events: none; z-index: 999;
       color: rgba(90,130,200,.55); font-size: 12px; opacity: .18;
@@ -390,6 +407,8 @@
           const rel = nav.relPathOf(e.name)
           await nav.openDir(nav.project, rel)
         } else {
+          // F16：广播文件打开事件（md 编辑器等插件监听；现有预览行为不变）
+          bus.emit('entry:open', { entry: e, project: nav.project, path: nav.path })
           await nav.selectEntry(e)
         }
       },
@@ -720,6 +739,9 @@
 
           <!-- 水印叠加（F05 auth-watermark 提供） -->
           <component v-for="c in slotComps.watermark" :is="c" :key="c.name" v-if="loggedIn && slotComps.watermark && slotComps.watermark.length"></component>
+
+          <!-- Markdown editor overlay (F16 files-edit-md) -->
+          <component v-for="c in slotComps['md-editor']" :is="c" :key="c.name" v-if="loggedIn && slotComps['md-editor'] && slotComps['md-editor'].length"></component>
         </div>
       `,
     }
