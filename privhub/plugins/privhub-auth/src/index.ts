@@ -12,10 +12,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, tokenOf, hashPassword, verifyPassword } from '../../privhub-core/src/index'
 
 export const name = 'privhub-auth'
-export const inject = ['privhub']
+export const inject = ['privhub', 'audit']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
+  const audit = async (user: string, action: string, target: string, detail?: string): Promise<void> => {
+    const rec = await ctx.audit.log({ user, action, target, detail }).catch(() => null)
+    if (rec) ctx.emit('audit:logged', rec)
+  }
 
   /* 登录 */
   svc.route('/privhub/api/login', async (req, res) => {
@@ -39,6 +45,7 @@ export function apply(ctx: Context): void {
     svc.sessions.set(token, username)
     await svc.saveSessions()
     json(res, 200, { ok: true, token, user: svc.userView(rec) })
+    void audit(username, 'login', '')
   }, 'login')
 
   /* 注册 → 直接建为普通用户 */
@@ -55,6 +62,7 @@ export function apply(ctx: Context): void {
     svc.users.set(username, { username, password: hashPassword(password), displayName, role: 'user', projects: ['公共'] })
     await svc.saveUsers()
     json(res, 200, { ok: true })
+    void audit(username, 'register', username)
   }, 'register')
 
   /* 当前用户 */
@@ -68,7 +76,9 @@ export function apply(ctx: Context): void {
   /* 退出登录 */
   svc.route('/privhub/api/logout', async (req, res) => {
     const t = tokenOf(req)
+    const uname = t ? svc.sessions.get(t) : undefined
     if (t) { svc.sessions.delete(t); await svc.saveSessions() }
     json(res, 200, { ok: true })
+    if (uname) void audit(uname, 'logout', '')
   }, 'logout')
 }

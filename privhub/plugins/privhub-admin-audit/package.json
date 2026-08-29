@@ -1,0 +1,19 @@
+{
+  "name": "privhub-admin-audit",
+  "description": "PrivHub 审计插件（F13/B13）：监听 audit:logged 事件 + /api/audit 查询/导出/recent（adminOnly），消费 S1 ctx.audit",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

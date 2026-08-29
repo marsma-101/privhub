@@ -28,6 +28,7 @@ import * as svcAcl from '../plugins/privhub-svc-acl/src/index.ts'
 import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
 import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
+import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
 
 /* ---- L3 功能插件（含后端） ---- */
 import * as settings from '../plugins/privhub-shell-settings/src/index.ts'
@@ -35,6 +36,7 @@ import * as authWatermark from '../plugins/privhub-auth-watermark/src/index.ts'
 import * as filesSearch from '../plugins/privhub-files-search/src/index.ts'
 import * as favorites from '../plugins/privhub-shell-favorites/src/index.ts'
 import * as recent from '../plugins/privhub-shell-recent/src/index.ts'
+import * as adminAudit from '../plugins/privhub-admin-audit/src/index.ts'
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -62,7 +64,16 @@ async function main(): Promise<void> {
     pluginsDir: join(rootDir, 'plugins'),
   })
 
-  /* 2. L1 六枢纽 */
+  /* 2. L2 能力 Service（先于 L1/L3 挂载：L1 的 files/trash/admin/auth 与 L3 的
+   *    admin-audit 均 inject 'audit'，依赖先于消费方注册） */
+  await mount(svcAudit, { file: '', retentionDays: 60 })
+  await mount(svcAcl, { file: '' })
+  await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })
+  await mount(svcSearch, { maxHits: 200, skipHidden: true })
+  await mount(svcMeta, { file: '' })
+  await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
+
+  /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '' })
   await mount(auth)
   await mount(files)
@@ -70,19 +81,13 @@ async function main(): Promise<void> {
   await mount(admin)
   await mount(shell)
 
-  /* 3. L2 能力 Service */
-  await mount(svcAudit, { file: '', retentionDays: 60 })
-  await mount(svcAcl, { file: '' })
-  await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })
-  await mount(svcSearch, { maxHits: 200, skipHidden: true })
-  await mount(svcMeta, { file: '' })
-
   /* 4. L3 功能插件（含后端） */
   await mount(settings)
   await mount(authWatermark)
   await mount(filesSearch)
   await mount(favorites)
   await mount(recent)
+  await mount(adminAudit)
 
   /* 5. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)

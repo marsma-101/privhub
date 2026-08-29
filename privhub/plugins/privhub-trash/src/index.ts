@@ -13,7 +13,7 @@ import z from '@deepseek-ai/schemastery'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-trash'
-export const inject = ['privhub']
+export const inject = ['privhub', 'audit']
 
 export interface Config {
   /** 回收站保留天数（到期自动物理清除），默认 30 */
@@ -32,6 +32,12 @@ export function apply(ctx: Context, config: Config): void {
   const ttlDays = config.ttlDays > 0 ? config.ttlDays : 30
   const intervalMs = (config.intervalHours > 0 ? config.intervalHours : 6) * 3600 * 1000
 
+  /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
+  const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
+    const rec = await ctx.audit.log({ user: u.username, action, target, detail }).catch(() => null)
+    if (rec) ctx.emit('audit:logged', rec)
+  }
+
   /* 回收站列表 */
   svc.route('/privhub/api/trash-list', async (req, res) => {
     const u = svc.requireUser(req, res)
@@ -49,8 +55,10 @@ export function apply(ctx: Context, config: Config): void {
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const id = String(body.id ?? '')
+    const rec = (await svc.loadTrash()).find((r) => r.id === id)
     const ok = await svc.restoreTrash(id)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '恢复失败（可能原位置已有同名文件）' })
+    if (ok) void audit(u, 'restore', rec ? rec.project + (rec.relPath ? '/' + rec.relPath : '') + (rec.name ? '/' + rec.name : '') : id)
   }, 'trash-restore')
 
   /* 彻底删除回收站条目 */
@@ -60,8 +68,10 @@ export function apply(ctx: Context, config: Config): void {
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const id = String(body.id ?? '')
+    const rec = (await svc.loadTrash()).find((r) => r.id === id)
     const ok = await svc.purgeTrash(id)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '彻底删除失败' })
+    if (ok) void audit(u, 'purge', rec ? rec.project + (rec.relPath ? '/' + rec.relPath : '') + (rec.name ? '/' + rec.name : '') : id)
   }, 'trash-purge')
 
   /* 清空 N 天前的回收站（管理员手动触发，N 取配置 ttlDays） */
@@ -71,6 +81,7 @@ export function apply(ctx: Context, config: Config): void {
     if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
     const n = await svc.purgeExpiredTrash(ttlDays * 24 * 3600 * 1000)
     json(res, 200, { ok: true, purged: n })
+    void audit(u, 'clean', '', 'purged=' + n)
   }, 'trash-clean')
 
   /* 定时自动清理（Cordis effect 可逆：插件卸载时清除定时器，零残留） */

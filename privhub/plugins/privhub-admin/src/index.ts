@@ -11,10 +11,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, hashPassword } from '../../privhub-core/src/index'
 
 export const name = 'privhub-admin'
-export const inject = ['privhub']
+export const inject = ['privhub', 'audit']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
+  const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
+    const rec = await ctx.audit.log({ user: u.username, action, target, detail }).catch(() => null)
+    if (rec) ctx.emit('audit:logged', rec)
+  }
 
   /* 新建项目（管理员） */
   svc.route('/privhub/api/project-create', async (req, res) => {
@@ -25,6 +31,7 @@ export function apply(ctx: Context): void {
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const ok = await svc.createProject(String(body.name ?? '').trim())
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '项目名无效或已存在' })
+    if (ok) void audit(u, 'project-create', String(body.name ?? '').trim())
   }, 'project-create')
 
   /* 删除项目（管理员）——软删除，整个项目进回收站，可恢复 */
@@ -36,6 +43,7 @@ export function apply(ctx: Context): void {
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const ok = await svc.moveProjectToTrash(String(body.name ?? ''), u.username)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '移入回收站失败' })
+    if (ok) void audit(u, 'project-delete', String(body.name ?? ''))
   }, 'project-delete')
 
   /* 用户管理：列出所有用户（管理员） */
@@ -62,6 +70,7 @@ export function apply(ctx: Context): void {
     if (typeof body.displayName === 'string' && body.displayName.trim() !== '') rec.displayName = body.displayName.trim()
     await svc.saveUsers()
     json(res, 200, { ok: true })
+    void audit(u, 'user-update', username, 'role=' + rec.role + ' projects=[' + rec.projects.join(',') + ']')
   }, 'admin-user-update')
 
   /* 用户管理：删除用户（管理员） */
@@ -77,6 +86,7 @@ export function apply(ctx: Context): void {
     svc.users.delete(username)
     await svc.saveUsers()
     json(res, 200, { ok: true })
+    void audit(u, 'user-delete', username)
   }, 'admin-user-delete')
 
   /* 用户管理：重置密码（管理员，防止用户忘记密码） */
@@ -99,5 +109,6 @@ export function apply(ctx: Context): void {
     await svc.saveUsers()
     await svc.saveSessions()
     json(res, 200, { ok: true })
+    void audit(u, 'user-reset-password', username)
   }, 'admin-user-reset-password')
 }

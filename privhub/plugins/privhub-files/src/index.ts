@@ -14,10 +14,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readBodyRaw, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files'
-export const inject = ['privhub']
+export const inject = ['privhub', 'audit']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
+  const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
+    const rec = await ctx.audit.log({ user: u.username, action, target, detail }).catch(() => null)
+    if (rec) ctx.emit('audit:logged', rec)
+  }
 
   /* 项目列表（当前用户可见） */
   svc.route('/privhub/api/projects', async (req, res) => {
@@ -92,6 +98,7 @@ export function apply(ctx: Context): void {
       const body = await readBodyRaw(req, MAX_UPLOAD_BYTES)
       await writeFile(join(dir, name), body)
       json(res, 200, { ok: true, size: body.length })
+      void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + body.length)
     } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '上传失败' }) }
   }, 'upload')
 
@@ -106,6 +113,7 @@ export function apply(ctx: Context): void {
     const subPath = String(body.path ?? '')
     const ok = await svc.createFolder(project, subPath, String(body.name ?? ''))
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '新建失败' })
+    if (ok) void audit(u, 'mkdir', project + '/' + (subPath ? subPath + '/' : '') + String(body.name ?? ''))
   }, 'mkdir')
 
   /* 删除文件/文件夹（软删除，进回收站） */
@@ -118,6 +126,7 @@ export function apply(ctx: Context): void {
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     const ok = await svc.moveToTrash(project, String(body.path ?? ''), u.username)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '删除失败' })
+    if (ok) void audit(u, 'delete', project + '/' + String(body.path ?? ''))
   }, 'delete')
 
   /* 重命名 */
@@ -130,6 +139,7 @@ export function apply(ctx: Context): void {
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     const ok = await svc.renameEntry(project, String(body.path ?? ''), String(body.newName ?? ''))
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '重命名失败' })
+    if (ok) void audit(u, 'rename', project + '/' + String(body.path ?? ''), '-> ' + String(body.newName ?? ''))
   }, 'rename')
 
   /* 移动：把项目内条目移动到另一目录（同卷 rename；目标必须已存在且无同名） */
@@ -153,6 +163,7 @@ export function apply(ctx: Context): void {
     try {
       await rename(src, dest)
       json(res, 200, { ok: true, to: toDir === '' ? '' : toDir + '/' + basename(src) })
+      void audit(u, 'move', project + '/' + from, '-> ' + (toDir === '' ? '' : toDir + '/') + basename(src))
     } catch (e) {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '移动失败' })
     }
