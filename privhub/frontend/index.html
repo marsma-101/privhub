@@ -556,6 +556,7 @@
       else if (view === 'favorites') { nav.openFavorites() }
       else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
       else if (view === 'settings') { window.PrivHub.openSettings && window.PrivHub.openSettings() }
+      else if (view === 'acl') { window.PrivHub.openAcl && window.PrivHub.openAcl() }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -568,6 +569,7 @@
           nav,
           badges: window.PrivHub.badges,
           settingsOpen: false,
+          aclOpen: false,
           adminOpen: false,
         }
       },
@@ -640,6 +642,7 @@
         /* 供插件（F04 设置面板 / 图标栏分发）打开弹窗 */
         window.PrivHub.openAdmin = () => { self.adminOpen = true }
         window.PrivHub.openSettings = () => { self.settingsOpen = true }
+        window.PrivHub.openAcl = () => { self.aclOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -702,6 +705,9 @@
 
           <!-- 设置弹窗（F04 shell-settings 提供） -->
           <component v-for="c in slotComps.settings" :is="c" :key="c.name" v-if="settingsOpen && slotComps.settings && slotComps.settings.length" @close="settingsOpen = false"></component>
+
+          <!-- ACL modal (F14 admin-acl plugin client) -->
+          <component v-for="c in slotComps.acl" :is="c" :key="c.name" v-if="aclOpen && slotComps.acl && slotComps.acl.length" @close="aclOpen = false"></component>
 
           <!-- 用户管理（admin 插件 client 提供） -->
           <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>

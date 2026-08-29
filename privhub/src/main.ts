@@ -37,6 +37,7 @@ import * as filesSearch from '../plugins/privhub-files-search/src/index.ts'
 import * as favorites from '../plugins/privhub-shell-favorites/src/index.ts'
 import * as recent from '../plugins/privhub-shell-recent/src/index.ts'
 import * as adminAudit from '../plugins/privhub-admin-audit/src/index.ts'
+import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -75,6 +76,8 @@ async function main(): Promise<void> {
 
   /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '' })
+  /* F14 ACL 守卫必须在 auth/files/trash/admin 注册路由之前挂载（它包装 svc.route） */
+  await mount(adminAcl)
   await mount(auth)
   await mount(files)
   await mount(trash, { ttlDays: 30, intervalHours: 6 })
