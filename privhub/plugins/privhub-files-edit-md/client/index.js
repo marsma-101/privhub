@@ -221,6 +221,30 @@ const MdEditor = {
       if (this.dirty && !confirm('有未保存的修改，确定关闭？')) return
       this.open = false
     },
+    /* F21：导出当前文档（HTML / PDF / Word，读权限即可） */
+    async exportDoc(fmt) {
+      const token = window.PrivHub.AUTH.token || ''
+      try {
+        const r = await fetch('/privhub/api/export?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(this.path) + '&format=' + fmt, { headers: { authorization: 'Bearer ' + token } })
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}))
+          window.PrivHub.toast(j.error || '导出失败', 'error')
+          return
+        }
+        const blob = await r.blob()
+        const ext = fmt === 'doc' ? 'doc' : fmt
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = this.name.replace(/\.md$/i, '') + '.' + ext
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+        window.PrivHub.toast('已导出 ' + ext.toUpperCase())
+      } catch {
+        window.PrivHub.toast('导出失败（网络错误）', 'error')
+      }
+    },
     async onPreviewClick(ev) {
       const a = ev.target.closest('.md-wikilink')
       if (!a) return
@@ -247,6 +271,9 @@ const MdEditor = {
           <span style="flex:1"></span>
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
           <button class="icon-btn" @click="loadVersions()">🕘 版本</button>
+          <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
+          <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
+          <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
           <button class="icon-btn" @click="tryClose()">✖ 关闭</button>
         </div>
         <!-- 版本抽屉 -->
