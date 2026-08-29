@@ -1,4 +1,0 @@
-# privhub-admin bundle patch：作为 bundle 挂载
-- insert:
-    - id: privhub-admin
-      name: privhub-admin

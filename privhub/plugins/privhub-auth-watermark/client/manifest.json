@@ -1,0 +1,7 @@
+{
+  "id": "privhub-auth-watermark",
+  "title": "水印",
+  "icon": "💧",
+  "description": "数字水印：预览时右下角叠加用户名+时间（防截屏外泄）",
+  "slots": ["watermark"]
+}

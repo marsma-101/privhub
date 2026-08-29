@@ -1,0 +1,19 @@
+{
+  "name": "privhub-shell-recent",
+  "description": "PrivHub 最近打开插件（F03）：最近文件列表，存 recent.json",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

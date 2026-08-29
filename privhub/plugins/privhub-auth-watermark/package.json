@@ -1,0 +1,19 @@
+{
+  "name": "privhub-auth-watermark",
+  "description": "PrivHub 水印插件（F05）：预览叠加数字水印（用户名+时间）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

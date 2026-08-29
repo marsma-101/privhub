@@ -1,4 +1,0 @@
-# privhub-trash bundle patch：作为 bundle 挂载
-- insert:
-    - id: privhub-trash
-      name: privhub-trash

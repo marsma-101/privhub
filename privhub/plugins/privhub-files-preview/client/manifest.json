@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-preview",
+  "title": "文件预览",
+  "icon": "👁",
+  "description": "文件预览条（B7）：图片/文本/PDF 直载预览",
+  "slots": ["preview"]
+}

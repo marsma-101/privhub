@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-upload",
+  "title": "上传",
+  "icon": "📤",
+  "description": "拖拽上传（B11）：拖入文件/文件夹递归上传，同名覆盖",
+  "slots": ["upload"]
+}

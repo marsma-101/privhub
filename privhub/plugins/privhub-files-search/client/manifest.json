@@ -1,0 +1,10 @@
+{
+  "id": "privhub-files-search",
+  "title": "搜索",
+  "icon": "🔍",
+  "description": "文件名搜索（B8）：全项目递归匹配，点击结果跳转",
+  "slots": ["search-view"],
+  "barItems": [
+    { "icon": "🔍", "title": "搜索", "slot": "panel", "view": "search" }
+  ]
+}

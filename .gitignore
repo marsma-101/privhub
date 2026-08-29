@@ -19,6 +19,10 @@ node-runtime/
 references/
 
 # ===== 与运行无关的临时产物（不进 git，也不上 GitHub） =====
+# 重构前完整快照（2GB，仅供本地查阅，不进 git）
+_archive/
+# 部署包（构建产物，由 scripts/build-deploy.ps1 随时重建）
+deploy/
 # 验收/验证截图（统一放 screenshots/；根目录散落的 png 也一律忽略）
 screenshots/
 /*.png

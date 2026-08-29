@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-upload-queue",
+  "title": "上传队列",
+  "icon": "📥",
+  "description": "上传进度队列（B12）：底部抽屉，逐条进度/失败重试",
+  "slots": ["upload-queue"]
+}

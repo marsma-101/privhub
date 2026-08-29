@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/favicon.svg">
+  <title>私域枢纽 · PrivHub</title>
+  <script src="/vue.global.prod.js"></script>
+  <style>
+    /* ============ 主题变量（两套护眼配色） ============ */
+    :root {
+      --bg: #eef1f5; --panel: #f7f9fb; --panel2: #ffffff; --line: #d8dee6;
+      --text: #2e3440; --muted: #7a8699; --accent: #4a7bd6; --danger: #d05a5a; --warn: #c07a2b;
+    }
+    [data-theme="dark"] {
+      --bg: #232834; --panel: #2a3040; --panel2: #333a4a; --line: #414a5c;
+      --text: #d7dde8; --muted: #8a94a6; --accent: #5d8de0; --danger: #e07171; --warn: #e0a34a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+      transition: background .25s, color .25s;
+    }
+
+    /* ============ 登录/注册 ============ */
+    .auth-wrap { height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .auth-card {
+      background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+      padding: 36px 32px; width: 360px; box-shadow: 0 12px 40px rgba(0,0,0,.12);
+    }
+    .auth-card h1 { font-size: 20px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+    .logo-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); display: inline-block; }
+    .auth-sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+    .field { margin-bottom: 13px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+    .field input {
+      width: 100%; padding: 9px 12px; background: var(--bg); border: 1px solid var(--line);
+      border-radius: 6px; color: var(--text); font-size: 14px; outline: none;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .btn { padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
+    .btn-primary { background: var(--accent); color: #fff; width: 100%; }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+    .auth-err { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+    .auth-switch { margin-top: 14px; text-align: center; font-size: 12px; color: var(--muted); }
+    .auth-switch a { color: var(--accent); cursor: pointer; }
+
+    /* ============ 主界面 ============ */
+    .app { display: flex; flex-direction: column; height: 100vh; }
+    .topbar {
+      display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+      background: var(--panel2); border-bottom: 1px solid var(--line);
+    }
+    .logo { font-weight: 700; font-size: 15px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .tp-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .badge { font-size: 12px; padding: 3px 11px; border-radius: 20px; background: rgba(90,130,200,.15); color: var(--accent); }
+    .badge.admin { background: rgba(192,122,43,.15); color: var(--warn); }
+    .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 13px; color: #fff; font-weight: 600; }
+    .icon-btn { font-size: 12px; padding: 6px 12px; border-radius: 6px; background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+    .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .icon-btn.on { color: var(--accent); border-color: var(--accent); background: rgba(90,130,200,.1); }
+
+    .body { display: flex; flex: 1; overflow: hidden; }
+    /* A2：左面板宽度由骨架外层容器控制（可拖拽/折叠），内部组件撑满 */
+    .sidebar {
+      width: 100%; height: 100%; background: var(--panel);
+      padding: 12px 10px; display: flex; flex-direction: column; overflow-y: auto;
+    }
+    /* A2：左面板拖拽条 */
+    .resize-handle {
+      flex: 0 0 4px; cursor: col-resize; background: transparent;
+      transition: background .15s;
+    }
+    .resize-handle:hover { background: var(--accent); opacity: .5; }
+    .side-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .side-title { font-size: 12px; color: var(--muted); letter-spacing: .05em; }
+    .tree-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; font-size: 13.5px; cursor: pointer; }
+    .tree-item:hover { background: var(--panel2); }
+    .tree-item.active { background: rgba(90,130,200,.15); color: var(--accent); }
+    .tree-item .name { flex: 1; }
+    .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .main-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 14px; }
+    .main-welcome .big { font-size: 22px; color: var(--text); }
+    .main-head { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+    .main-head .title { font-size: 15px; font-weight: 600; }
+    .main-head .crumb { color: var(--muted); font-size: 13px; }
+    .breadcrumb { font-size: 14px; display: flex; align-items: center; gap: 2px; }
+    .breadcrumb a { color: var(--accent); }
+    .breadcrumb a:hover { text-decoration: underline; }
+    .main-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+    .file-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+    .file-card {
+      background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+      padding: 16px 12px; text-align: center; cursor: pointer; position: relative;
+    }
+    .file-card:hover { border-color: var(--accent); }
+    .file-card.sel { border-color: var(--accent); background: rgba(90,130,200,.08); }
+    .file-ico { font-size: 34px; margin-bottom: 8px; }
+    .file-name { font-size: 12.5px; word-break: break-all; }
+    .file-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    /* 列表视图（Windows 详细信息风格） */
+    .file-table-wrap { display: flex; flex-direction: column; }
+    .file-table-head, .file-table-row {
+      display: grid; grid-template-columns: 1fr 90px 120px 110px; gap: 8px;
+      padding: 8px 12px; align-items: center; font-size: 13px;
+    }
+    .file-table-head { color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+    .file-table-row { border-bottom: 1px solid var(--line); cursor: pointer; }
+    .file-table-row:hover { background: var(--panel2); }
+    .file-table-row.sel { background: rgba(90,130,200,.1); }
+    .col-name { display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tico { flex-shrink: 0; }
+    .col-size, .col-type { color: var(--muted); }
+    .col-time { color: var(--muted); }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 0; }
+    .spacer { flex: 1; }
+
+    /* 设置入口（左下角） */
+    .settings-fab {
+      position: fixed; left: 14px; bottom: 14px; z-index: 900;
+      padding: 9px 14px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line);
+      color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+    }
+    .settings-fab:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* ============ 骨架：顶栏项目横排 + 工作区图标栏 ============ */
+    .project-tabs { display: flex; align-items: center; gap: 4px; margin-left: 14px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+    .ptab {
+      flex-shrink: 0; padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      color: var(--muted); background: transparent; border: 1px solid transparent; white-space: nowrap;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .ptab:hover { background: var(--panel); color: var(--text); }
+    .ptab.on { background: rgba(90,130,200,.14); color: var(--accent); border-color: rgba(90,130,200,.25); font-weight: 600; }
+    .plus-btn {
+      flex-shrink: 0; width: 26px; height: 26px; margin-left: 4px; border-radius: 50%;
+      background: var(--accent); color: #fff; border: none; font-size: 15px; line-height: 1;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .plus-btn:hover { filter: brightness(1.1); }
+    .uname { font-size: 13px; color: var(--text); }
+    .appbar {
+      width: 52px; background: var(--panel); border-right: 1px solid var(--line);
+      display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px;
+    }
+    .abar-item {
+      width: 38px; height: 34px; border-radius: 7px; display: flex; align-items: center;
+      justify-content: center; font-size: 16px; cursor: pointer; color: var(--muted); position: relative;
+    }
+    .abar-item:hover { background: var(--panel2); color: var(--text); }
+    .abar-item.on { background: rgba(90,130,200,.16); color: var(--accent); }
+    .abar-item:hover::after {
+      content: attr(title); position: absolute; left: 44px; top: 50%; transform: translateY(-50%);
+      background: var(--text); color: var(--panel2); font-size: 11px; padding: 3px 9px;
+      border-radius: 5px; white-space: nowrap; z-index: 1200; pointer-events: none;
+    }
+    .abar-spacer { flex: 1; }
+    .abar-badge {
+      position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; border-radius: 8px;
+      background: var(--danger); color: #fff; font-size: 10px; line-height: 15px; text-align: center; padding: 0 3px;
+    }
+
+    /* ============ 右侧预览容器 ============ */
+    .right-panel { width: 340px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; overflow: hidden; }
+    .right-head { padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .right-close { cursor: pointer; color: var(--muted); }
+    .right-close:hover { color: var(--danger); }
+    .right-body { flex: 1; overflow: auto; padding: 14px 16px; }
+    .preview-img { max-width: 100%; border-radius: 8px; }
+    .preview-text { font-size: 12.5px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
+    .preview-pdf { width: 100%; height: 480px; border: 1px solid var(--line); border-radius: 8px; }
+    .preview-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 40px 0; }
+
+    /* ============ 长按菜单 ============ */
+    .ctx-menu { position: fixed; z-index: 1000; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; box-shadow: 0 10px 30px rgba(0,0,0,.2); min-width: 150px; }
+    .ctx-item { padding: 9px 16px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+    .ctx-item:hover { background: var(--panel); }
+    .ctx-item.danger { color: var(--danger); }
+    /* 长按菜单遮罩：点空白处关闭菜单（透明，仅拦截点击） */
+    .ctx-mask { position: fixed; inset: 0; z-index: 999; }
+
+    /* ============ 弹窗 ============ */
+    .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1100; }
+    .modal { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; width: 460px; max-width: 92vw; max-height: 86vh; padding: 22px; box-shadow: 0 16px 50px rgba(0,0,0,.3); display: flex; flex-direction: column; }
+    .modal h2 { font-size: 16px; margin-bottom: 16px; }
+    .modal-body { flex: 1; overflow-y: auto; }
+    .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
+    .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
+    .kv .k { color: var(--muted); }
+
+    /* 用户管理表格 */
+    .u-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .u-table th, .u-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    .u-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    .u-project-chip { display: inline-block; font-size: 11px; padding: 1px 7px; margin: 1px 2px; border-radius: 10px; background: rgba(90,130,200,.12); color: var(--accent); }
+    .u-row { cursor: pointer; }
+    .u-row:hover { background: var(--panel); }
+    .small-btn { font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+    .small-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .small-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+    /* 主题选择 */
+    .theme-opts { display: flex; gap: 12px; }
+    .theme-opt { flex: 1; border: 2px solid var(--line); border-radius: 10px; padding: 16px; text-align: center; cursor: pointer; }
+    .theme-opt.active { border-color: var(--accent); }
+    .theme-swatch { height: 40px; border-radius: 6px; margin-bottom: 8px; }
+    .swatch-light { background: #eef1f5; border: 1px solid #d8dee6; }
+    .swatch-dark { background: #232834; border: 1px solid #414a5c; }
+
+    /* 水印叠加层（F05 插件用） */
+    .watermark-overlay {
+      position: fixed; right: 12px; bottom: 10px; pointer-events: none; z-index: 999;
+      color: rgba(90,130,200,.55); font-size: 12px; opacity: .18;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const { createApp, reactive, computed, watch } = Vue
+
+    /* ============================================================
+     * 全局状态与插件桥（所有插件 client 通过 window.PrivHub 通信）
+     * ============================================================ */
+    const AUTH = reactive({
+      token: localStorage.getItem('privhub_token') || '',
+      user: null,
+    })
+    const THEME = reactive({ theme: localStorage.getItem('privhub_theme') || 'light' })
+
+    function applyTheme() {
+      document.documentElement.setAttribute('data-theme', THEME.theme)
+      localStorage.setItem('privhub_theme', THEME.theme)
+    }
+
+    async function api(path, opts = {}) {
+      const headers = { 'content-type': 'application/json', ...(opts.headers || {}) }
+      if (AUTH.token) headers['authorization'] = 'Bearer ' + AUTH.token
+      const res = await fetch(path, { ...opts, headers })
+      return res.json()
+    }
+    function logout() {
+      AUTH.token = ''; AUTH.user = null
+      localStorage.removeItem('privhub_token')
+    }
+
+    /* 事件总线：跨插件解耦通信（file:* / trash:* / auth:* 等） */
+    const bus = {
+      _l: {},
+      on(ev, fn) {
+        (this._l[ev] = this._l[ev] || []).push(fn)
+        return () => this.off(ev, fn)
+      },
+      off(ev, fn) {
+        const a = this._l[ev]
+        if (a) { const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1) }
+      },
+      emit(ev, ...args) {
+        ;(this._l[ev] || []).slice().forEach(fn => { try { fn(...args) } catch (e) { console.error('[bus]', ev, e) } })
+      },
+    }
+
+    /* ============================================================
+     * 导航状态机（骨架持有；插件组件通过 window.PrivHub.nav 读写）
+     * ============================================================ */
+    const nav = reactive({
+      project: null,          // 当前项目名（null = 欢迎页）
+      path: '',               // 项目内相对路径
+      entries: [],            // 当前目录条目
+      listLoading: false,
+      selected: null,
+      preview: null,          // { type, data, name }
+      rightOpen: false,
+      trashView: false,
+      trashList: [],
+      searchView: false,
+      favView: false,
+      viewMode: 'grid',
+      sortKey: 'name',
+      sortAsc: true,
+      checked: {},            // 批量多选：name -> true
+      uploading: false,
+      uploadDone: 0,
+      uploadTotal: 0,
+      tree: reactive({}),     // 目录树展开缓存：key -> { expanded, children }
+      /* A2：左面板宽度（拖拽调整 + localStorage 持久化；0 = 折叠） */
+      sidebarWidth: parseInt(localStorage.getItem('privhub_sidebar_w') || '220', 10) || 220,
+      toggleSidebar() {
+        nav.sidebarWidth = nav.sidebarWidth > 40 ? 0 : 220
+        localStorage.setItem('privhub_sidebar_w', String(nav.sidebarWidth))
+      },
+
+      /* ---- 导航 ---- */
+      async loadProjects() {
+        const r = await api('/privhub/api/projects')
+        if (r.ok) nav.projectsList = r.projects
+      },
+      async openDir(project, path) {
+        nav.trashView = false
+        nav.searchView = false
+        nav.favView = false
+        nav.project = project
+        nav.path = path || ''
+        nav.selected = null; nav.preview = null; nav.rightOpen = false
+        nav.listLoading = true
+        const q = path ? '&path=' + encodeURIComponent(path) : ''
+        const r = await api('/privhub/api/list?project=' + encodeURIComponent(project) + q)
+        nav.listLoading = false
+        nav.entries = r.ok ? r.entries : []
+        bus.emit('file:opened', { project, path: nav.path })
+      },
+      async openProject(name) {
+        await nav.openDir(name, '')
+        const key = nav.treeKey(name, '')
+        if (!nav.tree[key]) await nav.toggleTree(name, '')
+      },
+      async backToWelcome() {
+        nav.trashView = false
+        nav.searchView = false
+        nav.favView = false
+        nav.project = null; nav.path = ''
+        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+      },
+      async gotoCrumb(path) { await nav.openDir(nav.project, path) },
+
+      /* ---- 目录树 ---- */
+      treeKey(project, path) { return project + '/' + (path || '') },
+      async toggleTree(project, path) {
+        const key = nav.treeKey(project, path)
+        if (!nav.tree[key]) {
+          nav.tree[key] = { expanded: true, children: [] }
+          const q = path ? '&path=' + encodeURIComponent(path) : ''
+          const r = await api('/privhub/api/list?project=' + encodeURIComponent(project) + q)
+          if (r.ok) {
+            nav.tree[key].children = r.entries.filter(e => e.isDir).map(e => ({ name: e.name, path: path ? path + '/' + e.name : e.name }))
+          }
+        } else {
+          nav.tree[key].expanded = !nav.tree[key].expanded
+        }
+      },
+      isExpanded(project, path) {
+        const key = nav.treeKey(project, path)
+        return nav.tree[key] && nav.tree[key].expanded
+      },
+      childrenOf(project, path) {
+        const key = nav.treeKey(project, path)
+        return (nav.tree[key] && nav.tree[key].children) || []
+      },
+      refreshTree() {
+        // 当前目录与上级的树缓存失效，下次展开重新拉取
+        const key = nav.treeKey(nav.project, nav.path)
+        if (nav.tree[key]) nav.tree[key].children = []
+        const parentPath = nav.path.includes('/') ? nav.path.slice(0, nav.path.lastIndexOf('/')) : ''
+        const pkey = nav.treeKey(nav.project, parentPath)
+        if (nav.tree[pkey]) nav.tree[pkey].children = []
+      },
+      async delProject(name) {
+        if (!confirm('将项目「' + name + '」及其所有文件移入回收站？')) return
+        const r = await api('/privhub/api/project-delete', { method: 'POST', body: JSON.stringify({ name }) })
+        if (r.ok) { await nav.loadProjects(); if (nav.project === name) await nav.backToWelcome() }
+        else alert(r.error || '删除失败')
+      },
+
+      /* ---- 排序 / 视图 ---- */
+      relPathOf(name) { return nav.path ? nav.path + '/' + name : name },
+      toggleSort(key) {
+        if (nav.sortKey === key) nav.sortAsc = !nav.sortAsc
+        else { nav.sortKey = key; nav.sortAsc = true }
+      },
+      setViewMode(m) { nav.viewMode = m },
+
+      /* ---- 选中 / 预览 ---- */
+      async selectEntry(e) {
+        nav.selected = e
+        if (e.isDir) {
+          nav.preview = null
+          nav.rightOpen = false
+          return
+        }
+        const rel = nav.relPathOf(e.name)
+        const r = await api('/privhub/api/preview?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel))
+        nav.preview = r.ok ? { type: r.type, data: r.data, name: e.name } : { type: 'unknown', data: '', name: e.name }
+        nav.rightOpen = true
+      },
+      async openEntry(e) {
+        if (e.isDir) {
+          const rel = nav.relPathOf(e.name)
+          await nav.openDir(nav.project, rel)
+        } else {
+          await nav.selectEntry(e)
+        }
+      },
+
+      /* ---- 文件操作 ---- */
+      async submitMkdir() {
+        const name = prompt('文件夹名称：')
+        if (!name) return
+        const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: nav.path, name }) })
+        if (r.ok) { await nav.openDir(nav.project, nav.path); nav.refreshTree() }
+        else alert(r.error || '新建失败')
+      },
+      async doRename(entry) {
+        const rel = nav.relPathOf(entry.name)
+        const newName = prompt('重命名为：', entry.name)
+        if (!newName || newName === entry.name) return
+        const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, newName }) })
+        if (r.ok) await nav.openDir(nav.project, nav.path)
+        else alert(r.error || '重命名失败')
+      },
+      async doDelete(entry) {
+        if (!confirm('将「' + entry.name + '」移入回收站？')) return
+        const rel = nav.relPathOf(entry.name)
+        const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel }) })
+        if (r.ok) {
+          await nav.openDir(nav.project, nav.path)
+          bus.emit('file:trash', { id: entry.name })
+        }
+        else alert(r.error || '删除失败')
+      },
+      addFile() { bus.emit('upload:request') },
+
+      /* ---- 回收站 ---- */
+      fmtTime(ts) {
+        const d = new Date(ts)
+        const p = n => String(n).padStart(2, '0')
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+      },
+      async openTrash() {
+        nav.trashView = true
+        nav.searchView = false
+        nav.project = null; nav.path = ''
+        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+        await nav.loadTrash()
+      },
+      async openSearch() {
+        nav.searchView = true
+        nav.trashView = false
+        nav.favView = false
+        nav.project = null; nav.path = ''
+        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+      },
+      async openFavorites() {
+        nav.favView = true
+        nav.searchView = false
+        nav.trashView = false
+        nav.project = null; nav.path = ''
+        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+      },
+      async loadTrash() {
+        const r = await api('/privhub/api/trash-list')
+        if (r.ok) nav.trashList = r.trash
+      },
+      async restoreTrash(t) {
+        const r = await api('/privhub/api/trash-restore', { method: 'POST', body: JSON.stringify({ id: t.id }) })
+        if (!r.ok) { alert(r.error || '恢复失败'); return }
+        nav.tree = reactive({})
+        if (t.relPath === '') await nav.loadProjects()
+        const parent = t.relPath.includes('/') ? t.relPath.slice(0, t.relPath.lastIndexOf('/')) : ''
+        if (t.project === nav.project && parent === nav.path) await nav.openDir(nav.project, nav.path)
+        await nav.loadTrash()
+        bus.emit('trash:changed', { id: t.id })
+        bus.emit('file:restored', { id: t.id, project: t.project, path: t.relPath, name: t.name })
+      },
+      async purgeTrash(t) {
+        if (!confirm('彻底删除「' + t.name + '」？此操作不可恢复！')) return
+        const r = await api('/privhub/api/trash-purge', { method: 'POST', body: JSON.stringify({ id: t.id }) })
+        if (!r.ok) { alert(r.error || '删除失败'); return }
+        await nav.loadTrash()
+        bus.emit('trash:changed', { id: t.id })
+      },
+      async cleanExpiredTrash() {
+        if (!confirm('清理在回收站中超过 30 天的条目（物理删除，不可恢复）？')) return
+        const r = await api('/privhub/api/trash-clean', { method: 'POST', body: '{}' })
+        if (r.ok) { alert('已清理 ' + (r.purged || 0) + ' 条'); await nav.loadTrash() }
+        else alert(r.error || '清理失败')
+      },
+
+      /* ---- 管理员 ---- */
+      async newProject() {
+        const name = prompt('新项目名称：')
+        if (!name) return
+        const r = await api('/privhub/api/project-create', { method: 'POST', body: JSON.stringify({ name }) })
+        if (r.ok) await nav.loadProjects()
+        else alert(r.error || '新建失败')
+      },
+      async doLogout() {
+        try { await api('/privhub/api/logout') } catch {}
+        logout()
+      },
+    })
+    nav.projectsList = []
+
+    /* 排序后的条目（计算属性：文件夹在前） */
+    function sortedEntries() {
+      const arr = [...nav.entries]
+      const key = nav.sortKey
+      const asc = nav.sortAsc ? 1 : -1
+      arr.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+        let va, vb
+        if (key === 'name') { va = a.name; vb = b.name }
+        else if (key === 'size') { va = a.isDir ? -1 : a.size; vb = b.isDir ? -1 : b.size }
+        else if (key === 'mtime') { va = a.mtime; vb = b.mtime }
+        else { va = a.name; vb = b.name }
+        if (va < vb) return -1 * asc
+        if (va > vb) return 1 * asc
+        return 0
+      })
+      return arr
+    }
+
+    /* 文件图标辅助 */
+    function fileIcon(type) {
+      const t = (type || '').toLowerCase()
+      const map = {
+        'png': '🖼', 'jpg': '🖼', 'jpeg': '🖼', 'gif': '🖼', 'webp': '🖼', 'svg': '🖼', 'bmp': '🖼',
+        'pdf': '📕', 'doc': '📘', 'docx': '📘', 'xls': '📗', 'xlsx': '📗', 'ppt': '📙', 'pptx': '📙',
+        'txt': '📄', 'md': '📄', 'zip': '🗜', 'rar': '🗜', 'mp3': '🎵', 'mp4': '🎬', 'json': '📄',
+      }
+      return map[t] || '📄'
+    }
+    function previewImageUrl(name) {
+      const rel = nav.path ? nav.path + '/' + name : name
+      return '/privhub/api/preview-raw?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel)
+    }
+    function previewPdfUrl(name) {
+      return previewImageUrl(name)
+    }
+
+    /* ============ 插件桥 ============ */
+    window.PrivHub = { api, AUTH, THEME, applyTheme, logout, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
+    /* 图标栏角标（插件更新，骨架渲染） */
+    window.PrivHub.badges = reactive({ trash: 0 })
+    /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */
+    window.PrivHub.manifests = []
+    window.PrivHub.barItems = reactive([])
+    window.PrivHub.loadBarItems = () => {
+      const items = []
+      const admin = AUTH.user && AUTH.user.role === 'admin'
+      for (const m of window.PrivHub.manifests || []) {
+        for (const bi of (m.barItems || [])) {
+          if (bi.adminOnly && !admin) continue
+          items.push(bi)
+        }
+      }
+      window.PrivHub.barItems.splice(0, window.PrivHub.barItems.length, ...items)
+    }
+    window.PrivHub.openBarItem = (bi) => {
+      const view = bi.view || bi.slot
+      if (view === 'admin') { window.PrivHub.openAdmin && window.PrivHub.openAdmin() }
+      else if (view === 'trash') { nav.openTrash() }
+      else if (view === 'search') { nav.openSearch() }
+      else if (view === 'favorites') { nav.openFavorites() }
+      else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
+      else if (view === 'settings') { window.PrivHub.openSettings && window.PrivHub.openSettings() }
+    }
+
+    /* ============ 根组件（骨架容器） ============ */
+    const App = {
+      data() {
+        return {
+          slotComps: reactive({}),   // 插件 slot 组件：{ slot: [component, ...] }（支持同 slot 多组件）
+          auth: AUTH,
+          theme: THEME,
+          nav,
+          badges: window.PrivHub.badges,
+          settingsOpen: false,
+          adminOpen: false,
+        }
+      },
+      computed: {
+        loggedIn() { return this.auth.user !== null },
+        isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
+        crumbs() {
+          const parts = this.nav.path ? this.nav.path.split('/').filter(Boolean) : []
+          const arr = [{ label: this.nav.project, path: '' }]
+          let acc = ''
+          for (const p of parts) { acc = acc ? acc + '/' + p : p; arr.push({ label: p, path: acc }) }
+          return arr
+        },
+      },
+      methods: {
+        /* A2：左面板拖拽调宽（52 = 图标栏宽度；clamp 0~420；mouseup 持久化） */
+        startResize(e) {
+          e.preventDefault()
+          const move = (ev) => {
+            const w = Math.min(420, Math.max(0, ev.clientX - 52))
+            this.nav.sidebarWidth = w
+          }
+          const up = () => {
+            document.removeEventListener('mousemove', move)
+            document.removeEventListener('mouseup', up)
+            localStorage.setItem('privhub_sidebar_w', String(this.nav.sidebarWidth))
+          }
+          document.addEventListener('mousemove', move)
+          document.addEventListener('mouseup', up)
+        },
+      },
+      async mounted() {
+        applyTheme()
+        /* 插件 client 加载：manifest → import() → 按 slot 注册（同 slot 可多组件，数组累积） */
+        window.PrivHub.manifests = []
+        try {
+          const m = await api('/privhub/api/shell/manifest')
+          if (m.ok) {
+            window.PrivHub.manifests = m.manifests
+            for (const p of m.manifests) {
+              if (!p.entry) continue
+              try {
+                const mod = await import(p.entry)
+                const slots = (mod.default && mod.default.slots) || {}
+                for (const [slot, comp] of Object.entries(slots)) {
+                  const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
+                  if (!arr.includes(comp)) arr.push(comp)
+                }
+                console.log('[shell] 已加载插件 client:', p.id, Object.keys(slots))
+              } catch (e) { console.error('[shell] 插件加载失败:', p.id, e) }
+            }
+            window.PrivHub.loadBarItems()
+          }
+        } catch (e) { console.error('[shell] manifest 拉取失败:', e) }
+        const self = this
+        if (AUTH.token) {
+          const r = await api('/privhub/api/me')
+          if (r.ok) { AUTH.user = r.user; await nav.loadProjects() } else { logout() }
+        }
+        this._unwatch = watch(() => self.loggedIn, (v) => {
+          if (v) {
+            nav.loadProjects(); window.PrivHub.loadBarItems(); bus.emit('auth:login')
+            // D25：应用后端设置的默认视图（仅登录时生效，用户手动切换后不受影响）
+            api('/privhub/api/settings').then((r) => {
+              if (r.ok && (r.settings.defaultView === 'grid' || r.settings.defaultView === 'list')) nav.viewMode = r.settings.defaultView
+            }).catch(() => {})
+          }
+          else { bus.emit('auth:logout') }
+        })
+        /* 供插件（F04 设置面板 / 图标栏分发）打开弹窗 */
+        window.PrivHub.openAdmin = () => { self.adminOpen = true }
+        window.PrivHub.openSettings = () => { self.settingsOpen = true }
+      },
+      beforeUnmount() {
+        if (this._unwatch) this._unwatch()
+      },
+      template: `
+        <!-- 未登录：auth 插件组件 -->
+        <component v-for="c in slotComps.auth" :is="c" :key="c.name" v-if="!loggedIn && slotComps.auth && slotComps.auth.length"></component>
+        <div v-if="!loggedIn && (!slotComps.auth || !slotComps.auth.length)" style="height:100vh;display:flex;align-items:center;justify-content:center;color:var(--muted)">加载中…</div>
+
+        <!-- 已登录 -->
+        <div v-if="loggedIn" class="app">
+          <!-- 顶栏：品牌 + 项目横排（shell 插件 project-tabs）+ 右侧用户区（shell 用户区 + F03 最近等） -->
+          <div class="topbar">
+            <div class="logo" @click="nav.backToWelcome" style="cursor:pointer"><span class="logo-dot"></span>私域枢纽</div>
+            <component v-for="c in slotComps['project-tabs']" :is="c" :key="c.name"></component>
+            <div class="tp-right">
+              <component v-for="c in slotComps['user-area']" :is="c" :key="c.name"></component>
+            </div>
+          </div>
+
+          <div class="body">
+            <!-- 图标栏（shell 插件 app-iconbar：渲染各插件 barItems） -->
+            <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
+
+            <!-- 左侧目录树（F07 files-explorer 提供；A2 可拖拽调宽/双击折叠） -->
+            <div
+              v-if="nav.project !== null && !nav.trashView && slotComps.tree && slotComps.tree.length"
+              class="side-wrap"
+              :style="{ width: nav.sidebarWidth + 'px', flex: '0 0 auto', overflow: 'hidden', borderRight: nav.sidebarWidth > 40 ? '1px solid var(--line)' : 'none' }"
+            >
+              <component v-for="c in slotComps.tree" :is="c" :key="c.name"></component>
+            </div>
+            <div class="resize-handle" v-if="nav.project !== null && !nav.trashView && slotComps.tree && slotComps.tree.length" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
+
+            <!-- 中间 -->
+            <div class="main">
+              <!-- 多标签页（F01 shell-tabs 提供）：进入项目后显示 -->
+              <component v-for="c in slotComps.tabs" :is="c" :key="c.name" v-if="nav.project !== null && !nav.trashView && !nav.searchView && !nav.favView && slotComps.tabs && slotComps.tabs.length"></component>
+              <!-- 回收站视图（F06 trash-ui 提供） -->
+              <component v-for="c in slotComps['trash-view']" :is="c" :key="c.name" v-if="nav.trashView && slotComps['trash-view'] && slotComps['trash-view'].length"></component>
+              <!-- 搜索视图（F09 files-search 提供） -->
+              <component v-for="c in slotComps['search-view']" :is="c" :key="c.name" v-else-if="nav.searchView && slotComps['search-view'] && slotComps['search-view'].length"></component>
+              <!-- 收藏视图（F02 shell-favorites 提供） -->
+              <component v-for="c in slotComps['fav-view']" :is="c" :key="c.name" v-else-if="nav.favView && slotComps['fav-view'] && slotComps['fav-view'].length"></component>
+              <!-- 欢迎页（shell 插件 welcome） -->
+              <component v-for="c in slotComps.welcome" :is="c" :key="c.name" v-else-if="nav.project === null && slotComps.welcome && slotComps.welcome.length"></component>
+              <!-- 文件面板（F07 files-explorer 提供） -->
+              <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="slotComps.panel && slotComps.panel.length"></component>
+              <div v-else class="main-welcome"><div>文件面板加载中…</div></div>
+            </div>
+
+            <!-- 右侧预览（F08 files-preview 提供） -->
+            <component v-for="c in slotComps.preview" :is="c" :key="c.name" v-if="nav.rightOpen && slotComps.preview && slotComps.preview.length"></component>
+
+            <!-- 上传控制器（F11，不可见：拖拽/文件选择） -->
+            <component v-for="c in slotComps.upload" :is="c" :key="c.name" v-if="slotComps.upload && slotComps.upload.length"></component>
+            <!-- 上传队列抽屉（F12） -->
+            <component v-for="c in slotComps['upload-queue']" :is="c" :key="c.name" v-if="slotComps['upload-queue'] && slotComps['upload-queue'].length"></component>
+          </div>
+
+          <!-- 设置弹窗（F04 shell-settings 提供） -->
+          <component v-for="c in slotComps.settings" :is="c" :key="c.name" v-if="settingsOpen && slotComps.settings && slotComps.settings.length" @close="settingsOpen = false"></component>
+
+          <!-- 用户管理（admin 插件 client 提供） -->
+          <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>
+
+          <!-- 水印叠加（F05 auth-watermark 提供） -->
+          <component v-for="c in slotComps.watermark" :is="c" :key="c.name" v-if="loggedIn && slotComps.watermark && slotComps.watermark.length"></component>
+        </div>
+      `,
+    }
+
+    const app = createApp(App)
+    app.mixin({
+      methods: {
+        fileIcon,
+        previewImageUrl,
+        previewPdfUrl,
+        applyTheme,
+      },
+    })
+    app.mount('#app')
+  </script>
+</body>
+</html>

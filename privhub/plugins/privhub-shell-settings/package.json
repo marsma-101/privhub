@@ -1,0 +1,19 @@
+{
+  "name": "privhub-shell-settings",
+  "description": "PrivHub 设置插件（F04/D25）：系统设置面板，设置存 settings.json",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

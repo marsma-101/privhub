@@ -1,0 +1,5 @@
+# privhub-shell-recent bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-shell-recent
+      name: privhub-shell-recent
+      config: {}

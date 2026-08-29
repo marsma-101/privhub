@@ -1,0 +1,6 @@
+# privhub-svc-acl bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-svc-acl
+      name: privhub-svc-acl
+      config:
+        file: ''

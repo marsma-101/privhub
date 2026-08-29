@@ -1,0 +1,10 @@
+{
+  "id": "privhub-shell-settings",
+  "title": "设置",
+  "icon": "⚙",
+  "description": "系统设置面板（D25）：主题 / 默认视图 / 上传限制",
+  "slots": ["settings"],
+  "barItems": [
+    { "icon": "⚙", "title": "设置", "slot": "app-iconbar", "view": "settings" }
+  ]
+}
