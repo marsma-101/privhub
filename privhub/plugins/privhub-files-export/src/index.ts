@@ -111,7 +111,7 @@ function wrapHtml(title: string, bodyHtml: string): string {
 }
 
 export const name = 'privhub-files-export'
-export const inject = ['privhub']
+export const inject = ['privhub', 'storage']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
@@ -139,7 +139,7 @@ export function apply(ctx: Context): void {
       if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文档不存在' })
       const s = await stat(target)
       if (s.isDirectory() || s.size > MAX_BYTES) return json(res, 400, { ok: false, error: '文档过大或为文件夹（≤512KB）' })
-      const md = await readFile(target, 'utf8')
+      const md = await ctx.storage.readText(target)
       // 去掉 frontmatter（导出正文）
       const bodyMd = md.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
       const title = path.split('/').pop()!.replace(/\.md$/i, '')

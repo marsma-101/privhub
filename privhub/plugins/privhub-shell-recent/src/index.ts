@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-recent'
-export const inject = ['privhub']
+export const inject = ['privhub', 'storage']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -34,16 +34,16 @@ interface RecentData {
 
 const MAX_RECENT = 20
 
-async function loadAll(): Promise<RecentData> {
+async function loadAll(storage: { readText: (f: string) => Promise<string> }): Promise<RecentData> {
   const file = join(rootDir, 'data', 'recent.json')
   if (!existsSync(file)) return {}
-  try { return JSON.parse(await readFile(file, 'utf8')) as RecentData } catch { return {} }
+  try { return JSON.parse(await storage.readText(file)) as RecentData } catch { return {} }
 }
 
-async function saveAll(data: RecentData): Promise<void> {
+async function saveAll(storage: { writeText: (f: string, d: string) => Promise<void> }, data: RecentData): Promise<void> {
   const file = join(rootDir, 'data', 'recent.json')
   await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(data, null, 2), 'utf8')
+  await storage.writeText(file, JSON.stringify(data, null, 2))
 }
 
 export function apply(ctx: Context): void {
@@ -54,7 +54,7 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(req, res)
     if (!u) return
     if (req.method === 'GET') {
-      const all = await loadAll()
+      const all = await loadAll(ctx.storage)
       json(res, 200, { ok: true, recent: all[u.username] ?? [] })
       return
     }
@@ -66,13 +66,13 @@ export function apply(ctx: Context): void {
     const name = String(body.name ?? '')
     const isDir = body.isDir === true
     if (project === '' || name === '') return json(res, 400, { ok: false, error: '参数不完整' })
-    const all = await loadAll()
+    const all = await loadAll(ctx.storage)
     const list = all[u.username] ?? []
     // 去重（同项目同路径）：移出旧条目，头部插入新条目
     const rest = list.filter((e) => !(e.project === project && e.path === path))
     const next = [{ project, path, name, isDir, at: Date.now() }, ...rest].slice(0, MAX_RECENT)
     all[u.username] = next
-    await saveAll(all)
+    await saveAll(ctx.storage, all)
     json(res, 200, { ok: true, recent: next })
   }, 'recent')
 }

@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-settings'
-export const inject = ['privhub']
+export const inject = ['privhub', 'storage']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 

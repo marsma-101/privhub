@@ -22,7 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-kg'
-export const inject = ['privhub', 'meta']
+export const inject = ['privhub', 'storage', 'meta']
 
 export interface KgNode { id: string; name: string; path: string; tags: string[] }
 export interface KgEdge { source: string; target: string; type: 'link' | 'tag' }
@@ -89,7 +89,7 @@ export function apply(ctx: Context): void {
     if (target === null || !existsSync(target)) return ''
     const s = await stat(target).catch(() => null)
     if (!s || s.isDirectory() || s.size > 512 * 1024) return ''
-    return readFile(target, 'utf8').catch(() => '')
+    return ctx.storage.readText(target).catch(() => '')
   }
 
   /** 双链解析：[[名称]] → 目标节点 id（同目录或全项目匹配）。 */

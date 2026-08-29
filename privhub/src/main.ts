@@ -23,6 +23,7 @@ import * as admin from '../plugins/privhub-admin/src/index.ts'
 import * as shell from '../plugins/privhub-shell/server/index.ts'
 
 /* ---- L2 能力 Service ---- */
+import * as svcStorage from '../plugins/privhub-svc-storage/src/index.ts'
 import * as svcAudit from '../plugins/privhub-svc-audit/src/index.ts'
 import * as svcAcl from '../plugins/privhub-svc-acl/src/index.ts'
 import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
@@ -71,8 +72,9 @@ async function main(): Promise<void> {
     pluginsDir: join(rootDir, 'plugins'),
   })
 
-  /* 2. L2 能力 Service（先于 L1/L3 挂载：L1 的 files/trash/admin/auth 与 L3 的
-   *    admin-audit 均 inject 'audit'，依赖先于消费方注册） */
+  /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
+   *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
+  await mount(svcStorage, { enabled: true, keyFile: '', auditMagic: 'PHAUD1\0' })
   await mount(svcAudit, { file: '', retentionDays: 60 })
   await mount(svcAcl, { file: '' })
   await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })

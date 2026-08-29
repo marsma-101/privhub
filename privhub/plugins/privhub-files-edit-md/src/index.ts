@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-edit-md'
-export const inject = ['privhub', 'audit']
+export const inject = ['privhub', 'audit', 'storage']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const VERSIONS_DIR = join(rootDir, 'data', 'doc-versions')
@@ -37,13 +37,12 @@ const MAX_VERSIONS = 20
 interface VersionRec { at: number; file: string }
 type VersionIndex = Record<string, VersionRec[]> // key: project + '::' + path
 
-async function loadIndex(): Promise<VersionIndex> {
+async function loadIndex(storage: { readText: (f: string) => Promise<string> }): Promise<VersionIndex> {
   if (!existsSync(INDEX_FILE)) return {}
-  try { return JSON.parse(await readFile(INDEX_FILE, 'utf8')) as VersionIndex } catch { return {} }
+  try { return JSON.parse(await storage.readText(INDEX_FILE)) as VersionIndex } catch { return {} }
 }
-async function saveIndex(index: VersionIndex): Promise<void> {
-  await mkdir(dirname(INDEX_FILE), { recursive: true })
-  await writeFile(INDEX_FILE, JSON.stringify(index, null, 2), 'utf8')
+async function saveIndex(storage: { writeText: (f: string, d: string) => Promise<void> }, index: VersionIndex): Promise<void> {
+  await storage.writeText(INDEX_FILE, JSON.stringify(index, null, 2))
 }
 
 function isMd(path: string): boolean {
@@ -59,18 +58,18 @@ export function apply(ctx: Context): void {
     if (rec) ctx.emit('audit:logged', rec)
   }
 
-  /** 版本存档：把当前文件内容快照存入版本库（上限 MAX_VERSIONS）。 */
+  /** 版本存档：把当前文件内容快照存入版本库（上限 MAX_VERSIONS；S7 版本快照同样加密）。 */
   async function snapshot(project: string, path: string): Promise<void> {
     const target = svc.resolveInProject(project, path)
     if (target === null || !existsSync(target)) return
     const at = Date.now()
     const hash = createHash('sha1').update(project + '::' + path).digest('hex').slice(0, 8)
     const file = `${hash}_${at}.md`
-    const body = await readFile(target)
+    const body = await ctx.storage.readBuffer(target)
     await mkdir(VERSIONS_DIR, { recursive: true })
-    await writeFile(join(VERSIONS_DIR, file), body)
+    await ctx.storage.writeBuffer(join(VERSIONS_DIR, file), body)
     const key = project + '::' + path
-    const index = await loadIndex()
+    const index = await loadIndex(ctx.storage)
     const list = index[key] ?? []
     list.push({ at, file })
     // 超限删最旧（文件 + 记录）
@@ -79,7 +78,7 @@ export function apply(ctx: Context): void {
       if (old) await unlink(join(VERSIONS_DIR, old.file)).catch(() => {})
     }
     index[key] = list
-    await saveIndex(index)
+    await saveIndex(ctx.storage, index)
   }
 
   /* ---- 读取 .md ---- */
@@ -97,7 +96,7 @@ export function apply(ctx: Context): void {
         if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文档不存在' })
         const s = await stat(target)
         if (s.isDirectory()) return json(res, 400, { ok: false, error: '目标为文件夹' })
-        json(res, 200, { ok: true, doc: await readFile(target, 'utf8'), mtime: s.mtimeMs })
+        json(res, 200, { ok: true, doc: await ctx.storage.readText(target), mtime: s.mtimeMs })
         return
       }
       if (req.method !== 'PUT') return json(res, 405, { ok: false, error: 'method not allowed' })
@@ -125,7 +124,7 @@ export function apply(ctx: Context): void {
         }
       }
       await snapshot(project, path) // 保存前存档上一版
-      await writeFile(target, doc, 'utf8')
+      await ctx.storage.writeText(target, doc)
       const s2 = await stat(target)
       ctx.emit('file:saved', { project, path, doc })
       void audit(u, 'doc-save', project + '/' + path, 'bytes=' + Buffer.byteLength(doc, 'utf8'))
@@ -144,7 +143,7 @@ export function apply(ctx: Context): void {
       const project = url.searchParams.get('project') ?? ''
       const path = url.searchParams.get('path') ?? ''
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-      const index = await loadIndex()
+      const index = await loadIndex(ctx.storage)
       const list = (index[project + '::' + path] ?? []).slice().reverse()
       json(res, 200, { ok: true, versions: list })
     } catch (e) {
@@ -165,15 +164,15 @@ export function apply(ctx: Context): void {
       const at = Number(body.version ?? 0)
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
       if (!isMd(path)) return json(res, 400, { ok: false, error: '仅支持 .md 文档' })
-      const index = await loadIndex()
+      const index = await loadIndex(ctx.storage)
       const list = index[project + '::' + path] ?? []
       const rec = list.find((v) => v.at === at)
       if (!rec) return json(res, 404, { ok: false, error: '版本不存在' })
-      const body2 = await readFile(join(VERSIONS_DIR, rec.file))
+      const body2 = await ctx.storage.readBuffer(join(VERSIONS_DIR, rec.file))
       const target = svc.resolveInProject(project, path)
       if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
       await snapshot(project, path) // 回滚前先存档当前版（回滚可逆）
-      await writeFile(target, body2, 'utf8')
+      await ctx.storage.writeBuffer(target, body2)
       ctx.emit('file:saved', { project, path, doc: body2.toString('utf8') })
       void audit(u, 'doc-restore', project + '/' + path, 'version@' + new Date(at).toISOString())
       json(res, 200, { ok: true })

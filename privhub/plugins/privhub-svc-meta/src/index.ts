@@ -108,17 +108,14 @@ export class MetaService extends Service {
   async load(): Promise<void> {
     if (!existsSync(this.file)) { this.data = {}; return }
     try {
-      const raw = await readFile(this.file, 'utf8')
+      const raw = await this.ctx.storage.readText(this.file)
       this.data = JSON.parse(raw) as MetaData
     } catch { this.data = {} }
   }
 
-  /** A12：原子写（临时文件 + rename），避免整文件覆写中途崩溃损坏。 */
+  /** A12+S7：原子写 + 静态加密（经 ctx.storage 透明加解密）。 */
   private async atomicWrite(file: string, data: string): Promise<void> {
-    await mkdir(dirname(file), { recursive: true })
-    const tmp = file + '.tmp'
-    await writeFile(tmp, data, 'utf8')
-    await rename(tmp, file)
+    await this.ctx.storage.writeText(file, data)
   }
 
   private async save(): Promise<void> {
@@ -133,7 +130,7 @@ export class MetaService extends Service {
       return
     }
     try {
-      const raw = await readFile(this.templatesFile, 'utf8')
+      const raw = await this.ctx.storage.readText(this.templatesFile)
       const parsed = JSON.parse(raw) as DocTemplate[]
       this.templatesData = Array.isArray(parsed) ? parsed : []
     } catch { this.templatesData = BUILTIN_TEMPLATES.map((t) => ({ ...t })) }
@@ -225,6 +222,7 @@ export class MetaService extends Service {
 
 /** 插件挂载：注册 MetaService 到 ctx.meta。 */
 export const name = 'privhub-svc-meta'
+export const inject = ['storage']
 export function apply(ctx: Context, config: Config): void {
   new MetaService(ctx, config)
 }

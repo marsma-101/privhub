@@ -67,6 +67,7 @@ export class AuditService extends Service {
   private readonly file: string
   private readonly ttlMs: number
   private readonly maxEntries: number
+  private blockReady = false
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'audit')
@@ -77,7 +78,26 @@ export class AuditService extends Service {
     this.maxEntries = 200_000
   }
 
-  /** 追加一条审计记录（自动带 id/at，并顺带清理过期条目）。 */
+  /** S7：惰性把明文 JSONL 迁移为加密块格式（首次写入时检查文件头）。 */
+  private async ensureBlockFormat(): Promise<void> {
+    if (this.blockReady) return
+    if (existsSync(this.file)) {
+      const fh = await import('node:fs/promises').then((m) => m.open(this.file, 'r'))
+      try {
+        const head = Buffer.alloc(8)
+        const { bytesRead } = await fh.read(head, 0, 8, 0)
+        if (bytesRead === 8 && head.toString('utf8') === 'PHAUD1\0') { this.blockReady = true; return }
+      } finally { await fh.close() }
+      // 明文 JSONL → 逐行加密块，覆写
+      const raw = await readFile(this.file, 'utf8')
+      const lines = raw.split('\n').filter((l) => l.trim() !== '')
+      const blocks = await Promise.all(lines.map((l) => this.ctx.storage.auditEncryptBlock(l)))
+      await writeFile(this.file, Buffer.concat(blocks))
+    }
+    this.blockReady = true
+  }
+
+  /** 追加一条审计记录（自动带 id/at，并顺带清理过期条目；S7 记录级加密块追加）。 */
   async log(entry: Omit<AuditEntry, 'id' | 'at'>): Promise<AuditEntry> {
     const rec: AuditEntry = {
       ...entry,
@@ -85,7 +105,9 @@ export class AuditService extends Service {
       at: Date.now(),
     }
     await mkdir(dirname(this.file), { recursive: true })
-    await appendFile(this.file, JSON.stringify(rec) + '\n', 'utf8')
+    await this.ensureBlockFormat()
+    const block = await this.ctx.storage.auditEncryptBlock(JSON.stringify(rec))
+    await appendFile(this.file, block)
     // 低频清理：每 200 条触发一次过期清理，避免每次写入都重读文件
     if (Math.floor(Date.now() / 1000) % 200 === 0) await this.prune()
     return rec
@@ -114,15 +136,14 @@ export class AuditService extends Service {
     return '\uFEFF' + head + '\n' + lines.join('\n')
   }
 
-  /** 读取全部条目（文件不存在返回空）。 */
+  /** 读取全部条目（文件不存在返回空；S7 解密块解析，兼容旧明文）。 */
   private async readAll(): Promise<AuditEntry[]> {
     if (!existsSync(this.file)) return []
     try {
-      const raw = await readFile(this.file, 'utf8')
+      const lines = await this.ctx.storage.auditDecryptAll(this.file)
       const out: AuditEntry[] = []
-      for (const line of raw.split('\n')) {
-        if (line.trim() === '') continue
-        try { out.push(JSON.parse(line) as AuditEntry) } catch { /* 跳过损坏行 */ }
+      for (const line of lines) {
+        try { out.push(JSON.parse(line) as AuditEntry) } catch { /* 跳过损坏块 */ }
       }
       return out
     } catch { return [] }
@@ -136,13 +157,16 @@ export class AuditService extends Service {
     let kept = all.filter((e) => now - e.at <= this.ttlMs)
     if (kept.length > this.maxEntries) kept = kept.slice(kept.length - this.maxEntries)
     if (kept.length !== all.length) {
-      await writeFile(this.file, kept.map((e) => JSON.stringify(e)).join('\n') + (kept.length ? '\n' : ''), 'utf8')
+      // S7：清理后整体重写为加密块
+      const blocks = await Promise.all(kept.map((e) => this.ctx.storage.auditEncryptBlock(JSON.stringify(e))))
+      await writeFile(this.file, Buffer.concat(blocks))
     }
   }
 }
 
 /** 插件挂载：注册 AuditService 到 ctx.audit。 */
 export const name = 'privhub-svc-audit'
+export const inject = ['storage']
 export function apply(ctx: Context, config: Config): void {
   const svc = new AuditService(ctx, config)
   ctx.on('dispose', () => { void svc.prune() })

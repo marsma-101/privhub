@@ -18,7 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-favorites'
-export const inject = ['privhub']
+export const inject = ['privhub', 'storage']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -34,16 +34,14 @@ interface FavData {
   [username: string]: FavoriteEntry[]
 }
 
-async function loadAll(): Promise<FavData> {
+async function loadAll(storage: { readText: (f: string) => Promise<string> }): Promise<FavData> {
   const file = join(rootDir, 'data', 'favorites.json')
   if (!existsSync(file)) return {}
-  try { return JSON.parse(await readFile(file, 'utf8')) as FavData } catch { return {} }
+  try { return JSON.parse(await storage.readText(file)) as FavData } catch { return {} }
 }
 
-async function saveAll(data: FavData): Promise<void> {
-  const file = join(rootDir, 'data', 'favorites.json')
-  await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(data, null, 2), 'utf8')
+async function saveAll(storage: { writeText: (f: string, d: string) => Promise<void> }, data: FavData): Promise<void> {
+  await storage.writeText(join(rootDir, 'data', 'favorites.json'), JSON.stringify(data, null, 2))
 }
 
 export function apply(ctx: Context): void {
@@ -52,7 +50,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/favorites', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    const all = await loadAll()
+    const all = await loadAll(ctx.storage)
     const list = all[u.username] ?? []
 
     if (req.method === 'GET') {
@@ -66,7 +64,7 @@ export function apply(ctx: Context): void {
       const path = String(body.path ?? '')
       const next = list.filter((e) => !(e.project === project && e.path === path))
       all[u.username] = next
-      await saveAll(all)
+      await saveAll(ctx.storage, all)
       json(res, 200, { ok: true, favorites: next })
       return
     }
@@ -81,7 +79,7 @@ export function apply(ctx: Context): void {
     if (dup) return json(res, 200, { ok: true, favorites: list, already: true })
     const next = [{ project, path, name, isDir: body.isDir === true, at: Date.now() }, ...list]
     all[u.username] = next
-    await saveAll(all)
+    await saveAll(ctx.storage, all)
     json(res, 200, { ok: true, favorites: next })
   }, 'favorites')
 }

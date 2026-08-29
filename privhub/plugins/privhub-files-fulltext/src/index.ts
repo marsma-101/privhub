@@ -18,7 +18,7 @@
  * @module privhub-files-fulltext
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join, extname, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
@@ -26,7 +26,7 @@ import { json } from '../../privhub-core/src/index'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-files-fulltext'
-export const inject = ['privhub', 'search', 'audit']
+export const inject = ['privhub', 'storage', 'search', 'audit']
 
 /** 参与全文索引的文本扩展名（与 core 预览文本集一致，另加常见文档类）。 */
 const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql', 'markdown'])
@@ -47,7 +47,7 @@ export function apply(ctx: Context): void {
     if (!s || s.isDirectory() || s.size > MAX_BYTES) return
     const ext = extname(target).slice(1).toLowerCase()
     if (!TEXT_EXTS.has(ext)) return
-    const text = await readFile(target, 'utf8').catch(() => '')
+    const text = await ctx.storage.readText(target).catch(() => '')
     await search.index({ id: docId(project, path), text })
   }
 

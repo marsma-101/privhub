@@ -85,15 +85,14 @@ export class AclService extends Service {
   async load(): Promise<void> {
     if (!existsSync(this.file)) { this.rules = []; return }
     try {
-      const raw = await readFile(this.file, 'utf8')
+      const raw = await this.ctx.storage.readText(this.file)
       const parsed = JSON.parse(raw) as { rules?: AclRule[] }
       this.rules = Array.isArray(parsed.rules) ? parsed.rules : []
     } catch { this.rules = [] }
   }
 
   private async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, JSON.stringify({ rules: this.rules }, null, 2), 'utf8')
+    await this.ctx.storage.writeText(this.file, JSON.stringify({ rules: this.rules }, null, 2))
   }
 
   /** 新增/替换一条规则（同 project+path+role+action 视为覆盖）。 */
@@ -166,6 +165,7 @@ export class AclService extends Service {
 
 /** 插件挂载：注册 AclService 到 ctx.acl。 */
 export const name = 'privhub-svc-acl'
+export const inject = ['storage']
 export function apply(ctx: Context, config: Config): void {
   new AclService(ctx, config)
 }

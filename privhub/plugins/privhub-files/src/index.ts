@@ -7,15 +7,14 @@
  * @module privhub-files
  */
 
-import { writeFile, readFile, stat, rename, unlink } from 'node:fs/promises'
-import { createWriteStream } from 'node:fs'
+import { writeFile, stat, rename, unlink } from 'node:fs/promises'
 import { join, resolve, extname, sep, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files'
-export const inject = ['privhub', 'audit']
+export const inject = ['privhub', 'audit', 'storage']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
@@ -67,9 +66,9 @@ export function apply(ctx: Context): void {
     const project = url.searchParams.get('project') ?? ''
     const path = url.searchParams.get('path') ?? ''
     if (!svc.canAccess(u, project)) { res.writeHead(403); res.end('forbidden'); return }
-    const base = resolve(svc.dataRoot, project)
-    const target = resolve(base, path)
-    if (target === base || !target.startsWith(base + sep) || !existsSync(target)) { res.writeHead(404); res.end('not found'); return }
+    // S7 安全加固：realpath 校验防 junction/symlink 穿越
+    const target = await svc.resolveReal(project, path)
+    if (target === null || !existsSync(target)) { res.writeHead(404); res.end('not found'); return }
     const s = await stat(target)
     if (s.isDirectory()) { res.writeHead(404); res.end('not found'); return }
     const ext = extname(target).slice(1).toLowerCase()
@@ -77,7 +76,8 @@ export function apply(ctx: Context): void {
       png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
       svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', pdf: 'application/pdf',
     }
-    const body = await readFile(target)
+    // S7：预览原始字节流解密读（图片/PDF 二进制，密文/明文自动识别）
+    const body = await ctx.storage.readBuffer(target)
     // A13：SVG 可携带脚本 → 沙箱响应头禁止脚本执行；其余类型加 nosniff
     const headers: Record<string, string | number> = {
       'content-type': mime[ext] ?? 'application/octet-stream',
@@ -101,28 +101,33 @@ export function apply(ctx: Context): void {
       const name = url.searchParams.get('name') ?? ''
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限上传到该项目' })
       if (!svc.isValidName(name)) return json(res, 400, { ok: false, error: '文件名无效' })
-      const dir = svc.resolveInProject(project, subPath)
+      // S7 安全加固：realpath 校验防 junction 目录写穿越
+      const dir = await svc.resolveReal(project, subPath)
       if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
-      // A11：流式落盘（写 .part 临时文件 → rename），不整读进内存；超限中断并清理
+      // A11+S7：流式加密落盘（storage.createWriteStream 内部写密文头+加密流+末尾 tag），不整读进内存；超限中断清理
       const target = join(dir, name)
       const tmp = target + '.part'
       const size = await new Promise<number>((ok, fail) => {
         let written = 0
         let aborted = false
-        const ws = createWriteStream(tmp, { flags: 'w' })
-        ws.on('error', (e) => { aborted = true; fail(e) })
-        req.on('data', (c: Buffer) => {
-          written += c.length
-          if (written > MAX_UPLOAD_BYTES && !aborted) {
-            aborted = true
-            ws.destroy()
-            req.destroy()
-            fail(new Error('文件过大（超过 2GB 上限）'))
-          }
-        })
-        req.on('error', (e) => { if (!aborted) { aborted = true; ws.destroy(); fail(e) } })
-        req.pipe(ws)
-        ws.on('finish', () => { if (!aborted) ok(written) })
+        void ctx.storage.createWriteStream(tmp).then(({ stream, done }) => {
+          stream.on('error', (e) => { aborted = true; fail(e) })
+          req.on('data', (c: Buffer) => {
+            written += c.length
+            if (written > MAX_UPLOAD_BYTES && !aborted) {
+              aborted = true
+              ;(stream as NodeJS.WritableStream).destroy()
+              req.destroy()
+              fail(new Error('文件过大（超过 2GB 上限）'))
+            }
+          })
+          req.on('error', (e) => { if (!aborted) { aborted = true; (stream as NodeJS.WritableStream).destroy(); fail(e) } })
+          req.pipe(stream as NodeJS.WritableStream)
+          ;(stream as NodeJS.WritableStream).on('finish', () => {
+            // 等全部密文（含 tag）落盘后再完成
+            void done.then(() => { if (!aborted) ok(written) }, (e) => fail(e))
+          })
+        }).catch((e) => fail(e))
       }).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
       await rename(tmp, target)
       json(res, 200, { ok: true, size })
@@ -205,15 +210,16 @@ export function apply(ctx: Context): void {
     const project = url.searchParams.get('project') ?? ''
     const path = url.searchParams.get('path') ?? ''
     if (!svc.canAccess(u, project)) { res.writeHead(403); res.end('forbidden'); return }
-    const base = resolve(svc.dataRoot, project)
-    const target = resolve(base, path)
-    if (target === base || !target.startsWith(base + sep) || !existsSync(target)) { res.writeHead(404); res.end('not found'); return }
+    // S7 安全加固：realpath 校验防 junction/symlink 穿越
+    const target = await svc.resolveReal(project, path)
+    if (target === null || !existsSync(target)) { res.writeHead(404); res.end('not found'); return }
     const s = await stat(target)
     if (s.isDirectory()) { res.writeHead(400); res.end('cannot download directory'); return }
     const name = basename(target)
     // RFC 5987：filename* 支持中文；同时保留 ASCII 兜底
     const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))
-    const body = await readFile(target)
+    // S7：下载解密读
+    const body = await ctx.storage.readBuffer(target)
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
       'content-disposition': "attachment; filename*=UTF-8''" + encoded + '; filename="download"',

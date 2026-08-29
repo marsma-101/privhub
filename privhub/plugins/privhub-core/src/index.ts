@@ -15,7 +15,7 @@
  * @module privhub-core
  */
 
-import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rmdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rmdir, realpath } from 'node:fs/promises'
 import { join, resolve, extname, sep, dirname, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
@@ -24,7 +24,7 @@ import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 export const name = 'privhub-core'
-export const inject = ['webServer']
+export const inject = ['webServer', 'storage']
 
 export type Role = 'admin' | 'user'
 
@@ -219,9 +219,9 @@ export class PrivHubStore extends Service {
           { username: 'user1', password: hashPassword('user123'), displayName: '普通员工', role: 'user', projects: ['公共', 'A项目'] },
         ],
       }
-      await writeFile(this.usersFile, JSON.stringify(initial, null, 2), 'utf8')
+      await this.ctx.storage.writeText(this.usersFile, JSON.stringify(initial, null, 2))
     }
-    const raw = await readFile(this.usersFile, 'utf8')
+    const raw = await this.ctx.storage.readText(this.usersFile)
     const parsed = JSON.parse(raw) as { users: UserRecord[] }
     this.users = new Map()
     for (const u of parsed.users) {
@@ -236,7 +236,7 @@ export class PrivHubStore extends Service {
   async loadSessions(): Promise<void> {
     if (existsSync(this.sessionsFile)) {
       try {
-        const raw = await readFile(this.sessionsFile, 'utf8')
+        const raw = await this.ctx.storage.readText(this.sessionsFile)
         const parsed = JSON.parse(raw) as Record<string, string | SessionEntry>
         this.sessions = new Map()
         for (const [token, v] of Object.entries(parsed)) {
@@ -251,12 +251,9 @@ export class PrivHubStore extends Service {
     await this.atomicWrite(this.sessionsFile, JSON.stringify(Object.fromEntries(this.sessions), null, 2))
   }
 
-  /** A12：原子写（临时文件 + rename），避免整文件覆写中途崩溃导致数据损坏。 */
+  /** A12+S7：原子写 + 静态加密（经 ctx.storage 透明加解密，密文/明文自动识别）。 */
   private async atomicWrite(file: string, data: string): Promise<void> {
-    await mkdir(dirname(file), { recursive: true })
-    const tmp = file + '.tmp'
-    await writeFile(tmp, data, 'utf8')
-    await rename(tmp, file)
+    await this.ctx.storage.writeText(file, data)
   }
 
   /* ---------- 权限辅助 ---------- */
@@ -312,6 +309,19 @@ export class PrivHubStore extends Service {
     return target
   }
 
+  /** 安全解析 + realpath 防 junction/symlink 穿越（读取/写入类接口调用）。
+   *  字符串校验通过后仍可能经 junction 指向数据根之外（如 data/），必须二次校验。 */
+  async resolveReal(project: string, relPath: string): Promise<string | null> {
+    const target = this.resolveInProject(project, relPath)
+    if (target === null) return null
+    try {
+      const base = resolve(this.dataRoot, project)
+      const [rb, rt] = await Promise.all([realpath(base), realpath(target)])
+      if (rt !== rb && !rt.startsWith(rb + sep)) return null
+      return target
+    } catch { return null }
+  }
+
   /** A14/A22：并行 stat（Promise.all，千级目录不串行卡顿）；mtime 返回完整 ISO 时间戳。 */
   async listFiles(project: string, subPath = ''): Promise<{ name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[]> {
     const dir = this.resolveInProject(project, subPath)
@@ -322,7 +332,10 @@ export class PrivHubStore extends Service {
       const full = join(dir, e.name)
       try {
         const s = await stat(full)
-        return { name: e.name, isDir: s.isDirectory(), size: s.isDirectory() ? 0 : s.size, mtime: s.mtime.toISOString() }
+        // S7：密文文件大小减 36（20 字节头 + 16 字节 GCM tag），展示明文体积
+        let size = s.isDirectory() ? 0 : s.size
+        if (!s.isDirectory() && await this.ctx.storage.isEncrypted(full)) size = Math.max(0, size - 36)
+        return { name: e.name, isDir: s.isDirectory(), size, mtime: s.mtime.toISOString() }
       } catch { return null }
     }))
     const out: { name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[] = []
@@ -349,8 +362,9 @@ export class PrivHubStore extends Service {
     const ext = extname(target).slice(1).toLowerCase()
     const textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql']
     const maxTextBytes = 512 * 1024
-    if (textExts.includes(ext) && s.size <= maxTextBytes) {
-      return { data: await readFile(target, 'utf8'), type: 'text' }
+    if (textExts.includes(ext) && s.size <= maxTextBytes + 20) {
+      // S7：文本预览走解密读（密文/明文自动识别）
+      return { data: await this.ctx.storage.readText(target), type: 'text' }
     }
     const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']
     if (imgExts.includes(ext)) return { data: '', type: 'image' }
@@ -414,7 +428,7 @@ export class PrivHubStore extends Service {
   async loadTrash(): Promise<TrashRecord[]> {
     if (!existsSync(this.trashFile)) return []
     try {
-      const raw = await readFile(this.trashFile, 'utf8')
+      const raw = await this.ctx.storage.readText(this.trashFile)
       return JSON.parse(raw) as TrashRecord[]
     } catch { return [] }
   }
