@@ -577,6 +577,8 @@
       else if (view === 'settings') { window.PrivHub.openSettings && window.PrivHub.openSettings() }
       else if (view === 'acl') { window.PrivHub.openAcl && window.PrivHub.openAcl() }
       else if (view === 'audit') { window.PrivHub.openAudit && window.PrivHub.openAudit() }
+      else if (view === 'tags') { window.PrivHub.openTags && window.PrivHub.openTags() }
+      else if (view === 'template') { window.PrivHub.openTemplate && window.PrivHub.openTemplate() }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -591,6 +593,8 @@
           settingsOpen: false,
           aclOpen: false,
           auditOpen: false,
+          tagsOpen: false,
+          templateOpen: false,
           adminOpen: false,
         }
       },
@@ -665,6 +669,8 @@
         window.PrivHub.openSettings = () => { self.settingsOpen = true }
         window.PrivHub.openAcl = () => { self.aclOpen = true }
         window.PrivHub.openAudit = () => { self.auditOpen = true }
+        window.PrivHub.openTags = () => { self.tagsOpen = true }
+        window.PrivHub.openTemplate = () => { self.templateOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -733,6 +739,12 @@
 
           <!-- Audit panel (F15 admin-audit-panel plugin client) -->
           <component v-for="c in slotComps.audit" :is="c" :key="c.name" v-if="auditOpen && slotComps.audit && slotComps.audit.length" @close="auditOpen = false"></component>
+
+          <!-- Tags modal (F19 files-tags plugin client) -->
+          <component v-for="c in slotComps.tags" :is="c" :key="c.name" v-if="tagsOpen && slotComps.tags && slotComps.tags.length" @close="tagsOpen = false"></component>
+
+          <!-- Template wizard (F20 files-template plugin client) -->
+          <component v-for="c in slotComps.template" :is="c" :key="c.name" v-if="templateOpen && slotComps.template && slotComps.template.length" @close="templateOpen = false"></component>
 
           <!-- 用户管理（admin 插件 client 提供） -->
           <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>
