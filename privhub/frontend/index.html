@@ -231,6 +231,29 @@
       position: fixed; right: 12px; bottom: 10px; pointer-events: none; z-index: 999;
       color: rgba(90,130,200,.55); font-size: 12px; opacity: .18;
     }
+
+    /* 全局 toast（E1/E2：替换成功/提示类 alert） */
+    #privhub-toast-host {
+      position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+      z-index: 2000; display: flex; flex-direction: column; gap: 8px; align-items: center;
+      pointer-events: none;
+    }
+    .privhub-toast {
+      background: rgba(20,28,40,.93); color: #fff; padding: 9px 18px; border-radius: 8px;
+      font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.25);
+      animation: toast-in .2s ease; max-width: 60vw; line-height: 1.5;
+    }
+    .privhub-toast.success { border-left: 3px solid #4caf7d; }
+    .privhub-toast.error { border-left: 3px solid #e06c6c; }
+    .privhub-toast.warn { border-left: 3px solid #e0a35c; }
+    .privhub-toast.out { opacity: 0; transition: opacity .3s; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: none } }
+
+    /* D2：按压反馈 / 键盘焦点可见 / 点击目标下限 */
+    .btn:active, .icon-btn:active, .small-btn:active, .u-project-chip:active { transform: scale(.97); }
+    .btn:focus-visible, .icon-btn:focus-visible, .small-btn:focus-visible,
+    input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .icon-btn, .small-btn { min-height: 32px; min-width: 32px; }
   </style>
 </head>
 <body>
@@ -257,7 +280,27 @@
       const headers = { 'content-type': 'application/json', ...(opts.headers || {}) }
       if (AUTH.token) headers['authorization'] = 'Bearer ' + AUTH.token
       const res = await fetch(path, { ...opts, headers })
+      // E6：401 统一处理（登录/注册除外，其 401 为表单预期反馈）
+      if (res.status === 401 && !path.includes('/privhub/api/login') && !path.includes('/privhub/api/register')) {
+        logout()
+        toast('登录已过期，请重新登录', 'warn')
+      }
       return res.json()
+    }
+
+    /* E1/E2：全局 toast 反馈（替换成功/提示类 alert；window.PrivHub.toast 供插件调用） */
+    function toast(msg, type = 'success') {
+      let host = document.getElementById('privhub-toast-host')
+      if (!host) {
+        host = document.createElement('div')
+        host.id = 'privhub-toast-host'
+        document.body.appendChild(host)
+      }
+      const el = document.createElement('div')
+      el.className = 'privhub-toast ' + type
+      el.textContent = msg
+      host.appendChild(el)
+      setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320) }, 2600)
     }
     function logout() {
       AUTH.token = ''; AUTH.user = null
@@ -377,8 +420,8 @@
       async delProject(name) {
         if (!confirm('将项目「' + name + '」及其所有文件移入回收站？')) return
         const r = await api('/privhub/api/project-delete', { method: 'POST', body: JSON.stringify({ name }) })
-        if (r.ok) { await nav.loadProjects(); if (nav.project === name) await nav.backToWelcome() }
-        else alert(r.error || '删除失败')
+        if (r.ok) { await nav.loadProjects(); if (nav.project === name) await nav.backToWelcome(); toast('项目「' + name + '」已移入回收站') }
+        else toast(r.error || '删除失败', 'error')
       },
 
       /* ---- 排序 / 视图 ---- */
@@ -415,19 +458,19 @@
 
       /* ---- 文件操作 ---- */
       async submitMkdir() {
-        const name = prompt('文件夹名称：')
+        const name = prompt('请输入文件夹名称：')
         if (!name) return
         const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: nav.path, name }) })
-        if (r.ok) { await nav.openDir(nav.project, nav.path); nav.refreshTree() }
-        else alert(r.error || '新建失败')
+        if (r.ok) { await nav.openDir(nav.project, nav.path); nav.refreshTree(); toast('文件夹「' + name + '」已创建') }
+        else toast(r.error || '新建失败', 'error')
       },
       async doRename(entry) {
         const rel = nav.relPathOf(entry.name)
-        const newName = prompt('重命名为：', entry.name)
+        const newName = prompt('请输入新名称：', entry.name)
         if (!newName || newName === entry.name) return
         const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, newName }) })
-        if (r.ok) await nav.openDir(nav.project, nav.path)
-        else alert(r.error || '重命名失败')
+        if (r.ok) { await nav.openDir(nav.project, nav.path); toast('已重命名为「' + newName + '」') }
+        else toast(r.error || '重命名失败', 'error')
       },
       async doDelete(entry) {
         if (!confirm('将「' + entry.name + '」移入回收站？')) return
@@ -436,8 +479,9 @@
         if (r.ok) {
           await nav.openDir(nav.project, nav.path)
           bus.emit('file:trash', { id: entry.name })
+          toast('「' + entry.name + '」已移入回收站')
         }
-        else alert(r.error || '删除失败')
+        else toast(r.error || '删除失败', 'error')
       },
       addFile() { bus.emit('upload:request') },
 
@@ -550,7 +594,7 @@
     }
 
     /* ============ 插件桥 ============ */
-    window.PrivHub = { api, AUTH, THEME, applyTheme, logout, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
+    window.PrivHub = { api, AUTH, THEME, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
     /* 图标栏角标（插件更新，骨架渲染） */
     window.PrivHub.badges = reactive({ trash: 0 })
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */

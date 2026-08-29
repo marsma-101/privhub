@@ -12,23 +12,27 @@
 const AuthView = {
   name: 'auth-view',
   data() {
-    return { mode: 'login', username: '', password: '', displayName: '', err: '' }
+    return { mode: 'login', username: '', password: '', displayName: '', err: '', busy: false }
   },
   methods: {
     async submit() {
+      if (this.busy) return // E5：提交中防重复提交
       const { api, AUTH } = window.PrivHub
       this.err = ''
-      if (this.mode === 'login') {
-        const r = await api('/privhub/api/login', { method: 'POST', body: JSON.stringify({ username: this.username, password: this.password }) })
-        if (!r.ok) { this.err = r.error || '登录失败'; return }
-        AUTH.token = r.token; AUTH.user = r.user
-        localStorage.setItem('privhub_token', r.token)
-      } else {
-        if (this.password.length < 6) { this.err = '密码至少6位'; return }
-        const r = await api('/privhub/api/register', { method: 'POST', body: JSON.stringify({ username: this.username, password: this.password, displayName: this.displayName }) })
-        if (!r.ok) { this.err = r.error || '注册失败'; return }
-        this.mode = 'login'; this.err = '注册成功，请登录'
-      }
+      this.busy = true
+      try {
+        if (this.mode === 'login') {
+          const r = await api('/privhub/api/login', { method: 'POST', body: JSON.stringify({ username: this.username, password: this.password }) })
+          if (!r.ok) { this.err = r.error || '登录失败'; return }
+          AUTH.token = r.token; AUTH.user = r.user
+          localStorage.setItem('privhub_token', r.token)
+        } else {
+          if (this.password.length < 6) { this.err = '密码至少6位'; return }
+          const r = await api('/privhub/api/register', { method: 'POST', body: JSON.stringify({ username: this.username, password: this.password, displayName: this.displayName }) })
+          if (!r.ok) { this.err = r.error || '注册失败'; return }
+          this.mode = 'login'; this.err = '注册成功，请登录'
+        }
+      } finally { this.busy = false }
     },
   },
   template: `
@@ -39,7 +43,7 @@ const AuthView = {
         <div class="field"><label>用户名</label><input v-model="username" placeholder="请输入用户名" /></div>
         <div class="field" v-if="mode === 'register'"><label>显示名（可选）</label><input v-model="displayName" placeholder="显示名" /></div>
         <div class="field"><label>密码</label><input v-model="password" type="password" @keyup.enter="submit" placeholder="请输入密码" /></div>
-        <button class="btn btn-primary" @click="submit">{{ mode === 'login' ? '登 录' : '注 册' }}</button>
+        <button class="btn btn-primary" :disabled="busy" @click="submit">{{ busy ? '提交中…' : (mode === 'login' ? '登 录' : '注 册') }}</button>
         <div class="auth-err">{{ err }}</div>
         <div class="auth-switch">
           <template v-if="mode === 'login'">

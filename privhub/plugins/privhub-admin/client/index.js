@@ -51,7 +51,7 @@ const UserAdmin = {
       if (!u) return
       if (this.resetPwdValue.length < 6) { alert('新密码至少6位'); return }
       const r = await api('/privhub/api/admin/user-reset-password', { method: 'POST', body: JSON.stringify({ username: u.username, newPassword: this.resetPwdValue }) })
-      if (r.ok) { this.resetPwdUser = null; this.resetPwdValue = ''; alert('密码已重置'); await this.load() }
+      if (r.ok) { this.resetPwdUser = null; this.resetPwdValue = ''; window.PrivHub.toast('密码已重置'); await this.load() }
       else alert(r.error || '重置失败')
     },
   },

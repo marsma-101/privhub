@@ -107,7 +107,7 @@ const AclAdmin = {
           method: 'POST',
           body: JSON.stringify({ project: this.project, path: target, target: this.selected.isDir ? 'dir' : 'file', role: this.role, mode: this.mode }),
         })
-        if (r.ok) { await this.loadRules(); alert('已保存：' + this.selTarget + ' → ' + this.modeLabel(this.mode)) }
+        if (r.ok) { await this.loadRules(); window.PrivHub.toast('已保存：' + this.selTarget + ' → ' + this.modeLabel(this.mode)) }
         else alert(r.error || '保存失败')
       } finally { this.saving = false }
     },

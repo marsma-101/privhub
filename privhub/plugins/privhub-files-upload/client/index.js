@@ -112,7 +112,10 @@ const UploadController = {
       }
       nav.uploading = false
       bus.emit('upload:done', { ok: okCount, total: files.length, fails })
-      alert('已上传 ' + okCount + '/' + files.length + ' 个文件' + (fails.length ? '，失败 ' + fails.length + ' 个' : ''))
+      // E2：上传完成改为非阻塞 toast（成功绿 / 部分失败橙）
+      if (fails.length === 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个文件')
+      else if (okCount > 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个，失败 ' + fails.length + ' 个', 'warn')
+      else window.PrivHub.toast('上传失败 ' + fails.length + ' 个文件', 'error')
       await nav.openDir(nav.project, nav.path)
     },
   },

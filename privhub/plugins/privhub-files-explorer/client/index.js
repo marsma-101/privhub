@@ -22,15 +22,10 @@ const TreeNode = {
     expanded() { return nav.isExpanded(this.project, this.path) },
     children() { return nav.childrenOf(this.project, this.path) },
     isActivePath() { return nav.project === this.project && nav.path === this.path },
-    isAdminRoot() {
-      const u = window.PrivHub.AUTH.user
-      return u && u.role === 'admin' && this.path === '' && this.depth === 0
-    },
   },
   methods: {
     onToggle() { nav.toggleTree(this.project, this.path) },
     onOpen() { nav.openDir(this.project, this.path) },
-    onDel() { nav.delProject(this.project) },
   },
   template: `
     <div>
@@ -41,7 +36,6 @@ const TreeNode = {
         <span @click="onOpen" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
           <span>{{ expanded ? '📂' : '📁' }}</span><span class="name">{{ label }}</span>
         </span>
-        <button v-if="isAdminRoot" class="small-btn danger" @click.stop="onDel" title="删除项目">🗑</button>
       </div>
       <tree-node
         v-for="c in (expanded ? children : [])"
@@ -67,6 +61,7 @@ const TreeView = {
     <div class="sidebar">
       <div class="side-head">
         <span class="side-title">📂 {{ nav.project }} · 目录</span>
+        <button v-if="isAdmin && nav.path === ''" class="small-btn danger" style="padding:2px 8px;font-size:12px" @click="nav.delProject(nav.project)" title="删除项目">🗑 删除项目</button>
       </div>
       <div class="tree-item" :class="{ active: nav.path === '' }" @click="nav.openDir(nav.project, '')">
         <span>🏠</span><span class="name">项目根目录</span>
@@ -92,6 +87,7 @@ const FilePanel = {
       nav,
       ctxMenu: null,
       pressTimer: null,
+      batchBusy: false, // E5：批量操作进行中禁用按钮防连点
     }
   },
   computed: {
@@ -140,7 +136,7 @@ const FilePanel = {
         name: e.name,
         isDir: e.isDir,
       })
-      alert('已加入收藏 ⭐')
+      window.PrivHub.toast('已加入收藏 ⭐')
     },
     /* 下载单个文件（fetch blob + a 标签，带 token 鉴权） */
     async doDownload(entry) {
@@ -164,28 +160,35 @@ const FilePanel = {
     async batchDownload() {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       const files = names.map(n => nav.entries.find(e => e.name === n)).filter(e => e && !e.isDir)
-      if (files.length === 0) { alert('所选项目中无文件可下载'); return }
-      for (const e of files) await this.doDownload(e)
+      if (files.length === 0) { window.PrivHub.toast('所选项目中无文件可下载', 'warn'); return }
+      this.batchBusy = true
+      try {
+        for (const e of files) await this.doDownload(e)
+        window.PrivHub.toast('已开始下载 ' + files.length + ' 个文件')
+      } finally { this.batchBusy = false }
     },
     /* 批量移动所选（目标目录必须已存在；同卷 rename） */
     async batchMove() {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       if (!names.length) return
-      const toDir = prompt('移动到哪个目录？（相对当前项目根，留空 = 项目根）')
+      const toDir = prompt('请输入目标目录（相对当前项目根，留空 = 项目根）：')
       if (toDir === null) return
       const dir = toDir.trim()
+      this.batchBusy = true
       let okCount = 0
-      for (const n of names) {
-        const rel = nav.relPathOf(n)
-        try {
-          const r = await api('/privhub/api/move', { method: 'POST', body: JSON.stringify({ project: nav.project, from: rel, toDir: dir }) })
-          if (r.ok) okCount++
-          else { alert('移动「' + n + '」失败：' + (r.error || '未知错误')); break }
-        } catch { alert('移动「' + n + '」失败'); break }
-      }
+      try {
+        for (const n of names) {
+          const rel = nav.relPathOf(n)
+          try {
+            const r = await api('/privhub/api/move', { method: 'POST', body: JSON.stringify({ project: nav.project, from: rel, toDir: dir }) })
+            if (r.ok) okCount++
+            else { window.PrivHub.toast('移动「' + n + '」失败：' + (r.error || '未知错误'), 'error'); break }
+          } catch { window.PrivHub.toast('移动「' + n + '」失败', 'error'); break }
+        }
+      } finally { this.batchBusy = false }
       nav.checked = {}
       if (okCount > 0) {
-        alert('已移动 ' + okCount + '/' + names.length + ' 项')
+        window.PrivHub.toast('已移动 ' + okCount + '/' + names.length + ' 项')
         await nav.openDir(nav.project, nav.path)
       }
     },
@@ -195,11 +198,11 @@ const FilePanel = {
       if (!e) return
       // 在长按的文件夹内新建子文件夹：临时切到该目录创建
       const rel = nav.relPathOf(e.name)
-      const name = prompt('在「' + e.name + '」中新建文件夹名称：')
+      const name = prompt('请输入在「' + e.name + '」中新建的文件夹名称：')
       if (!name) return
       const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, name }) })
-      if (r.ok) { nav.refreshTree(); nav.openDir(nav.project, rel) }
-      else alert(r.error || '新建失败')
+      if (r.ok) { nav.refreshTree(); nav.openDir(nav.project, rel); window.PrivHub.toast('文件夹「' + name + '」已创建') }
+      else window.PrivHub.toast(r.error || '新建失败', 'error')
     },
     doSubmitMkdir() { nav.submitMkdir() },
     doAddFile() { nav.addFile() },
@@ -221,13 +224,24 @@ const FilePanel = {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       if (!names.length) return
       if (!confirm('将选中的 ' + names.length + ' 项移入回收站？')) return
-      for (const n of names) {
-        const rel = nav.relPathOf(n)
-        try { await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel }) }) } catch { /* 单条失败继续 */ }
-      }
+      this.batchBusy = true
+      let okCount = 0
+      try {
+        for (const n of names) {
+          const rel = nav.relPathOf(n)
+          try { const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel }) }); if (r.ok) okCount++ } catch { /* 单条失败继续 */ }
+        }
+      } finally { this.batchBusy = false }
       nav.checked = {}
       await nav.openDir(nav.project, nav.path)
       bus.emit('trash:changed', {})
+      window.PrivHub.toast('已将 ' + okCount + '/' + names.length + ' 项移入回收站')
+    },
+    /* E3：长按功能发现性——首次进入面板提示一次 */
+    maybeHint() {
+      if (localStorage.getItem('privhub_longpress_hint')) return
+      localStorage.setItem('privhub_longpress_hint', '1')
+      window.PrivHub.toast('提示：长按文件或文件夹可呼出操作菜单', 'warn')
     },
   },
   template: `
@@ -246,9 +260,9 @@ const FilePanel = {
         <template v-if="checkedCount() > 0">
           <button class="icon-btn" @click="selectAll">☑ 全选/取消</button>
           <button class="icon-btn" @click="clearChecked">取消选择</button>
-          <button class="icon-btn" @click="batchDownload">⬇ 下载所选</button>
-          <button class="icon-btn" @click="batchMove">📦 移动所选</button>
-          <button class="icon-btn" style="color:var(--danger)" @click="batchDelete">🗑 删除所选 ({{ checkedCount() }})</button>
+          <button class="icon-btn" :disabled="batchBusy" @click="batchDownload">{{ batchBusy ? '处理中…' : '⬇ 下载所选' }}</button>
+          <button class="icon-btn" :disabled="batchBusy" @click="batchMove">{{ batchBusy ? '处理中…' : '📦 移动所选' }}</button>
+          <button class="icon-btn" style="color:var(--danger)" :disabled="batchBusy" @click="batchDelete">{{ batchBusy ? '处理中…' : '🗑 删除所选 (' + checkedCount() + ')' }}</button>
         </template>
         <button class="icon-btn" @click="nav.toggleSort('name')">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
         <button class="icon-btn" @click="nav.toggleSort('size')">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
@@ -339,6 +353,7 @@ const FilePanel = {
       </div>
     </div>
   `,
+  mounted() { this.maybeHint() },
 }
 
 /* 注册：tree-node 递归组件 */
