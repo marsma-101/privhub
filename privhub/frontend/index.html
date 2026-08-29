@@ -579,6 +579,7 @@
       else if (view === 'audit') { window.PrivHub.openAudit && window.PrivHub.openAudit() }
       else if (view === 'tags') { window.PrivHub.openTags && window.PrivHub.openTags() }
       else if (view === 'template') { window.PrivHub.openTemplate && window.PrivHub.openTemplate() }
+      else if (view === 'kg') { window.PrivHub.openKg && window.PrivHub.openKg() }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -595,6 +596,7 @@
           auditOpen: false,
           tagsOpen: false,
           templateOpen: false,
+          kgOpen: false,
           adminOpen: false,
         }
       },
@@ -671,6 +673,7 @@
         window.PrivHub.openAudit = () => { self.auditOpen = true }
         window.PrivHub.openTags = () => { self.tagsOpen = true }
         window.PrivHub.openTemplate = () => { self.templateOpen = true }
+        window.PrivHub.openKg = () => { self.kgOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -745,6 +748,9 @@
 
           <!-- Template wizard (F20 files-template plugin client) -->
           <component v-for="c in slotComps.template" :is="c" :key="c.name" v-if="templateOpen && slotComps.template && slotComps.template.length" @close="templateOpen = false"></component>
+
+          <!-- KG view (F18 files-kg plugin client) -->
+          <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-if="kgOpen && slotComps.kg && slotComps.kg.length" @close="kgOpen = false"></component>
 
           <!-- 用户管理（admin 插件 client 提供） -->
           <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>

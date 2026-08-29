@@ -1,0 +1,10 @@
+{
+  "id": "privhub-files-kg",
+  "title": "知识图谱",
+  "icon": "🕸️",
+  "description": "知识图谱（F18/C17）：项目内 .md 双链 + 标签关联图，社区同色系，点击节点定位文件",
+  "slots": ["kg"],
+  "barItems": [
+    { "icon": "🕸️", "title": "知识图谱", "slot": "panel", "view": "kg" }
+  ]
+}
