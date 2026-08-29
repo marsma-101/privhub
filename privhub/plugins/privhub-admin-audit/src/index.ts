@@ -47,11 +47,13 @@ export function apply(ctx: Context): void {
     return true
   }
 
-  /* 查询接口：GET /privhub/api/audit?user=&action=&from=&to=&limit= */
+  /* 查询接口：GET /privhub/api/audit?user=&action=&project=&from=&to=&limit=
+   * 四维筛选：时间范围 / 操作类型 / 用户 / 项目（project 按 target 前缀匹配）。 */
   svc.route('/privhub/api/audit', async (req, res) => {
     if (!adminOnly(req, res)) return
     try {
       const url = new URL(req.url ?? '/', 'http://x')
+      const project = url.searchParams.get('project') || undefined
       const filter = {
         user: url.searchParams.get('user') || undefined,
         action: url.searchParams.get('action') || undefined,
@@ -59,24 +61,41 @@ export function apply(ctx: Context): void {
         to: url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined,
         limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
       }
-      json(res, 200, { ok: true, entries: await audit.query(filter) })
+      // 项目筛选在服务端按 target 前缀匹配（S1 不感知项目维度，避免改基座）；
+      // 带 project 时先取足量（5000）再过滤，最后按 limit 截断
+      const fetchLimit = project ? 5000 : (filter.limit ?? 200)
+      let entries = await audit.query({ ...filter, limit: fetchLimit })
+      if (project) {
+        entries = entries.filter((e) => e.target === project || (e.target ?? '').startsWith(project + '/'))
+        entries = entries.slice(0, filter.limit ?? 200)
+      }
+      json(res, 200, { ok: true, entries })
     } catch (e) {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '查询失败' })
     }
   }, 'audit-query')
 
-  /* 导出接口：GET /privhub/api/audit/export?user=&action=&from=&to= */
+  /* 导出接口：GET /privhub/api/audit/export?user=&action=&project=&from=&to= */
   svc.route('/privhub/api/audit/export', async (req, res) => {
     if (!adminOnly(req, res)) return
     try {
       const url = new URL(req.url ?? '/', 'http://x')
+      const project = url.searchParams.get('project') || undefined
       const filter = {
         user: url.searchParams.get('user') || undefined,
         action: url.searchParams.get('action') || undefined,
         from: url.searchParams.get('from') ? Number(url.searchParams.get('from')) : undefined,
         to: url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined,
       }
-      const csv = await audit.exportCsv(filter)
+      let entries = await audit.query({ ...filter, limit: undefined })
+      if (project) {
+        entries = entries.filter((e) => e.target === project || (e.target ?? '').startsWith(project + '/'))
+      }
+      // CSV 生成（与 S1 exportCsv 同款：UTF-8 带 BOM + 引号转义）
+      const esc = (v: string): string => '"' + String(v).replace(/"/g, '""') + '"'
+      const head = ['id', 'at', 'user', 'action', 'target', 'detail'].map(esc).join(',')
+      const lines = entries.map((e) => [e.id, new Date(e.at).toISOString(), e.user, e.action, e.target ?? '', e.detail ?? ''].map(esc).join(','))
+      const csv = '\uFEFF' + head + '\n' + lines.join('\n')
       const name = 'audit-' + new Date().toISOString().slice(0, 10) + '.csv'
       const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))
       const body = Buffer.from(csv, 'utf8')

@@ -557,6 +557,7 @@
       else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
       else if (view === 'settings') { window.PrivHub.openSettings && window.PrivHub.openSettings() }
       else if (view === 'acl') { window.PrivHub.openAcl && window.PrivHub.openAcl() }
+      else if (view === 'audit') { window.PrivHub.openAudit && window.PrivHub.openAudit() }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -570,6 +571,7 @@
           badges: window.PrivHub.badges,
           settingsOpen: false,
           aclOpen: false,
+          auditOpen: false,
           adminOpen: false,
         }
       },
@@ -643,6 +645,7 @@
         window.PrivHub.openAdmin = () => { self.adminOpen = true }
         window.PrivHub.openSettings = () => { self.settingsOpen = true }
         window.PrivHub.openAcl = () => { self.aclOpen = true }
+        window.PrivHub.openAudit = () => { self.auditOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -708,6 +711,9 @@
 
           <!-- ACL modal (F14 admin-acl plugin client) -->
           <component v-for="c in slotComps.acl" :is="c" :key="c.name" v-if="aclOpen && slotComps.acl && slotComps.acl.length" @close="aclOpen = false"></component>
+
+          <!-- Audit panel (F15 admin-audit-panel plugin client) -->
+          <component v-for="c in slotComps.audit" :is="c" :key="c.name" v-if="auditOpen && slotComps.audit && slotComps.audit.length" @close="auditOpen = false"></component>
 
           <!-- 用户管理（admin 插件 client 提供） -->
           <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>
