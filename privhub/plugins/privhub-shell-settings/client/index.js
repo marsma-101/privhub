@@ -50,8 +50,8 @@ const SettingsPanel = {
     },
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>⚙ 设置</h2>
         <div class="modal-body">
           <div style="font-size:13px;color:var(--muted);margin-bottom:12px">主题风格</div>

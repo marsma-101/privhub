@@ -83,8 +83,8 @@ const TagsAdmin = {
     await this.loadCurrent()
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>🏷️ 文件标签</h2>
         <div class="modal-body">
           <!-- 当前文件标签编辑 -->

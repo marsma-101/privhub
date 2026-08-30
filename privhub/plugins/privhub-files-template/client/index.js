@@ -90,8 +90,8 @@ const TemplateDoc = {
   },
   async mounted() { await this.load() },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>📝 新建文档</h2>
         <div class="modal-body">
           <div class="field" v-if="!manage">

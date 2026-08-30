@@ -137,11 +137,10 @@ const WikiView = {
         const r = await api('/privhub/api/doc', { method: 'PUT', body: JSON.stringify({ project: this.project, path: rel, doc, baseMtime: 0 }) })
         if (r.ok) {
           this.status = ''
+          // ⑤ 视图化：创建后留在 Wiki 视图刷新渲染（不再跳走）
           await this.load()
+          nav.refreshTree && nav.refreshTree()
           window.PrivHub.toast('README.md 已创建')
-          await nav.openDir(this.project, nav.path)
-          const e = nav.entries.find((x) => x.name === 'README.md')
-          if (e) nav.selectEntry(e)
         } else {
           window.PrivHub.toast(r.error || '创建失败', 'error')
         }
@@ -159,9 +158,10 @@ const WikiView = {
         await nav.openDir(this.project, nav.path)
         const e = nav.entries.find((x) => x.name === targetName)
         if (e) nav.selectEntry(e)
-        this.status = '已定位：' + targetName
+        // ⑤ 视图化：定位 = 跳回文件视图并选中，toast 提示（status 随视图切换不可见）
+        window.PrivHub.toast('已定位：' + targetName)
       } else {
-        this.status = '未找到「' + targetName + '」（双链目标需为同目录 .md 文件）'
+        window.PrivHub.toast('未找到「' + targetName + '」（双链目标需为同目录 .md 文件）', 'error')
       }
     },
   },
@@ -169,8 +169,8 @@ const WikiView = {
     await this.loadProjects()
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>📚 知识库</h2>
         <div class="modal-body">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">

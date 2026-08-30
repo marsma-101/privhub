@@ -68,7 +68,7 @@ const TopbarUser = {
 /* ============ 图标栏容器（渲染各插件 barItems；底部固定管理组） ============ */
 const AppIconbar = {
   name: 'shell-app-iconbar',
-  data() { return { barItems, badges, nav, drawerState: window.PrivHub.drawerState || { active: null } } },
+  data() { return { barItems, badges, nav } },
   computed: {
     // 业务功能（上部）
     topItems() {
@@ -80,15 +80,15 @@ const AppIconbar = {
       const order = ['audit', 'acl', 'admin', 'settings']
       return order.map((v) => this.barItems.find((bi) => (bi.view || bi.slot) === v)).filter(Boolean)
     },
-    // 图标高亮：视图型看 nav 状态，抽屉型看 drawerState.active（当前打开的面板）
+    // 图标高亮：视图型看 nav flag，功能面板看 nav.activeView（⑤ 单一状态源）
     isActive() {
       return (bi) => {
         const v = bi.view || bi.slot
-        if (v === 'files') return nav.project !== null && !nav.trashView
+        if (v === 'files') return nav.activeView === 'files' && nav.project !== null && !nav.trashView
         if (v === 'trash') return nav.trashView
         if (v === 'search') return nav.searchView
         if (v === 'favorites') return nav.favView
-        return this.drawerState.active === v
+        return nav.activeView === v
       }
     },
   },

@@ -56,8 +56,8 @@ const UserAdmin = {
     },
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>👥 用户管理</h2>
         <div class="modal-body">
           <table class="u-table">

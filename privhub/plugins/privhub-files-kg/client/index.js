@@ -111,15 +111,16 @@ const KgView = {
       await nav.openDir(this.project, dir)
       const e = nav.entries.find((x) => x.name === node.name)
       if (e) nav.selectEntry(e)
-      this.status = '已定位：' + node.name
+      // ⑤ 视图化：定位 = 跳回文件视图并选中，toast 提示（status 会随视图切换不可见）
+      window.PrivHub.toast('已定位：' + node.name)
     },
   },
   async mounted() {
     await this.loadProjects()
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>🕸️ 知识图谱</h2>
         <div class="modal-body">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">

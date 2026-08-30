@@ -123,8 +123,8 @@ const AclAdmin = {
     await this.loadRules()
   },
   template: `
-    <div class="drawer-mask" @click.self="$emit('close')">
-      <div class="drawer">
+    <div class="view-page">
+      <div class="view-inner">
         <h2>🔒 细粒度权限（ACL）</h2>
         <div class="modal-body">
           <div class="field">

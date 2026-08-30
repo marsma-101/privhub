@@ -197,21 +197,17 @@
     .modal h2 { font-size: 16px; margin-bottom: 16px; }
     .modal-body { flex: 1; overflow-y: auto; }
     .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
-    /* 左侧功能抽屉（④：设置/用户管理/权限/审计/标签/模板/图谱/知识库）
-       嵌入 .body 布局（顶栏下方、main 左侧），与目录树侧边栏同等级同外观 */
-    .drawer-col { flex: 0 0 var(--dw, 420px); max-width: 70vw; min-width: 0; display: flex; align-items: stretch; height: 100%; overflow: hidden; }
-    .drawer-mask { flex: 1; display: flex; min-width: 0; height: 100%; animation: drawer-in .22s ease; }
-    .drawer {
-      width: 100%; height: 100%; min-width: 0; overflow: hidden;
-      background: var(--panel); padding: 12px 10px;
-      border-right: 1px solid var(--line);
-      display: flex; flex-direction: column;
+    /* 功能面板视图（⑤：设置/用户管理/权限/审计/标签/模板/图谱/知识库）
+       对齐 llm_wiki：面板 = main 全宽视图，独占主区；内容限宽居中 */
+    .view-page { height: 100%; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
+    .view-inner {
+      flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+      width: 100%; max-width: 1100px; margin: 0 auto;
+      padding: 20px 24px; background: var(--panel2);
     }
-    .drawer h2 { font-size: 16px; margin: 2px 4px 14px; }
-    /* 抽屉右缘拖拽手柄（hover 高亮，同目录树 resize-handle 形式） */
-    .drawer-resize { flex: 0 0 4px; cursor: col-resize; background: transparent; transition: background .15s; }
-    .drawer-resize:hover { background: var(--accent); opacity: .5; }
-    @keyframes drawer-in { from { transform: translateX(-100%) } to { transform: none } }
+    .view-inner h2 { font-size: 16px; margin-bottom: 16px; }
+    .view-inner .modal-body { flex: 1; min-height: 0; }
+    .view-inner .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
     .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
     .kv .k { color: var(--muted); }
 
@@ -374,6 +370,10 @@
       trashList: [],
       searchView: false,
       favView: false,
+      /* ⑤ 视图化（llm_wiki 范式）：单一 activeView 状态源，天然互斥无残留
+         'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki
+         trashView/searchView/favView 为兼容镜像（视图型测试仍可读） */
+      activeView: 'files',
       viewMode: 'grid',
       sortKey: 'name',
       sortAsc: true,
@@ -388,6 +388,17 @@
         nav.sidebarWidth = nav.sidebarWidth > 40 ? 0 : 220
         localStorage.setItem('privhub_sidebar_w', String(nav.sidebarWidth))
       },
+      /* ⑤ 视图切换（toggle）：点同一视图图标 = 回到文件视图；视图间互斥由单一状态保证 */
+      setActiveView(v) {
+        if (nav.activeView === v) v = 'files'
+        nav.activeView = v
+        // 兼容镜像：视图型标志与 activeView 同步（回收站/搜索/收藏视图入口）
+        nav.trashView = v === 'trash'
+        nav.searchView = v === 'search'
+        nav.favView = v === 'favorites'
+        // 视图切换即归零：功能视图下无需右侧预览/选中态
+        nav.rightOpen = false; nav.selected = null; nav.preview = null
+      },
 
       /* ---- 导航 ---- */
       async loadProjects() {
@@ -398,6 +409,7 @@
         nav.trashView = false
         nav.searchView = false
         nav.favView = false
+        nav.activeView = 'files'   // ⑤ 进目录即回到文件视图
         nav.project = project
         nav.path = path || ''
         nav.selected = null; nav.preview = null; nav.rightOpen = false
@@ -419,6 +431,7 @@
         nav.trashView = false
         nav.searchView = false
         nav.favView = false
+        nav.activeView = 'files'
         nav.project = null; nav.path = ''
         nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
       },
@@ -530,25 +543,20 @@
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
       },
       async openTrash() {
-        nav.trashView = true
-        nav.searchView = false
+        nav.setActiveView('trash')
         nav.project = null; nav.path = ''
-        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+        nav.entries = []
         await nav.loadTrash()
       },
       async openSearch() {
-        nav.searchView = true
-        nav.trashView = false
-        nav.favView = false
+        nav.setActiveView('search')
         nav.project = null; nav.path = ''
-        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+        nav.entries = []
       },
       async openFavorites() {
-        nav.favView = true
-        nav.searchView = false
-        nav.trashView = false
+        nav.setActiveView('favorites')
         nav.project = null; nav.path = ''
-        nav.entries = []; nav.selected = null; nav.preview = null; nav.rightOpen = false
+        nav.entries = []
       },
       async loadTrash() {
         const r = await api('/privhub/api/trash-list')
@@ -633,8 +641,6 @@
 
     /* ============ 插件桥 ============ */
     window.PrivHub = { api, AUTH, THEME, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
-    /* ④：当前打开的抽屉 view（图标栏高亮；在插件组件实例化前创建，保证响应式生效） */
-    window.PrivHub.drawerState = reactive({ active: null })
     /* 图标栏角标（插件更新，骨架渲染） */
     window.PrivHub.badges = reactive({ trash: 0 })
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */
@@ -653,18 +659,15 @@
     }
     window.PrivHub.openBarItem = (bi) => {
       const view = bi.view || bi.slot
-      if (view === 'admin') { window.PrivHub.openAdmin && window.PrivHub.openAdmin() }
-      else if (view === 'trash') { nav.openTrash() }
+      if (view === 'trash') { nav.openTrash() }
       else if (view === 'search') { nav.openSearch() }
       else if (view === 'favorites') { nav.openFavorites() }
       else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
-      else if (view === 'settings') { window.PrivHub.openSettings && window.PrivHub.openSettings() }
-      else if (view === 'acl') { window.PrivHub.openAcl && window.PrivHub.openAcl() }
-      else if (view === 'audit') { window.PrivHub.openAudit && window.PrivHub.openAudit() }
-      else if (view === 'tags') { window.PrivHub.openTags && window.PrivHub.openTags() }
-      else if (view === 'template') { window.PrivHub.openTemplate && window.PrivHub.openTemplate() }
-      else if (view === 'kg') { window.PrivHub.openKg && window.PrivHub.openKg() }
-      else if (view === 'wiki') { window.PrivHub.openWiki && window.PrivHub.openWiki() }
+      // ⑤ 功能面板 = 视图（llm_wiki 范式）：图标点击切换 activeView，再点回文件视图
+      else if (view === 'admin' || view === 'settings' || view === 'acl' || view === 'audit' ||
+               view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki') {
+        nav.setActiveView(view)
+      }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -676,15 +679,6 @@
           theme: THEME,
           nav,
           badges: window.PrivHub.badges,
-          settingsOpen: false,
-          aclOpen: false,
-          auditOpen: false,
-          tagsOpen: false,
-          templateOpen: false,
-          kgOpen: false,
-          wikiOpen: false,
-          adminOpen: false,
-          drawerWidths: {},   // 各功能抽屉宽度（client 导出的 drawerWidth，默认 420）
         }
       },
       computed: {
@@ -714,23 +708,6 @@
           document.addEventListener('mousemove', move)
           document.addEventListener('mouseup', up)
         },
-        /* ④：功能抽屉右缘拖拽调宽（clamp 280~760；按 slot 持久化，刷新保留） */
-        startDrawerResize(e, slot) {
-          e.preventDefault()
-          const startX = e.clientX
-          const startW = this.drawerWidths[slot] || 420
-          const move = (ev) => {
-            const w = Math.min(760, Math.max(280, startW + (ev.clientX - startX)))
-            this.drawerWidths[slot] = w
-          }
-          const up = () => {
-            document.removeEventListener('mousemove', move)
-            document.removeEventListener('mouseup', up)
-            localStorage.setItem('privhub_drawer_w_' + slot, String(this.drawerWidths[slot]))
-          }
-          document.addEventListener('mousemove', move)
-          document.addEventListener('mouseup', up)
-        },
       },
       async mounted() {
         applyTheme()
@@ -745,12 +722,6 @@
               try {
                 const mod = await import(p.entry)
                 const slots = (mod.default && mod.default.slots) || {}
-                // ④：抽屉宽度自声明（client 导出 drawerWidth，默认 420px；用户拖拽过的以 localStorage 优先）
-                const dw = mod.default && mod.default.drawerWidth
-                if (dw) for (const s of Object.keys(slots)) {
-                  const saved = localStorage.getItem('privhub_drawer_w_' + s)
-                  this.drawerWidths[s] = saved ? Number(saved) : dw
-                }
                 for (const [slot, comp] of Object.entries(slots)) {
                   const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
                   if (!arr.includes(comp)) arr.push(comp)
@@ -778,28 +749,18 @@
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
           if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); window.PrivHub.loadBarItems() } else { logout() }
         }
-        /* 供插件（F04 设置面板 / 图标栏分发）开关功能抽屉（④：互斥 + toggle——已开再点则关闭） */
-        const closeAllDrawers = () => {
-          self.settingsOpen = self.aclOpen = self.auditOpen = self.tagsOpen = self.templateOpen = self.kgOpen = self.wikiOpen = self.adminOpen = false
-          window.PrivHub.drawerState.active = null
-        }
-        const toggleDrawer = (view, flag) => {
-          if (self[flag]) { self[flag] = false; window.PrivHub.drawerState.active = null; return } // toggle 关闭
-          closeAllDrawers()
-          self[flag] = true
-          window.PrivHub.drawerState.active = view
-        }
-        window.PrivHub.openAdmin = () => toggleDrawer('admin', 'adminOpen')
-        window.PrivHub.openSettings = () => toggleDrawer('settings', 'settingsOpen')
-        window.PrivHub.openAcl = () => toggleDrawer('acl', 'aclOpen')
-        window.PrivHub.openAudit = () => toggleDrawer('audit', 'auditOpen')
-        window.PrivHub.openTags = () => toggleDrawer('tags', 'tagsOpen')
-        window.PrivHub.openTemplate = () => toggleDrawer('template', 'templateOpen')
-        window.PrivHub.openKg = () => toggleDrawer('kg', 'kgOpen')
-        window.PrivHub.openWiki = () => toggleDrawer('wiki', 'wikiOpen')
-        /* ④：Esc 关闭功能抽屉（嵌入布局无遮罩可点，Esc 为统一关闭方式） */
+        /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用） */
+        window.PrivHub.openAdmin = () => nav.setActiveView('admin')
+        window.PrivHub.openSettings = () => nav.setActiveView('settings')
+        window.PrivHub.openAcl = () => nav.setActiveView('acl')
+        window.PrivHub.openAudit = () => nav.setActiveView('audit')
+        window.PrivHub.openTags = () => nav.setActiveView('tags')
+        window.PrivHub.openTemplate = () => nav.setActiveView('template')
+        window.PrivHub.openKg = () => nav.setActiveView('kg')
+        window.PrivHub.openWiki = () => nav.setActiveView('wiki')
+        /* Esc 回到文件视图 */
         self._escClose = (ev) => {
-          if (ev.key === 'Escape') closeAllDrawers()
+          if (ev.key === 'Escape' && nav.activeView !== 'files') nav.setActiveView('files')
         }
         document.addEventListener('keydown', self._escClose)
       },
@@ -827,92 +788,44 @@
             <!-- 图标栏（shell 插件 app-iconbar：渲染各插件 barItems） -->
             <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
 
-            <!-- 左侧目录树（F07 files-explorer 提供；A2 可拖拽调宽/双击折叠） -->
+            <!-- 左侧目录树（F07 files-explorer 提供；A2 可拖拽调宽/双击折叠；⑤ 仅文件视图显示） -->
             <div
-              v-if="nav.project !== null && !nav.trashView && slotComps.tree && slotComps.tree.length"
+              v-if="nav.project !== null && !nav.trashView && nav.activeView === 'files' && slotComps.tree && slotComps.tree.length"
               class="side-wrap"
               :style="{ width: nav.sidebarWidth + 'px', flex: '0 0 auto', overflow: 'hidden', borderRight: nav.sidebarWidth > 40 ? '1px solid var(--line)' : 'none' }"
             >
               <component v-for="c in slotComps.tree" :is="c" :key="c.name"></component>
             </div>
-            <div class="resize-handle" v-if="nav.project !== null && !nav.trashView && slotComps.tree && slotComps.tree.length" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
+            <div class="resize-handle" v-if="nav.project !== null && !nav.trashView && nav.activeView === 'files' && slotComps.tree && slotComps.tree.length" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
 
-            <!-- 功能抽屉（④：设置/用户/权限/审计/标签/模板/图谱/知识库，嵌入 body 布局；右缘可拖拽调宽） -->
-            <template v-if="settingsOpen && slotComps.settings && slotComps.settings.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.settings || 420) + 'px' }">
-                <component v-for="c in slotComps.settings" :is="c" :key="c.name" @close="settingsOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.settings + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'settings')"></div>
-            </template>
-
-            <template v-if="aclOpen && slotComps.acl && slotComps.acl.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.acl || 420) + 'px' }">
-                <component v-for="c in slotComps.acl" :is="c" :key="c.name" @close="aclOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.acl + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'acl')"></div>
-            </template>
-
-            <template v-if="auditOpen && slotComps.audit && slotComps.audit.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.audit || 420) + 'px' }">
-                <component v-for="c in slotComps.audit" :is="c" :key="c.name" @close="auditOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.audit + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'audit')"></div>
-            </template>
-
-            <template v-if="tagsOpen && slotComps.tags && slotComps.tags.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.tags || 420) + 'px' }">
-                <component v-for="c in slotComps.tags" :is="c" :key="c.name" @close="tagsOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.tags + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'tags')"></div>
-            </template>
-
-            <template v-if="templateOpen && slotComps.template && slotComps.template.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.template || 420) + 'px' }">
-                <component v-for="c in slotComps.template" :is="c" :key="c.name" @close="templateOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.template + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'template')"></div>
-            </template>
-
-            <template v-if="kgOpen && slotComps.kg && slotComps.kg.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.kg || 420) + 'px' }">
-                <component v-for="c in slotComps.kg" :is="c" :key="c.name" @close="kgOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.kg + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'kg')"></div>
-            </template>
-
-            <template v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.wiki || 420) + 'px' }">
-                <component v-for="c in slotComps.wiki" :is="c" :key="c.name" @close="wikiOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.wiki + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'wiki')"></div>
-            </template>
-
-            <template v-if="adminOpen && slotComps.admin && slotComps.admin.length">
-              <div class="drawer-col" :style="{ '--dw': (drawerWidths.admin || 420) + 'px' }">
-                <component v-for="c in slotComps.admin" :is="c" :key="c.name" @close="adminOpen = false"></component>
-              </div>
-              <div class="drawer-resize" :title="drawerWidths.admin + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'admin')"></div>
-            </template>
-
-            <!-- 中间 -->
+            <!-- 中间（⑤ 视图化：单一 activeView 状态源，功能面板 = main 全宽视图） -->
             <div class="main">
-              <!-- 多标签页（F01 shell-tabs 提供）：进入项目后显示 -->
-              <component v-for="c in slotComps.tabs" :is="c" :key="c.name" v-if="nav.project !== null && !nav.trashView && !nav.searchView && !nav.favView && slotComps.tabs && slotComps.tabs.length"></component>
+              <!-- 多标签页（F01 shell-tabs 提供）：仅文件视图显示 -->
+              <component v-for="c in slotComps.tabs" :is="c" :key="c.name" v-if="nav.activeView === 'files' && nav.project !== null && slotComps.tabs && slotComps.tabs.length"></component>
               <!-- 回收站视图（F06 trash-ui 提供） -->
-              <component v-for="c in slotComps['trash-view']" :is="c" :key="c.name" v-if="nav.trashView && slotComps['trash-view'] && slotComps['trash-view'].length"></component>
+              <component v-for="c in slotComps['trash-view']" :is="c" :key="c.name" v-if="nav.activeView === 'trash' && slotComps['trash-view'] && slotComps['trash-view'].length"></component>
               <!-- 搜索视图（F09 files-search 提供） -->
-              <component v-for="c in slotComps['search-view']" :is="c" :key="c.name" v-else-if="nav.searchView && slotComps['search-view'] && slotComps['search-view'].length"></component>
+              <component v-for="c in slotComps['search-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'search' && slotComps['search-view'] && slotComps['search-view'].length"></component>
               <!-- 收藏视图（F02 shell-favorites 提供） -->
-              <component v-for="c in slotComps['fav-view']" :is="c" :key="c.name" v-else-if="nav.favView && slotComps['fav-view'] && slotComps['fav-view'].length"></component>
+              <component v-for="c in slotComps['fav-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'favorites' && slotComps['fav-view'] && slotComps['fav-view'].length"></component>
+              <!-- 功能面板视图（⑤：设置/用户/权限/审计/标签/模板/图谱/知识库，全宽独占） -->
+              <component v-for="c in slotComps.settings" :is="c" :key="c.name" v-else-if="nav.activeView === 'settings' && slotComps.settings && slotComps.settings.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.acl" :is="c" :key="c.name" v-else-if="nav.activeView === 'acl' && slotComps.acl && slotComps.acl.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.audit" :is="c" :key="c.name" v-else-if="nav.activeView === 'audit' && slotComps.audit && slotComps.audit.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.tags" :is="c" :key="c.name" v-else-if="nav.activeView === 'tags' && slotComps.tags && slotComps.tags.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.template" :is="c" :key="c.name" v-else-if="nav.activeView === 'template' && slotComps.template && slotComps.template.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-else-if="nav.activeView === 'kg' && slotComps.kg && slotComps.kg.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
               <!-- 欢迎页（shell 插件 welcome） -->
-              <component v-for="c in slotComps.welcome" :is="c" :key="c.name" v-else-if="nav.project === null && slotComps.welcome && slotComps.welcome.length"></component>
+              <component v-for="c in slotComps.welcome" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && nav.project === null && slotComps.welcome && slotComps.welcome.length"></component>
               <!-- 文件面板（F07 files-explorer 提供） -->
-              <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="slotComps.panel && slotComps.panel.length"></component>
+              <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && slotComps.panel && slotComps.panel.length"></component>
               <div v-else class="main-welcome"><div>文件面板加载中…</div></div>
             </div>
 
-            <!-- 右侧预览（F08 files-preview 提供） -->
-            <component v-for="c in slotComps.preview" :is="c" :key="c.name" v-if="nav.rightOpen && slotComps.preview && slotComps.preview.length"></component>
+            <!-- 右侧预览（F08 files-preview 提供；仅文件视图） -->
+            <component v-for="c in slotComps.preview" :is="c" :key="c.name" v-if="nav.rightOpen && nav.activeView === 'files' && slotComps.preview && slotComps.preview.length"></component>
 
             <!-- 上传控制器（F11，不可见：拖拽/文件选择） -->
             <component v-for="c in slotComps.upload" :is="c" :key="c.name" v-if="slotComps.upload && slotComps.upload.length"></component>
