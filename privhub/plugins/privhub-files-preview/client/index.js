@@ -63,6 +63,30 @@ function renderMd(md) {
   return html.join('')
 }
 
+/** 能力库 content → Markdown（doc/docx→text；xlsx→表格；pptx→slides；pdf→text）。 */
+function officeToMd(kind, content) {
+  if (!content) return ''
+  if (kind === 'doc' || kind === 'docx') return content.text || ''
+  if (kind === 'pdf') return content.text || ''
+  if (kind === 'pptx') {
+    return (content.slides || []).map((s, i) => '## Slide ' + (i + 1) + '\n\n**' + (s.title || '') + '**\n' + (s.bullets || []).map((b) => '- ' + b).join('\n')).join('\n\n')
+  }
+  if (kind === 'xlsx') {
+    const out = []
+    for (const s of content.sheets || []) {
+      out.push('### ' + s.name)
+      const rows = s.rows || []
+      for (let i = 0; i < rows.length; i++) {
+        out.push('| ' + (rows[i] || []).map((c) => (c === null || c === undefined ? '' : String(c)).replace(/\|/g, '\\|')).join(' | ') + ' |')
+        if (i === 0) out.push('| ' + (rows[i] || []).map(() => '---').join(' | ') + ' |')
+      }
+      out.push('')
+    }
+    return out.join('\n')
+  }
+  return ''
+}
+
 const PreviewPanel = {
   name: 'files-preview',
   data() { return { nav, office: null, officeErr: '' } },
@@ -99,11 +123,12 @@ const PreviewPanel = {
     if (cur && !cur.isDir && /\.(doc|docx|xls|xlsx|pptx)$/i.test(cur.name)) this.loadOffice(cur)
   },
   methods: {
+    /* 统一走能力库 /api/office/read（svc-office：doc/docx/xlsx/pptx/pdf），按 kind 转 Markdown 渲染 */
     async loadOffice(e) {
       const rel = nav.relPathOf(e.name)
       try {
-        const r = await api('/privhub/api/office-preview?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel))
-        if (r.ok) { this.office = { type: r.type, markdown: r.markdown } }
+        const r = await api('/privhub/api/office/read?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel))
+        if (r.ok) { this.office = { type: r.kind, markdown: officeToMd(r.kind, r.content) } }
         else this.officeErr = r.error || '无法预览'
       } catch { this.officeErr = '无法预览' }
     },
