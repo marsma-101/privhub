@@ -120,13 +120,38 @@ const AppIconbar = {
   `,
 }
 
-/* ============ 欢迎页 ============ */
+/* ============ 欢迎页 = 项目选择屏（未选项目时的文件视图空态） ============ */
 const WelcomeView = {
   name: 'shell-welcome',
+  data() { return { nav, auth: AUTH } },
+  computed: {
+    isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
+    projects() { return this.nav.projectsList || [] },
+  },
+  methods: {
+    openProject(name) { this.nav.openProject(name) },
+    newProject() { this.nav.newProject() },
+  },
   template: `
-    <div class="main-welcome">
-      <div class="big">欢迎使用私域枢纽 · 公司文件管理系统</div>
-      <div>请在顶栏点击项目开始浏览文件</div>
+    <div class="main-welcome project-picker">
+      <div class="big">📁 选择项目</div>
+      <div class="sub">选择一个项目开始浏览文件</div>
+      <div v-if="projects.length" class="project-cards">
+        <div
+          v-for="p in projects" :key="p"
+          class="project-card"
+          @click="openProject(p)"
+          :title="'打开项目：' + p"
+        >
+          <span class="pc-ico">📂</span>
+          <span class="pc-name">{{ p }}</span>
+          <span class="pc-open">打开 →</span>
+        </div>
+      </div>
+      <div v-else class="project-empty">
+        暂无可用项目{{ isAdmin ? '，点击下方按钮新建一个' : '，请联系管理员开通权限' }}
+      </div>
+      <button v-if="isAdmin" class="btn btn-primary" style="width:auto;margin-top:18px" @click="newProject">＋ 新建项目</button>
     </div>
   `,
 }
