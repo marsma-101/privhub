@@ -76,15 +76,27 @@ const PreviewPanel = {
     },
   },
   watch: {
+    // 选中变化（nav.selected 由骨架 selectEntry 更新）：清 Office 缓存；是 Office 文件则拉取
     'nav.selected': {
       handler(e) {
-        // 选中变化：清 Office 缓存；是 Office 文件则拉取
         this.office = null
         this.officeErr = ''
         if (e && !e.isDir && /\.(docx|xls|xlsx|pptx)$/i.test(e.name)) this.loadOffice(e)
       },
       deep: true,
     },
+    // 骨架 selectEntry 同时设置 nav.preview——以它为主驱动（选中非 Office 或清空时同步重置）
+    'nav.preview': {
+      handler(p) {
+        if (!p || p.type !== 'office') { this.office = null; this.officeErr = '' }
+      },
+      deep: true,
+    },
+  },
+  mounted() {
+    // 兜底：挂载时已有选中 Office 文件（视图切换返回）立即拉取
+    const cur = nav.selected
+    if (cur && !cur.isDir && /\.(docx|xls|xlsx|pptx)$/i.test(cur.name)) this.loadOffice(cur)
   },
   methods: {
     async loadOffice(e) {
