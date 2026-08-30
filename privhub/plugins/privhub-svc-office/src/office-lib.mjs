@@ -15,12 +15,22 @@ import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
 // pdf-parse 的 index.js 在模块顶层就读取 test 文件（已知 bug），改用 lib/pdf-parse.js 入口
 import pdfParse from 'pdf-parse/lib/pdf-parse.js'
+// word-extractor：解析旧版 Word .doc（OLE2 二进制）
+import WordExtractor from 'word-extractor'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 
 const MAX_ROWS = 1000
 const MAX_COLS = 60
 
 /* ---------- 读 ---------- */
+
+/** doc（旧版 Word 二进制）→ { text }（word-extractor 解析 OLE2） */
+export async function readDoc(buf) {
+  const extractor = new WordExtractor()
+  const doc = await extractor.extract(buf)
+  const text = (doc.getBody() || '').trim()
+  return { text: text || '[无法提取 DOC 文本]' }
+}
 
 /** docx → { text, html } */
 export async function readDocx(buf) {

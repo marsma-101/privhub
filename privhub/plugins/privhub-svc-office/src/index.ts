@@ -18,8 +18,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { extname } from 'node:path'
 
 /** 支持的类型。 */
-export type OfficeKind = 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'unknown'
-export const OFFICE_EXTS = ['docx', 'xlsx', 'pptx', 'pdf'] as const
+export type OfficeKind = 'doc' | 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'unknown'
+export const OFFICE_EXTS = ['doc', 'docx', 'xlsx', 'pptx', 'pdf'] as const
 
 /** 读取结果：不同 kind 返回不同 content 结构。 */
 export interface OfficeReadResult {
@@ -71,6 +71,7 @@ export class OfficeService extends Service {
     if (buf.length > 32 * 1024 * 1024) return { ok: false, kind, error: '文件过大（>32MB）' }
     try {
       const lib = await import('./office-lib.mjs')
+      if (kind === 'doc') return { ok: true, kind, content: await lib.readDoc(buf) }
       if (kind === 'docx') return { ok: true, kind, content: await lib.readDocx(buf) }
       if (kind === 'xlsx') return { ok: true, kind, content: await lib.readXlsx(buf) }
       if (kind === 'pptx') return { ok: true, kind, content: await lib.readPptx(buf) }

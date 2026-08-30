@@ -150,7 +150,7 @@ const FilePanel = {
       window.PrivHub.toast('已加入收藏 ⭐')
     },
     /* Office 文件编辑（跨插件：bus → privhub-files-office-ui 监听） */
-    isOfficeFile(e) { return /\.(docx|xlsx|pptx|pdf)$/i.test(e.name) },
+    isOfficeFile(e) { return /\.(doc|docx|xlsx|pptx|pdf)$/i.test(e.name) },
     doOfficeEdit() {
       const e = this.ctxMenu ? this.ctxMenu.entry : null
       this.ctxMenu = null

@@ -40,7 +40,7 @@ const OfficeEditor = {
     async openEditor(e) {
       if (!e || e.isDir) return
       const ext = (e.name.split('.').pop() || '').toLowerCase()
-      if (!['docx', 'xlsx', 'pptx', 'pdf'].includes(ext)) return
+      if (!['doc', 'docx', 'xlsx', 'pptx', 'pdf'].includes(ext)) return
       this.project = nav.project || ''
       this.path = nav.relPathOf(e.name)
       this.name = e.name

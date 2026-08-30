@@ -72,7 +72,7 @@ const PreviewPanel = {
     // Office 扩展名（docx/xls/xlsx/pptx）
     isOffice() {
       const n = this.selected && this.selected.name || ''
-      return /\.(docx|xls|xlsx|pptx)$/i.test(n)
+      return /\.(doc|docx|xls|xlsx|pptx)$/i.test(n)
     },
   },
   watch: {
@@ -81,7 +81,7 @@ const PreviewPanel = {
       handler(e) {
         this.office = null
         this.officeErr = ''
-        if (e && !e.isDir && /\.(docx|xls|xlsx|pptx)$/i.test(e.name)) this.loadOffice(e)
+        if (e && !e.isDir && /\.(doc|docx|xls|xlsx|pptx)$/i.test(e.name)) this.loadOffice(e)
       },
       deep: true,
     },
@@ -96,7 +96,7 @@ const PreviewPanel = {
   mounted() {
     // 兜底：挂载时已有选中 Office 文件（视图切换返回）立即拉取
     const cur = nav.selected
-    if (cur && !cur.isDir && /\.(docx|xls|xlsx|pptx)$/i.test(cur.name)) this.loadOffice(cur)
+    if (cur && !cur.isDir && /\.(doc|docx|xls|xlsx|pptx)$/i.test(cur.name)) this.loadOffice(cur)
   },
   methods: {
     async loadOffice(e) {
