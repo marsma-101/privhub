@@ -198,11 +198,16 @@
     .modal-body { flex: 1; overflow-y: auto; }
     .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
     /* 左侧功能抽屉（④：设置/用户管理/权限/审计/标签/模板/图谱/知识库）
-       嵌入 .body 布局（顶栏下方、main 左侧），不再全屏遮罩；宽度由骨架 wrapper --dw 控制 */
+       嵌入 .body 布局（顶栏下方、main 左侧），与目录树侧边栏同等级同外观 */
     .drawer-col { flex: 0 0 var(--dw, 420px); max-width: 70vw; min-width: 0; display: flex; align-items: stretch; height: 100%; overflow: hidden; }
     .drawer-mask { flex: 1; display: flex; min-width: 0; height: 100%; animation: drawer-in .22s ease; }
-    .drawer { background: var(--panel2); border-right: 1px solid var(--line); width: 100%; min-width: 0; padding: 22px; display: flex; flex-direction: column; overflow: hidden; }
-    .drawer h2 { font-size: 16px; margin-bottom: 16px; }
+    .drawer {
+      width: 100%; height: 100%; min-width: 0; overflow: hidden;
+      background: var(--panel); padding: 12px 10px;
+      border-right: 1px solid var(--line);
+      display: flex; flex-direction: column;
+    }
+    .drawer h2 { font-size: 16px; margin: 2px 4px 14px; }
     /* 抽屉右缘拖拽手柄（hover 高亮，同目录树 resize-handle 形式） */
     .drawer-resize { flex: 0 0 4px; cursor: col-resize; background: transparent; transition: background .15s; }
     .drawer-resize:hover { background: var(--accent); opacity: .5; }
