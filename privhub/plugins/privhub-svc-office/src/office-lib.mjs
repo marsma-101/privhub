@@ -24,12 +24,45 @@ const MAX_COLS = 60
 
 /* ---------- 读 ---------- */
 
-/** doc（旧版 Word 二进制）→ { text }（word-extractor 解析 OLE2） */
+/** doc（旧版 Word 二进制）→ { text }
+ *  1) word-extractor 解析 OLE2（真 .doc）
+ *  2) 失败兜底：调用 Python scripts/doc2md.py（RTF/HTML 伪装 + OLE2 FIB 解析）
+ */
 export async function readDoc(buf) {
-  const extractor = new WordExtractor()
-  const doc = await extractor.extract(buf)
-  const text = (doc.getBody() || '').trim()
-  return { text: text || '[无法提取 DOC 文本]' }
+  // 先试 word-extractor（内存 buffer）
+  try {
+    const extractor = new WordExtractor()
+    const doc = await extractor.extract(buf)
+    const text = (doc.getBody() || '').trim()
+    if (text) return { text }
+  } catch { /* 落到 Python 兜底 */ }
+  // Python 兜底：写临时文件 → scripts/doc2md.py
+  try {
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { writeFile, readFile, rm } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+    const root = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+    const script = join(root, 'scripts', 'doc2md.py')
+    const tmp = join(tmpdir(), 'privhub-doc-' + Date.now() + '.doc')
+    const out = tmp.replace(/\.doc$/, '.md')
+    try {
+      await writeFile(tmp, buf)
+      try {
+        await execFileAsync('python', [script, tmp, out], { timeout: 15000, windowsHide: true })
+      } catch {
+        await execFileAsync('python3', [script, tmp, out], { timeout: 15000, windowsHide: true })
+      }
+      const md = await readFile(out, 'utf8')
+      if (md.trim()) return { text: md.trim() }
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {})
+      await rm(out, { force: true }).catch(() => {})
+    }
+  } catch { /* 兜底提示 */ }
+  return { text: '[无法提取 DOC 文本]（请用 Word/WPS 打开后另存为 docx 再上传）' }
 }
 
 /** docx → { text, html } */
