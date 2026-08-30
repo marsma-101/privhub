@@ -149,6 +149,14 @@ const FilePanel = {
       })
       window.PrivHub.toast('已加入收藏 ⭐')
     },
+    /* Office 文件编辑（跨插件：bus → privhub-files-office-ui 监听） */
+    isOfficeFile(e) { return /\.(docx|xlsx|pptx|pdf)$/i.test(e.name) },
+    doOfficeEdit() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (!e || e.isDir) return
+      bus.emit('office:edit', { entry: e, project: nav.project, path: nav.relPathOf(e.name) })
+    },
     /* 下载单个文件（fetch blob + a 标签，带 token 鉴权） */
     async doDownload(entry) {
       const rel = nav.relPathOf(entry.name)
@@ -370,6 +378,7 @@ const FilePanel = {
       <!-- 长按菜单 -->
       <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
         <div class="ctx-item" @click="openDetail">ℹ️ 详情</div>
+        <div v-if="!ctxMenu.entry.isDir && isOfficeFile(ctxMenu.entry)" class="ctx-item" @click="doOfficeEdit">✏️ 编辑</div>
         <div class="ctx-item" @click="doFavorite">⭐ 收藏</div>
         <div v-if="!ctxMenu.entry.isDir" class="ctx-item" @click="doDownload(ctxMenu.entry)">⬇ 下载</div>
         <div class="ctx-item" @click="doRename">✏️ 重命名</div>

@@ -895,6 +895,9 @@
           <!-- Markdown editor overlay (F16 files-edit-md) -->
           <component v-for="c in slotComps['md-editor']" :is="c" :key="c.name" v-if="loggedIn && slotComps['md-editor'] && slotComps['md-editor'].length"></component>
 
+          <!-- Office 编辑浮层（privhub-files-office-ui：docx/xlsx 编辑，pptx/pdf 只读） -->
+          <component v-for="c in slotComps['office-editor']" :is="c" :key="c.name" v-if="loggedIn && slotComps['office-editor'] && slotComps['office-editor'].length"></component>
+
           <!-- P2-3：骨架级内联输入模态（替代原生 prompt：新建文件夹/重命名/新建项目） -->
           <div v-if="loggedIn && nav.inputState" class="modal-mask" @click.self="cancelNavInput">
             <div class="modal" style="width:380px">

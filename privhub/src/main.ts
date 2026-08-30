@@ -30,6 +30,7 @@ import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
 import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
 import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
+import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
 
 /* ---- L3 功能插件（含后端） ---- */
 import * as settings from '../plugins/privhub-shell-settings/src/index.ts'
@@ -46,6 +47,7 @@ import * as filesTemplate from '../plugins/privhub-files-template/src/index.ts'
 import * as filesKg from '../plugins/privhub-files-kg/src/index.ts'
 import * as filesExport from '../plugins/privhub-files-export/src/index.ts'
 import * as filesOffice from '../plugins/privhub-files-office/src/index.ts'
+import * as filesOfficeUi from '../plugins/privhub-files-office-ui/src/index.ts'
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -82,6 +84,7 @@ async function main(): Promise<void> {
   await mount(svcSearch, { maxHits: 200, skipHidden: true })
   await mount(svcMeta, { file: '' })
   await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
+  await mount(svcOffice)
 
   /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })
@@ -107,6 +110,7 @@ async function main(): Promise<void> {
   await mount(filesKg)
   await mount(filesExport)
   await mount(filesOffice)
+  await mount(filesOfficeUi)
 
   /* 5. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)
