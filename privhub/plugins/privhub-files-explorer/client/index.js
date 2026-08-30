@@ -60,10 +60,8 @@ const TreeView = {
   template: `
     <div class="sidebar">
       <div class="side-head">
-        <span class="side-title">📂 {{ nav.project }} · 目录</span>
-        <span style="flex:1"></span>
-        <button class="small-btn" style="padding:2px 8px;font-size:12px" @click="nav.submitMkdir()" title="在当前目录新建文件夹">＋新建文件夹</button>
-        <button v-if="isAdmin && nav.path === ''" class="small-btn danger" style="padding:2px 8px;font-size:12px" @click="nav.delProject(nav.project)" title="删除项目">🗑 删除项目</button>
+        <button class="icon-btn" style="padding:3px;font-size:14px" title="新建文件夹" @click="nav.submitMkdir()">📁＋</button>
+        <button v-if="isAdmin && nav.path === ''" class="icon-btn" style="padding:3px;font-size:14px;color:var(--danger)" :title="'删除项目：' + nav.project" @click="nav.delProject(nav.project)">🗑</button>
       </div>
       <div class="tree-item" :class="{ active: nav.path === '' }" @click="nav.openDir(nav.project, '')">
         <span>🏠</span><span class="name">{{ nav.project }}</span>

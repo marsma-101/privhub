@@ -15,17 +15,30 @@
 
 const { api, AUTH, nav, barItems, badges } = window.PrivHub
 
-/* ============ 顶栏：项目横排 ============ */
+/* ============ 顶栏：欢迎 + 项目下拉（项目多时避免溢出）+ 添加 ============ */
 const ProjectTabs = {
   name: 'shell-project-tabs',
   data() { return { nav } },
   computed: {
     isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
   },
+  methods: {
+    onSelect(e) {
+      const v = e.target.value
+      if (v) nav.openProject(v)
+      e.target.value = nav.project || '' // 还原为当前项目
+    },
+  },
   template: `
     <div class="project-tabs">
       <div class="ptab" :class="{ on: nav.project === null && !nav.trashView && !nav.searchView && !nav.favView }" @click="nav.backToWelcome">🏠 欢迎</div>
-      <div v-for="p in nav.projectsList" :key="p" class="ptab" :class="{ on: nav.project === p && !nav.trashView }" @click="nav.openProject(p)">{{ p }}</div>
+      <span class="project-select-wrap">
+        <span class="project-select-label">选择项目：</span>
+        <select class="project-select" :value="nav.project || ''" @change="onSelect" title="选择项目">
+          <option value="" disabled>选择项目…</option>
+          <option v-for="p in nav.projectsList" :key="p" :value="p">{{ p }}</option>
+        </select>
+      </span>
       <div v-if="isAdmin" class="plus-btn" title="添加项目" @click="nav.newProject">＋</div>
     </div>
   `,
@@ -52,17 +65,29 @@ const TopbarUser = {
   `,
 }
 
-/* ============ 图标栏容器（渲染各插件 barItems） ============ */
+/* ============ 图标栏容器（渲染各插件 barItems；底部固定管理组） ============ */
 const AppIconbar = {
   name: 'shell-app-iconbar',
   data() { return { barItems, badges, nav } },
+  computed: {
+    // 业务功能（上部）
+    topItems() {
+      const bottom = new Set(['settings', 'admin', 'acl', 'audit'])
+      return this.barItems.filter((bi) => !bottom.has(bi.view || bi.slot))
+    },
+    // 底部管理组（渲染顺序=自上而下：审计 → 权限管理 → 用户管理 → 设置，即设置在最底部）
+    bottomItems() {
+      const order = ['audit', 'acl', 'admin', 'settings']
+      return order.map((v) => this.barItems.find((bi) => (bi.view || bi.slot) === v)).filter(Boolean)
+    },
+  },
   methods: {
     openBar(bi) { window.PrivHub.openBarItem(bi) },
   },
   template: `
     <div class="appbar">
       <div
-        v-for="bi in barItems" :key="bi.title"
+        v-for="bi in topItems" :key="bi.title"
         class="abar-item"
         :class="{ on: (bi.view || bi.slot) === 'files' ? (nav.project !== null && !nav.trashView) : (bi.view || bi.slot) === 'trash' ? nav.trashView : false }"
         :title="bi.title"
@@ -71,6 +96,15 @@ const AppIconbar = {
         {{ bi.icon }}<span v-if="(bi.view || bi.slot) === 'trash' && badges.trash > 0" class="abar-badge">{{ badges.trash }}</span>
       </div>
       <div class="abar-spacer"></div>
+      <div
+        v-for="bi in bottomItems" :key="bi.title"
+        class="abar-item abar-bottom"
+        :class="{ on: (bi.view || bi.slot) === 'settings' ? true : false }"
+        :title="bi.title"
+        @click="openBar(bi)"
+      >
+        {{ bi.icon }}
+      </div>
     </div>
   `,
 }
