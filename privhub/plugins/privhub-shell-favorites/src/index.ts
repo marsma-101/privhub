@@ -54,7 +54,9 @@ export function apply(ctx: Context): void {
     const list = all[u.username] ?? []
 
     if (req.method === 'GET') {
-      json(res, 200, { ok: true, favorites: list })
+      // 项目上下文安全：只返回当前用户仍可见项目内的收藏（权限收回后残留不展示）
+      const visible = await svc.visibleProjects(u)
+      json(res, 200, { ok: true, favorites: list.filter((f) => visible.includes(f.project)) })
       return
     }
     if (req.method === 'DELETE') {
@@ -75,6 +77,8 @@ export function apply(ctx: Context): void {
     const path = String(body.path ?? '')
     const name = String(body.name ?? '')
     if (project === '' || name === '') return json(res, 400, { ok: false, error: '参数不完整' })
+    // 项目上下文安全：只能收藏自己有权限的项目
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
     const dup = list.some((e) => e.project === project && e.path === path)
     if (dup) return json(res, 200, { ok: true, favorites: list, already: true })
     const next = [{ project, path, name, isDir: body.isDir === true, at: Date.now() }, ...list]

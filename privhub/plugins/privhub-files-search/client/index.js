@@ -31,6 +31,7 @@ const SearchView = {
       loading: false,
       hits: [],
       searched: false,
+      noProject: false,
     }
   },
   watch: {
@@ -45,13 +46,19 @@ const SearchView = {
     async doSearch() {
       const keyword = this.q.trim()
       if (!keyword) { this.hits = []; this.searched = false; return }
+      // 项目上下文：搜索限定当前项目（未选项目时提示先选择，不做全局查询）
+      if (!nav.project) {
+        this.hits = []; this.searched = true; this.noProject = true
+        return
+      }
+      this.noProject = false
       this.loading = true
       try {
         if (this.mode === 'filename') {
-          const r = await api('/privhub/api/search?q=' + encodeURIComponent(keyword))
+          const r = await api('/privhub/api/search?q=' + encodeURIComponent(keyword) + '&project=' + encodeURIComponent(nav.project))
           this.hits = r.ok ? r.hits : []
         } else {
-          const r = await api('/privhub/api/fulltext/search?q=' + encodeURIComponent(keyword))
+          const r = await api('/privhub/api/fulltext/search?q=' + encodeURIComponent(keyword) + '&project=' + encodeURIComponent(nav.project))
           this.hits = r.ok ? r.hits : []
         }
       } catch { this.hits = [] }
@@ -81,7 +88,7 @@ const SearchView = {
     <div style="display:contents">
       <div class="main-head">
         <span class="breadcrumb"><span style="color:var(--text)">🔍 搜索</span></span>
-        <span class="crumb" style="margin-left:8px">{{ mode === 'filename' ? '文件名匹配' : '全文匹配（BM25）' }}（全部可见项目）</span>
+        <span class="crumb" style="margin-left:8px">{{ nav.project ? '当前项目：' + nav.project + '（' + (mode === 'filename' ? '文件名匹配' : '全文匹配 BM25') + '）' : '未选择项目' }}</span>
         <span class="spacer"></span>
         <input
           v-model="q"
@@ -94,7 +101,12 @@ const SearchView = {
         <button class="icon-btn" :class="{ on: loading }" @click="doSearch">搜索</button>
       </div>
       <div class="main-body">
-        <div v-if="loading" class="empty">搜索中…</div>
+        <div v-if="noProject" class="empty">
+          <div style="font-size:15px;margin-bottom:6px">请先选择一个项目</div>
+          <div>搜索仅限定在当前项目内。返回文件视图，在左侧选择项目后再搜索。</div>
+          <button class="btn btn-primary" style="width:auto;margin-top:14px" @click="nav.backToWelcome">去选择项目 →</button>
+        </div>
+        <div v-else-if="loading" class="empty">搜索中…</div>
         <div v-else-if="q && !searched" class="empty">回车开始搜索</div>
         <div v-else-if="searched && hits.length === 0" class="empty">没有匹配「{{ q }}」的内容</div>
         <div v-else class="file-table-wrap">

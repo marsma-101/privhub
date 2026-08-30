@@ -19,6 +19,11 @@ const TrashView = {
   data() { return { nav } },
   computed: {
     isAdmin() { const u = window.PrivHub.AUTH.user; return u && u.role === 'admin' },
+    // 项目上下文：只显示当前项目内的回收条目（整个项目删除的条目视为该项目）
+    shown() {
+      if (!this.nav.project) return []
+      return this.nav.trashList.filter((t) => t.project === this.nav.project || t.relPath === '')
+    },
   },
   methods: {
     async restore(t) { await nav.restoreTrash(t) },
@@ -37,12 +42,17 @@ const TrashView = {
     <div style="display:contents">
       <div class="main-head">
         <span class="breadcrumb"><span style="color:var(--text)">🗑️ 回收站</span></span>
-        <span class="crumb" style="margin-left:8px">共 {{ nav.trashList.length }} 项（{{ isAdmin ? '全部用户' : '仅我删除的' }}）</span>
+        <span class="crumb" style="margin-left:8px">{{ nav.project ? '当前项目：' + nav.project + '（' + shown.length + ' 项）' : '未选择项目' }}</span>
         <span class="spacer"></span>
         <button v-if="isAdmin" class="icon-btn" @click="clean">🧹 清空 30 天前条目</button>
       </div>
       <div class="main-body">
-        <div v-if="nav.trashList.length === 0" class="empty">回收站是空的</div>
+        <div v-if="!nav.project" class="empty">
+          <div style="font-size:15px;margin-bottom:6px">请先选择一个项目</div>
+          <div>回收站仅显示当前项目内的条目。返回文件视图，在左侧选择项目后再查看。</div>
+          <button class="btn btn-primary" style="width:auto;margin-top:14px" @click="nav.backToWelcome">去选择项目 →</button>
+        </div>
+        <div v-else-if="shown.length === 0" class="empty">当前项目回收站是空的</div>
         <div v-else class="file-table-wrap">
           <div class="file-table-head" style="grid-template-columns:1fr 110px 130px 140px 170px">
             <span class="col-name">名称</span>
@@ -51,7 +61,7 @@ const TrashView = {
             <span class="col-time">删除时间</span>
             <span class="col-time">操作</span>
           </div>
-          <div v-for="t in nav.trashList" :key="t.id" class="file-table-row" style="grid-template-columns:1fr 110px 130px 140px 170px;cursor:default">
+          <div v-for="t in shown" :key="t.id" class="file-table-row" style="grid-template-columns:1fr 110px 130px 140px 170px;cursor:default">
             <span class="col-name" :title="t.relPath === '' ? '整个项目' : ('原路径：' + (t.relPath || '项目根目录'))"><span class="tico">{{ t.relPath === '' ? '📦' : (t.isDir ? '📁' : '📄') }}</span>{{ t.name }}</span>
             <span class="col-size">{{ t.relPath === '' ? '（项目本身）' : t.project }}</span>
             <span class="col-type">{{ t.deletedBy }}</span>

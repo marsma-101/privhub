@@ -83,22 +83,12 @@
     .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
     .main-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 14px; }
     .main-welcome .big { font-size: 22px; color: var(--text); }
-    /* 项目选择屏（shell 插件 welcome：未选项目时的文件视图空态） */
-    .project-picker { gap: 18px; }
-    .project-picker .sub { font-size: 13px; }
-    .project-cards { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; max-width: 720px; }
-    .project-card {
-      width: 200px; padding: 18px 16px; border-radius: 12px; cursor: pointer;
-      background: var(--panel2); border: 1px solid var(--line);
-      display: flex; flex-direction: column; align-items: center; gap: 10px;
-      transition: border-color .15s, box-shadow .15s, transform .1s;
-    }
-    .project-card:hover { border-color: var(--accent); box-shadow: 0 6px 20px rgba(0,0,0,.1); }
-    .project-card:active { transform: scale(.98); }
-    .project-card .pc-ico { font-size: 30px; }
-    .project-card .pc-name { font-size: 14px; font-weight: 600; color: var(--text); }
-    .project-card .pc-open { font-size: 12px; color: var(--accent); }
-    .project-empty { font-size: 13px; color: var(--muted); background: var(--panel2); border: 1px dashed var(--line); border-radius: 10px; padding: 26px 40px; }
+    /* 项目选择栏（shell 插件 welcome：未选项目时左侧栏显示，选中后变目录树） */
+    .project-sidebar .project-list { display: flex; flex-direction: column; gap: 2px; }
+    .project-item .pc-go { color: var(--muted); font-size: 12px; opacity: 0; transition: opacity .15s; }
+    .project-item:hover .pc-go { opacity: 1; color: var(--accent); }
+    .project-sidebar .side-foot { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); }
+    .project-empty { font-size: 12.5px; color: var(--muted); padding: 10px 4px; line-height: 1.6; }
     .main-head { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
     .main-head .title { font-size: 15px; font-weight: 600; }
     .main-head .crumb { color: var(--muted); font-size: 13px; }
@@ -560,18 +550,18 @@
       },
       async openTrash() {
         nav.setActiveView('trash')
-        nav.project = null; nav.path = ''
+        // 项目上下文保留（不清空 project）：回收站按当前项目过滤
         nav.entries = []
         await nav.loadTrash()
       },
       async openSearch() {
         nav.setActiveView('search')
-        nav.project = null; nav.path = ''
+        // 项目上下文保留：搜索限定当前项目
         nav.entries = []
       },
       async openFavorites() {
         nav.setActiveView('favorites')
-        nav.project = null; nav.path = ''
+        // 项目上下文保留：收藏按当前项目过滤
         nav.entries = []
       },
       async loadTrash() {
@@ -804,15 +794,20 @@
             <!-- 图标栏（shell 插件 app-iconbar：渲染各插件 barItems） -->
             <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
 
-            <!-- 左侧目录树（F07 files-explorer 提供；A2 可拖拽调宽/双击折叠；⑤ 仅文件视图显示） -->
+            <!-- 左侧栏：未选项目 = 项目选择（shell welcome），已选项目 = 目录树（F07） -->
             <div
-              v-if="nav.project !== null && !nav.trashView && nav.activeView === 'files' && slotComps.tree && slotComps.tree.length"
+              v-if="nav.activeView === 'files' && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)"
               class="side-wrap"
               :style="{ width: nav.sidebarWidth + 'px', flex: '0 0 auto', overflow: 'hidden', borderRight: nav.sidebarWidth > 40 ? '1px solid var(--line)' : 'none' }"
             >
-              <component v-for="c in slotComps.tree" :is="c" :key="c.name"></component>
+              <template v-if="nav.project !== null">
+                <component v-for="c in slotComps.tree" :is="c" :key="c.name"></component>
+              </template>
+              <template v-else>
+                <component v-for="c in slotComps.welcome" :is="c" :key="c.name"></component>
+              </template>
             </div>
-            <div class="resize-handle" v-if="nav.project !== null && !nav.trashView && nav.activeView === 'files' && slotComps.tree && slotComps.tree.length" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
+            <div class="resize-handle" v-if="nav.activeView === 'files' && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
 
             <!-- 中间（⑤ 视图化：单一 activeView 状态源，功能面板 = main 全宽视图） -->
             <div class="main">
@@ -833,8 +828,11 @@
               <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-else-if="nav.activeView === 'kg' && slotComps.kg && slotComps.kg.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
-              <!-- 欢迎页（shell 插件 welcome） -->
-              <component v-for="c in slotComps.welcome" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && nav.project === null && slotComps.welcome && slotComps.welcome.length"></component>
+              <!-- 欢迎页（未选项目：简单文案，选项目在左侧栏） -->
+              <div v-else-if="nav.activeView === 'files' && nav.project === null" class="main-welcome">
+                <div class="big">欢迎使用私域枢纽 · 公司文件管理系统</div>
+                <div>从左侧选择一个项目开始浏览文件</div>
+              </div>
               <!-- 文件面板（F07 files-explorer 提供） -->
               <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && slotComps.panel && slotComps.panel.length"></component>
               <div v-else class="main-welcome"><div>文件面板加载中…</div></div>

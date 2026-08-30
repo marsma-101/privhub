@@ -120,7 +120,7 @@ const AppIconbar = {
   `,
 }
 
-/* ============ 欢迎页 = 项目选择屏（未选项目时的文件视图空态） ============ */
+/* ============ 项目选择栏（welcome slot：未选项目时左侧栏显示，选中后变目录树） ============ */
 const WelcomeView = {
   name: 'shell-welcome',
   data() { return { nav, auth: AUTH } },
@@ -133,25 +133,24 @@ const WelcomeView = {
     newProject() { this.nav.newProject() },
   },
   template: `
-    <div class="main-welcome project-picker">
-      <div class="big">📁 选择项目</div>
-      <div class="sub">选择一个项目开始浏览文件</div>
-      <div v-if="projects.length" class="project-cards">
+    <div class="sidebar project-sidebar">
+      <div class="side-head"><span class="side-title">📁 选择项目</span></div>
+      <div v-if="projects.length" class="project-list">
         <div
           v-for="p in projects" :key="p"
-          class="project-card"
+          class="tree-item project-item"
           @click="openProject(p)"
           :title="'打开项目：' + p"
         >
-          <span class="pc-ico">📂</span>
-          <span class="pc-name">{{ p }}</span>
-          <span class="pc-open">打开 →</span>
+          <span>📂</span><span class="name">{{ p }}</span><span class="pc-go">→</span>
         </div>
       </div>
       <div v-else class="project-empty">
-        暂无可用项目{{ isAdmin ? '，点击下方按钮新建一个' : '，请联系管理员开通权限' }}
+        {{ isAdmin ? '暂无项目，点击下方新建' : '暂无可用项目，请联系管理员开通权限' }}
       </div>
-      <button v-if="isAdmin" class="btn btn-primary" style="width:auto;margin-top:18px" @click="newProject">＋ 新建项目</button>
+      <div v-if="isAdmin" class="side-foot">
+        <button class="btn btn-primary" style="width:100%;padding:8px;font-size:13px" @click="newProject">＋ 新建项目</button>
+      </div>
     </div>
   `,
 }
