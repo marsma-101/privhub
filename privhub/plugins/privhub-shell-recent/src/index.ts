@@ -55,7 +55,10 @@ export function apply(ctx: Context): void {
     if (!u) return
     if (req.method === 'GET') {
       const all = await loadAll(ctx.storage)
-      json(res, 200, { ok: true, recent: all[u.username] ?? [] })
+      // 可见过滤：权限收回后的项目残留不展示（与 favorites 同规则）
+      const visible = await svc.visibleProjects(u)
+      const recent = (all[u.username] ?? []).filter((e) => visible.includes(e.project))
+      json(res, 200, { ok: true, recent })
       return
     }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
@@ -66,6 +69,8 @@ export function apply(ctx: Context): void {
     const name = String(body.name ?? '')
     const isDir = body.isDir === true
     if (project === '' || name === '') return json(res, 400, { ok: false, error: '参数不完整' })
+    // 权限校验：只能记录自己有权限的项目
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
     const all = await loadAll(ctx.storage)
     const list = all[u.username] ?? []
     // 去重（同项目同路径）：移出旧条目，头部插入新条目
