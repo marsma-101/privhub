@@ -376,7 +376,16 @@ export class PrivHubStore extends Service {
     const maxTextBytes = 512 * 1024
     if (textExts.includes(ext) && s.size <= maxTextBytes + 20) {
       // S7：文本预览走解密读（密文/明文自动识别）
-      return { data: await this.ctx.storage.readText(target), type: 'text' }
+      const buf = await this.ctx.storage.readBuffer(target)
+      // 智能编码检测：UTF-8 合法 → utf8；否则回退 GBK（中文 Windows 常见 txt）
+      const utf8 = new TextDecoder('utf-8', { fatal: true })
+      let data: string
+      try {
+        data = utf8.decode(buf)
+      } catch {
+        data = new TextDecoder('gbk').decode(buf)
+      }
+      return { data, type: 'text' }
     }
     const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']
     if (imgExts.includes(ext)) return { data: '', type: 'image' }
