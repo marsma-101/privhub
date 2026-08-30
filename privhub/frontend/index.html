@@ -197,10 +197,15 @@
     .modal h2 { font-size: 16px; margin-bottom: 16px; }
     .modal-body { flex: 1; overflow-y: auto; }
     .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
-    /* 左侧功能抽屉（④：设置/用户管理/权限/审计/标签/模板/图谱/知识库 统一挂载） */
-    .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; justify-content: flex-start; z-index: 1100; }
-    .drawer { background: var(--panel2); border-right: 1px solid var(--line); width: var(--dw, 420px); max-width: 94vw; height: 100%; padding: 22px; box-shadow: 12px 0 40px rgba(0,0,0,.3); display: flex; flex-direction: column; animation: drawer-in .22s ease; }
+    /* 左侧功能抽屉（④：设置/用户管理/权限/审计/标签/模板/图谱/知识库）
+       嵌入 .body 布局（顶栏下方、main 左侧），不再全屏遮罩；宽度由骨架 wrapper --dw 控制 */
+    .drawer-col { flex: 0 0 var(--dw, 420px); max-width: 70vw; min-width: 0; display: flex; align-items: stretch; height: 100%; overflow: hidden; }
+    .drawer-mask { flex: 1; display: flex; min-width: 0; height: 100%; animation: drawer-in .22s ease; }
+    .drawer { background: var(--panel2); border-right: 1px solid var(--line); width: 100%; min-width: 0; padding: 22px; display: flex; flex-direction: column; overflow: hidden; }
     .drawer h2 { font-size: 16px; margin-bottom: 16px; }
+    /* 抽屉右缘拖拽手柄（hover 高亮，同目录树 resize-handle 形式） */
+    .drawer-resize { flex: 0 0 4px; cursor: col-resize; background: transparent; transition: background .15s; }
+    .drawer-resize:hover { background: var(--accent); opacity: .5; }
     @keyframes drawer-in { from { transform: translateX(-100%) } to { transform: none } }
     .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
     .kv .k { color: var(--muted); }
@@ -702,6 +707,23 @@
           document.addEventListener('mousemove', move)
           document.addEventListener('mouseup', up)
         },
+        /* ④：功能抽屉右缘拖拽调宽（clamp 280~760；按 slot 持久化，刷新保留） */
+        startDrawerResize(e, slot) {
+          e.preventDefault()
+          const startX = e.clientX
+          const startW = this.drawerWidths[slot] || 420
+          const move = (ev) => {
+            const w = Math.min(760, Math.max(280, startW + (ev.clientX - startX)))
+            this.drawerWidths[slot] = w
+          }
+          const up = () => {
+            document.removeEventListener('mousemove', move)
+            document.removeEventListener('mouseup', up)
+            localStorage.setItem('privhub_drawer_w_' + slot, String(this.drawerWidths[slot]))
+          }
+          document.addEventListener('mousemove', move)
+          document.addEventListener('mouseup', up)
+        },
       },
       async mounted() {
         applyTheme()
@@ -716,9 +738,12 @@
               try {
                 const mod = await import(p.entry)
                 const slots = (mod.default && mod.default.slots) || {}
-                // ④：抽屉宽度自声明（client 导出 drawerWidth，默认 420px）
+                // ④：抽屉宽度自声明（client 导出 drawerWidth，默认 420px；用户拖拽过的以 localStorage 优先）
                 const dw = mod.default && mod.default.drawerWidth
-                if (dw) for (const s of Object.keys(slots)) this.drawerWidths[s] = dw
+                if (dw) for (const s of Object.keys(slots)) {
+                  const saved = localStorage.getItem('privhub_drawer_w_' + s)
+                  this.drawerWidths[s] = saved ? Number(saved) : dw
+                }
                 for (const [slot, comp] of Object.entries(slots)) {
                   const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
                   if (!arr.includes(comp)) arr.push(comp)
@@ -758,9 +783,15 @@
         window.PrivHub.openTemplate = () => { closeAllDrawers(); self.templateOpen = true }
         window.PrivHub.openKg = () => { closeAllDrawers(); self.kgOpen = true }
         window.PrivHub.openWiki = () => { closeAllDrawers(); self.wikiOpen = true }
+        /* ④：Esc 关闭功能抽屉（嵌入布局无遮罩可点，Esc 为统一关闭方式） */
+        self._escClose = (ev) => {
+          if (ev.key === 'Escape') closeAllDrawers()
+        }
+        document.addEventListener('keydown', self._escClose)
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
+        if (this._escClose) document.removeEventListener('keydown', this._escClose)
       },
       template: `
         <!-- 未登录：auth 插件组件 -->
@@ -792,6 +823,63 @@
             </div>
             <div class="resize-handle" v-if="nav.project !== null && !nav.trashView && slotComps.tree && slotComps.tree.length" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
 
+            <!-- 功能抽屉（④：设置/用户/权限/审计/标签/模板/图谱/知识库，嵌入 body 布局；右缘可拖拽调宽） -->
+            <template v-if="settingsOpen && slotComps.settings && slotComps.settings.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.settings || 420) + 'px' }">
+                <component v-for="c in slotComps.settings" :is="c" :key="c.name" @close="settingsOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.settings + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'settings')"></div>
+            </template>
+
+            <template v-if="aclOpen && slotComps.acl && slotComps.acl.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.acl || 420) + 'px' }">
+                <component v-for="c in slotComps.acl" :is="c" :key="c.name" @close="aclOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.acl + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'acl')"></div>
+            </template>
+
+            <template v-if="auditOpen && slotComps.audit && slotComps.audit.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.audit || 420) + 'px' }">
+                <component v-for="c in slotComps.audit" :is="c" :key="c.name" @close="auditOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.audit + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'audit')"></div>
+            </template>
+
+            <template v-if="tagsOpen && slotComps.tags && slotComps.tags.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.tags || 420) + 'px' }">
+                <component v-for="c in slotComps.tags" :is="c" :key="c.name" @close="tagsOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.tags + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'tags')"></div>
+            </template>
+
+            <template v-if="templateOpen && slotComps.template && slotComps.template.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.template || 420) + 'px' }">
+                <component v-for="c in slotComps.template" :is="c" :key="c.name" @close="templateOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.template + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'template')"></div>
+            </template>
+
+            <template v-if="kgOpen && slotComps.kg && slotComps.kg.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.kg || 420) + 'px' }">
+                <component v-for="c in slotComps.kg" :is="c" :key="c.name" @close="kgOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.kg + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'kg')"></div>
+            </template>
+
+            <template v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.wiki || 420) + 'px' }">
+                <component v-for="c in slotComps.wiki" :is="c" :key="c.name" @close="wikiOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.wiki + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'wiki')"></div>
+            </template>
+
+            <template v-if="adminOpen && slotComps.admin && slotComps.admin.length">
+              <div class="drawer-col" :style="{ '--dw': (drawerWidths.admin || 420) + 'px' }">
+                <component v-for="c in slotComps.admin" :is="c" :key="c.name" @close="adminOpen = false"></component>
+              </div>
+              <div class="drawer-resize" :title="drawerWidths.admin + 'px · 拖拽调宽'" @mousedown="startDrawerResize($event, 'admin')"></div>
+            </template>
+
             <!-- 中间 -->
             <div class="main">
               <!-- 多标签页（F01 shell-tabs 提供）：进入项目后显示 -->
@@ -816,39 +904,6 @@
             <component v-for="c in slotComps.upload" :is="c" :key="c.name" v-if="slotComps.upload && slotComps.upload.length"></component>
             <!-- 上传队列抽屉（F12） -->
             <component v-for="c in slotComps['upload-queue']" :is="c" :key="c.name" v-if="slotComps['upload-queue'] && slotComps['upload-queue'].length"></component>
-          </div>
-
-          <!-- 功能抽屉（④：设置/用户/权限/审计/标签/模板/图谱/知识库 统一左侧滑出，互斥） -->
-          <div v-if="settingsOpen && slotComps.settings && slotComps.settings.length" :style="{ '--dw': (drawerWidths.settings || 420) + 'px' }">
-            <component v-for="c in slotComps.settings" :is="c" :key="c.name" @close="settingsOpen = false"></component>
-          </div>
-
-          <div v-if="aclOpen && slotComps.acl && slotComps.acl.length" :style="{ '--dw': (drawerWidths.acl || 420) + 'px' }">
-            <component v-for="c in slotComps.acl" :is="c" :key="c.name" @close="aclOpen = false"></component>
-          </div>
-
-          <div v-if="auditOpen && slotComps.audit && slotComps.audit.length" :style="{ '--dw': (drawerWidths.audit || 420) + 'px' }">
-            <component v-for="c in slotComps.audit" :is="c" :key="c.name" @close="auditOpen = false"></component>
-          </div>
-
-          <div v-if="tagsOpen && slotComps.tags && slotComps.tags.length" :style="{ '--dw': (drawerWidths.tags || 420) + 'px' }">
-            <component v-for="c in slotComps.tags" :is="c" :key="c.name" @close="tagsOpen = false"></component>
-          </div>
-
-          <div v-if="templateOpen && slotComps.template && slotComps.template.length" :style="{ '--dw': (drawerWidths.template || 420) + 'px' }">
-            <component v-for="c in slotComps.template" :is="c" :key="c.name" @close="templateOpen = false"></component>
-          </div>
-
-          <div v-if="kgOpen && slotComps.kg && slotComps.kg.length" :style="{ '--dw': (drawerWidths.kg || 420) + 'px' }">
-            <component v-for="c in slotComps.kg" :is="c" :key="c.name" @close="kgOpen = false"></component>
-          </div>
-
-          <div v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length" :style="{ '--dw': (drawerWidths.wiki || 420) + 'px' }">
-            <component v-for="c in slotComps.wiki" :is="c" :key="c.name" @close="wikiOpen = false"></component>
-          </div>
-
-          <div v-if="adminOpen && slotComps.admin && slotComps.admin.length" :style="{ '--dw': (drawerWidths.admin || 420) + 'px' }">
-            <component v-for="c in slotComps.admin" :is="c" :key="c.name" @close="adminOpen = false"></component>
           </div>
 
           <!-- 水印叠加（F05 auth-watermark 提供） -->
