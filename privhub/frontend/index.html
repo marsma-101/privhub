@@ -628,6 +628,8 @@
 
     /* ============ 插件桥 ============ */
     window.PrivHub = { api, AUTH, THEME, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
+    /* ④：当前打开的抽屉 view（图标栏高亮；在插件组件实例化前创建，保证响应式生效） */
+    window.PrivHub.drawerState = reactive({ active: null })
     /* 图标栏角标（插件更新，骨架渲染） */
     window.PrivHub.badges = reactive({ trash: 0 })
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */
@@ -771,18 +773,25 @@
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
           if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); window.PrivHub.loadBarItems() } else { logout() }
         }
-        /* 供插件（F04 设置面板 / 图标栏分发）打开功能抽屉（④：互斥，一次只开一个） */
+        /* 供插件（F04 设置面板 / 图标栏分发）开关功能抽屉（④：互斥 + toggle——已开再点则关闭） */
         const closeAllDrawers = () => {
           self.settingsOpen = self.aclOpen = self.auditOpen = self.tagsOpen = self.templateOpen = self.kgOpen = self.wikiOpen = self.adminOpen = false
+          window.PrivHub.drawerState.active = null
         }
-        window.PrivHub.openAdmin = () => { closeAllDrawers(); self.adminOpen = true }
-        window.PrivHub.openSettings = () => { closeAllDrawers(); self.settingsOpen = true }
-        window.PrivHub.openAcl = () => { closeAllDrawers(); self.aclOpen = true }
-        window.PrivHub.openAudit = () => { closeAllDrawers(); self.auditOpen = true }
-        window.PrivHub.openTags = () => { closeAllDrawers(); self.tagsOpen = true }
-        window.PrivHub.openTemplate = () => { closeAllDrawers(); self.templateOpen = true }
-        window.PrivHub.openKg = () => { closeAllDrawers(); self.kgOpen = true }
-        window.PrivHub.openWiki = () => { closeAllDrawers(); self.wikiOpen = true }
+        const toggleDrawer = (view, flag) => {
+          if (self[flag]) { self[flag] = false; window.PrivHub.drawerState.active = null; return } // toggle 关闭
+          closeAllDrawers()
+          self[flag] = true
+          window.PrivHub.drawerState.active = view
+        }
+        window.PrivHub.openAdmin = () => toggleDrawer('admin', 'adminOpen')
+        window.PrivHub.openSettings = () => toggleDrawer('settings', 'settingsOpen')
+        window.PrivHub.openAcl = () => toggleDrawer('acl', 'aclOpen')
+        window.PrivHub.openAudit = () => toggleDrawer('audit', 'auditOpen')
+        window.PrivHub.openTags = () => toggleDrawer('tags', 'tagsOpen')
+        window.PrivHub.openTemplate = () => toggleDrawer('template', 'templateOpen')
+        window.PrivHub.openKg = () => toggleDrawer('kg', 'kgOpen')
+        window.PrivHub.openWiki = () => toggleDrawer('wiki', 'wikiOpen')
         /* ④：Esc 关闭功能抽屉（嵌入布局无遮罩可点，Esc 为统一关闭方式） */
         self._escClose = (ev) => {
           if (ev.key === 'Escape') closeAllDrawers()
