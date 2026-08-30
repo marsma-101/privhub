@@ -37,12 +37,14 @@ const OfficeEditor = {
     currentSheet() { return this.sheets[this.sheetIndex] || null },
   },
   methods: {
-    async openEditor(e) {
+    /* payload 兼容：{ entry, project, path }（path = 文件完整相对路径）；裸 entry 时回退 nav 上下文 */
+    async openEditor(payload) {
+      const e = payload && payload.entry ? payload.entry : payload
       if (!e || e.isDir) return
       const ext = (e.name.split('.').pop() || '').toLowerCase()
       if (!['doc', 'docx', 'xlsx', 'pptx', 'pdf'].includes(ext)) return
-      this.project = nav.project || ''
-      this.path = nav.relPathOf(e.name)
+      this.project = (payload && payload.project) || nav.project || ''
+      this.path = (payload && payload.path) || nav.relPathOf(e.name)
       this.name = e.name
       this.kind = ext
       this.open = true
@@ -106,7 +108,7 @@ const OfficeEditor = {
     fmtCell(v) { return v === null || v === undefined ? '' : String(v) },
   },
   mounted() {
-    this._off = bus.on('office:edit', (payload) => { void this.openEditor(payload && payload.entry) })
+    this._off = bus.on('office:edit', (payload) => { void this.openEditor(payload) })
   },
   beforeUnmount() { if (this._off) this._off() },
   template: `

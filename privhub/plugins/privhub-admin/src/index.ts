@@ -66,7 +66,7 @@ export function apply(ctx: Context): void {
     const rec = svc.users.get(username)
     if (!rec) return json(res, 404, { ok: false, error: '用户不存在' })
     if (body.role === 'admin' || body.role === 'user') rec.role = body.role
-    if (Array.isArray(body.projects)) rec.projects = body.projects.filter((p: unknown) => typeof p === 'string')
+    if (Array.isArray(body.projects)) rec.projects = [...new Set(body.projects.filter((p: unknown) => typeof p === 'string'))]
     if (typeof body.displayName === 'string' && body.displayName.trim() !== '') rec.displayName = body.displayName.trim()
     await svc.saveUsers()
     json(res, 200, { ok: true })

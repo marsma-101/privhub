@@ -170,10 +170,14 @@ const MdEditor = {
     destroyMde() {
       if (this.mde) { this.mde.toTextArea(); this.mde = null }
     },
-    async openEditor(e) {
+    /* payload 兼容：{ entry, project, path }（path = 所在目录）；裸 entry 时回退 nav 上下文 */
+    async openEditor(payload) {
+      const e = payload && payload.entry ? payload.entry : payload
       if (!e || e.isDir || !/\.md$/i.test(e.name)) return
-      const rel = nav.path ? nav.path + '/' + e.name : e.name
-      this.project = nav.project || ''
+      const dir = (payload && payload.path !== undefined && payload.path !== null) ? payload.path : nav.path
+      const rel = dir ? dir + '/' + e.name : e.name
+      this.project = (payload && payload.project) || nav.project || ''
+      this.dir = dir || ''
       this.path = rel
       this.name = e.name
       this.showVersions = false
@@ -283,7 +287,7 @@ const MdEditor = {
       const a = ev.target.closest('.md-wikilink')
       if (!a) return
       const name = a.getAttribute('data-name')
-      const r = await api('/privhub/api/list?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(nav.path || ''))
+      const r = await api('/privhub/api/list?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(this.dir || nav.path || ''))
       const hit = r.ok ? r.entries.find((e) => e.name === name) : null
       if (hit) { nav.selectEntry(hit); this.status = '🔗 已定位：' + name }
       else this.status = '当前目录未找到「' + name + '」（双链仅定位同目录文件）'
@@ -291,7 +295,7 @@ const MdEditor = {
   },
   mounted() {
     // payload = { entry, project, path }（骨架 openEntry emit）
-    this._off = bus.on('entry:open', (payload) => { void this.openEditor(payload && payload.entry) })
+    this._off = bus.on('entry:open', (payload) => { void this.openEditor(payload) })
   },
   beforeUnmount() { if (this._off) this._off() },
   template: `
