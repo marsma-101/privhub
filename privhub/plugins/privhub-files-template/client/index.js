@@ -90,8 +90,8 @@ const TemplateDoc = {
   },
   async mounted() { await this.load() },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:680px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>📝 新建文档</h2>
         <div class="modal-body">
           <div class="field" v-if="!manage">
@@ -158,6 +158,7 @@ const TemplateDoc = {
 
 export default {
   id: 'privhub-files-template',
+  drawerWidth: 560,
   slots: {
     template: TemplateDoc,
   },

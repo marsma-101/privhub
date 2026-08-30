@@ -118,8 +118,8 @@ const KgView = {
     await this.loadProjects()
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:940px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>🕸️ 知识图谱</h2>
         <div class="modal-body">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -184,6 +184,7 @@ const KgView = {
 
 export default {
   id: 'privhub-files-kg',
+  drawerWidth: 640,
   slots: {
     kg: KgView,
   },

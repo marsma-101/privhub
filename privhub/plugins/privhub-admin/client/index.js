@@ -56,8 +56,8 @@ const UserAdmin = {
     },
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:600px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>👥 用户管理</h2>
         <div class="modal-body">
           <table class="u-table">
@@ -134,6 +134,7 @@ const UserAdmin = {
 
 export default {
   id: 'privhub-admin',
+  drawerWidth: 560,
   slots: {
     admin: UserAdmin,
   },

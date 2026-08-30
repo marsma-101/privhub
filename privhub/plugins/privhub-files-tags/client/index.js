@@ -83,8 +83,8 @@ const TagsAdmin = {
     await this.loadCurrent()
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:640px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>🏷️ 文件标签</h2>
         <div class="modal-body">
           <!-- 当前文件标签编辑 -->
@@ -144,6 +144,7 @@ const TagsAdmin = {
 
 export default {
   id: 'privhub-files-tags',
+  drawerWidth: 480,
   slots: {
     tags: TagsAdmin,
   },

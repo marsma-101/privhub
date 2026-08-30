@@ -197,6 +197,11 @@
     .modal h2 { font-size: 16px; margin-bottom: 16px; }
     .modal-body { flex: 1; overflow-y: auto; }
     .modal-foot { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
+    /* 左侧功能抽屉（④：设置/用户管理/权限/审计/标签/模板/图谱/知识库 统一挂载） */
+    .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; justify-content: flex-start; z-index: 1100; }
+    .drawer { background: var(--panel2); border-right: 1px solid var(--line); width: var(--dw, 420px); max-width: 94vw; height: 100%; padding: 22px; box-shadow: 12px 0 40px rgba(0,0,0,.3); display: flex; flex-direction: column; animation: drawer-in .22s ease; }
+    .drawer h2 { font-size: 16px; margin-bottom: 16px; }
+    @keyframes drawer-in { from { transform: translateX(-100%) } to { transform: none } }
     .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
     .kv .k { color: var(--muted); }
 
@@ -667,6 +672,7 @@
           kgOpen: false,
           wikiOpen: false,
           adminOpen: false,
+          drawerWidths: {},   // 各功能抽屉宽度（client 导出的 drawerWidth，默认 420）
         }
       },
       computed: {
@@ -710,6 +716,9 @@
               try {
                 const mod = await import(p.entry)
                 const slots = (mod.default && mod.default.slots) || {}
+                // ④：抽屉宽度自声明（client 导出 drawerWidth，默认 420px）
+                const dw = mod.default && mod.default.drawerWidth
+                if (dw) for (const s of Object.keys(slots)) this.drawerWidths[s] = dw
                 for (const [slot, comp] of Object.entries(slots)) {
                   const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
                   if (!arr.includes(comp)) arr.push(comp)
@@ -737,15 +746,18 @@
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
           if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); window.PrivHub.loadBarItems() } else { logout() }
         }
-        /* 供插件（F04 设置面板 / 图标栏分发）打开弹窗 */
-        window.PrivHub.openAdmin = () => { self.adminOpen = true }
-        window.PrivHub.openSettings = () => { self.settingsOpen = true }
-        window.PrivHub.openAcl = () => { self.aclOpen = true }
-        window.PrivHub.openAudit = () => { self.auditOpen = true }
-        window.PrivHub.openTags = () => { self.tagsOpen = true }
-        window.PrivHub.openTemplate = () => { self.templateOpen = true }
-        window.PrivHub.openKg = () => { self.kgOpen = true }
-        window.PrivHub.openWiki = () => { self.wikiOpen = true }
+        /* 供插件（F04 设置面板 / 图标栏分发）打开功能抽屉（④：互斥，一次只开一个） */
+        const closeAllDrawers = () => {
+          self.settingsOpen = self.aclOpen = self.auditOpen = self.tagsOpen = self.templateOpen = self.kgOpen = self.wikiOpen = self.adminOpen = false
+        }
+        window.PrivHub.openAdmin = () => { closeAllDrawers(); self.adminOpen = true }
+        window.PrivHub.openSettings = () => { closeAllDrawers(); self.settingsOpen = true }
+        window.PrivHub.openAcl = () => { closeAllDrawers(); self.aclOpen = true }
+        window.PrivHub.openAudit = () => { closeAllDrawers(); self.auditOpen = true }
+        window.PrivHub.openTags = () => { closeAllDrawers(); self.tagsOpen = true }
+        window.PrivHub.openTemplate = () => { closeAllDrawers(); self.templateOpen = true }
+        window.PrivHub.openKg = () => { closeAllDrawers(); self.kgOpen = true }
+        window.PrivHub.openWiki = () => { closeAllDrawers(); self.wikiOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -806,29 +818,38 @@
             <component v-for="c in slotComps['upload-queue']" :is="c" :key="c.name" v-if="slotComps['upload-queue'] && slotComps['upload-queue'].length"></component>
           </div>
 
-          <!-- 设置弹窗（F04 shell-settings 提供） -->
-          <component v-for="c in slotComps.settings" :is="c" :key="c.name" v-if="settingsOpen && slotComps.settings && slotComps.settings.length" @close="settingsOpen = false"></component>
+          <!-- 功能抽屉（④：设置/用户/权限/审计/标签/模板/图谱/知识库 统一左侧滑出，互斥） -->
+          <div v-if="settingsOpen && slotComps.settings && slotComps.settings.length" :style="{ '--dw': (drawerWidths.settings || 420) + 'px' }">
+            <component v-for="c in slotComps.settings" :is="c" :key="c.name" @close="settingsOpen = false"></component>
+          </div>
 
-          <!-- ACL modal (F14 admin-acl plugin client) -->
-          <component v-for="c in slotComps.acl" :is="c" :key="c.name" v-if="aclOpen && slotComps.acl && slotComps.acl.length" @close="aclOpen = false"></component>
+          <div v-if="aclOpen && slotComps.acl && slotComps.acl.length" :style="{ '--dw': (drawerWidths.acl || 420) + 'px' }">
+            <component v-for="c in slotComps.acl" :is="c" :key="c.name" @close="aclOpen = false"></component>
+          </div>
 
-          <!-- Audit panel (F15 admin-audit-panel plugin client) -->
-          <component v-for="c in slotComps.audit" :is="c" :key="c.name" v-if="auditOpen && slotComps.audit && slotComps.audit.length" @close="auditOpen = false"></component>
+          <div v-if="auditOpen && slotComps.audit && slotComps.audit.length" :style="{ '--dw': (drawerWidths.audit || 420) + 'px' }">
+            <component v-for="c in slotComps.audit" :is="c" :key="c.name" @close="auditOpen = false"></component>
+          </div>
 
-          <!-- Tags modal (F19 files-tags plugin client) -->
-          <component v-for="c in slotComps.tags" :is="c" :key="c.name" v-if="tagsOpen && slotComps.tags && slotComps.tags.length" @close="tagsOpen = false"></component>
+          <div v-if="tagsOpen && slotComps.tags && slotComps.tags.length" :style="{ '--dw': (drawerWidths.tags || 420) + 'px' }">
+            <component v-for="c in slotComps.tags" :is="c" :key="c.name" @close="tagsOpen = false"></component>
+          </div>
 
-          <!-- Template wizard (F20 files-template plugin client) -->
-          <component v-for="c in slotComps.template" :is="c" :key="c.name" v-if="templateOpen && slotComps.template && slotComps.template.length" @close="templateOpen = false"></component>
+          <div v-if="templateOpen && slotComps.template && slotComps.template.length" :style="{ '--dw': (drawerWidths.template || 420) + 'px' }">
+            <component v-for="c in slotComps.template" :is="c" :key="c.name" @close="templateOpen = false"></component>
+          </div>
 
-          <!-- KG view (F18 files-kg plugin client) -->
-          <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-if="kgOpen && slotComps.kg && slotComps.kg.length" @close="kgOpen = false"></component>
+          <div v-if="kgOpen && slotComps.kg && slotComps.kg.length" :style="{ '--dw': (drawerWidths.kg || 420) + 'px' }">
+            <component v-for="c in slotComps.kg" :is="c" :key="c.name" @close="kgOpen = false"></component>
+          </div>
 
-          <!-- Wiki view (F22 files-wiki plugin client) -->
-          <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length" @close="wikiOpen = false"></component>
+          <div v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length" :style="{ '--dw': (drawerWidths.wiki || 420) + 'px' }">
+            <component v-for="c in slotComps.wiki" :is="c" :key="c.name" @close="wikiOpen = false"></component>
+          </div>
 
-          <!-- 用户管理（admin 插件 client 提供） -->
-          <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>
+          <div v-if="adminOpen && slotComps.admin && slotComps.admin.length" :style="{ '--dw': (drawerWidths.admin || 420) + 'px' }">
+            <component v-for="c in slotComps.admin" :is="c" :key="c.name" @close="adminOpen = false"></component>
+          </div>
 
           <!-- 水印叠加（F05 auth-watermark 提供） -->
           <component v-for="c in slotComps.watermark" :is="c" :key="c.name" v-if="loggedIn && slotComps.watermark && slotComps.watermark.length"></component>

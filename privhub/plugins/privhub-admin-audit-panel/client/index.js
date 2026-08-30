@@ -129,8 +129,8 @@ const AuditPanel = {
   },
   beforeUnmount() { if (this._timer) clearInterval(this._timer) },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:880px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>📋 审计日志</h2>
         <div class="modal-body">
           <!-- 筛选条：时间 / 操作 / 用户 / 项目 -->
@@ -182,6 +182,7 @@ const AuditPanel = {
 
 export default {
   id: 'privhub-admin-audit-panel',
+  drawerWidth: 640,
   slots: {
     audit: AuditPanel,
   },

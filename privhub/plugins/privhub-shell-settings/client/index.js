@@ -50,8 +50,8 @@ const SettingsPanel = {
     },
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>⚙ 设置</h2>
         <div class="modal-body">
           <div style="font-size:13px;color:var(--muted);margin-bottom:12px">主题风格</div>
@@ -88,6 +88,7 @@ const SettingsPanel = {
 
 export default {
   id: 'privhub-shell-settings',
+  drawerWidth: 420,
   slots: {
     settings: SettingsPanel,
   },

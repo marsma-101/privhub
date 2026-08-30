@@ -169,8 +169,8 @@ const WikiView = {
     await this.loadProjects()
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:900px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>📚 知识库</h2>
         <div class="modal-body">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -204,6 +204,7 @@ const WikiView = {
 
 export default {
   id: 'privhub-files-wiki',
+  drawerWidth: 640,
   slots: {
     wiki: WikiView,
   },

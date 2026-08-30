@@ -123,8 +123,8 @@ const AclAdmin = {
     await this.loadRules()
   },
   template: `
-    <div class="modal-mask" @click.self="$emit('close')">
-      <div class="modal" style="width:760px">
+    <div class="drawer-mask" @click.self="$emit('close')">
+      <div class="drawer">
         <h2>🔒 细粒度权限（ACL）</h2>
         <div class="modal-body">
           <div class="field">
@@ -209,6 +209,7 @@ const AclAdmin = {
 
 export default {
   id: 'privhub-admin-acl',
+  drawerWidth: 640,
   slots: {
     acl: AclAdmin,
   },
