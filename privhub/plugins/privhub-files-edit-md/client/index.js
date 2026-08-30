@@ -141,6 +141,35 @@ const MdEditor = {
     wordCount() { return this.doc.trim() ? this.doc.trim().split(/\s+/).length : 0 },
   },
   methods: {
+    /* G2：创建/销毁 EasyMDE 实例（无构建链，单文件 UMD） */
+    initMde() {
+      if (this.mde) return
+      const self = this
+      this.mde = new EasyMDE({
+        element: document.getElementById('privhub-md-editor'),
+        initialValue: this.doc,
+        spellChecker: false,
+        autofocus: true,
+        status: ['lines', 'words'],
+        toolbar: [
+          'bold', 'italic', 'heading', '|', 'quote', 'unordered-list', 'ordered-list', '|',
+          'link', 'image', 'code', 'table', '|', 'preview', 'side-by-side', 'fullscreen', '|', 'guide',
+        ],
+        // 输入即标记 dirty（对应原 textarea @input）
+        inputStyle: 'textarea',
+        // 禁用自带 preview（使用右侧分栏预览 + 双链定位）
+        previewRender() { return '' },
+      })
+      // 输入事件 → dirty + 同步 doc（供右侧预览）
+      this.mde.codemirror.on('change', () => {
+        self.doc = self.mde.value()
+        self.dirty = true
+        self.status = '未保存修改…'
+      })
+    },
+    destroyMde() {
+      if (this.mde) { this.mde.toTextArea(); this.mde = null }
+    },
     async openEditor(e) {
       if (!e || e.isDir || !/\.md$/i.test(e.name)) return
       const rel = nav.path ? nav.path + '/' + e.name : e.name
@@ -158,6 +187,8 @@ const MdEditor = {
       this.dirty = false
       this.status = '已打开 · ' + this.fmtTime(r.mtime)
       this.open = true
+      // G2：DOM 渲染后初始化 EasyMDE（textarea 已挂载）
+      this.$nextTick(() => { this.initMde() })
       bus.emit('md:opened', { project: this.project, path: this.path })
     },
     fmtTime(at) {
@@ -170,6 +201,8 @@ const MdEditor = {
       if (!this.canEdit) { this.status = '无写权限'; return }
       this.saving = true
       try {
+        // G2：从 EasyMDE 取当前内容
+        if (this.mde) this.doc = this.mde.value()
         // 保存前补齐 frontmatter created（4.4）
         let doc = this.doc
         const fm = parseFrontmatter(doc)
@@ -212,7 +245,7 @@ const MdEditor = {
           this.status = '✅ 已回滚到 ' + this.fmtTime(v.at)
           await this.loadVersions()
           const re = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(this.path))
-          if (re.ok) { this.doc = re.doc; this.baseMtime = re.mtime; this.savedMtime = re.mtime; this.dirty = false }
+          if (re.ok) { this.doc = re.doc; this.baseMtime = re.mtime; this.savedMtime = re.mtime; this.dirty = false; if (this.mde) this.mde.value(this.doc) }
           bus.emit('md:changed', { project: this.project, path: this.path })
         } else this.status = r.error || '回滚失败'
       } finally { this.restoring = false }
@@ -220,6 +253,7 @@ const MdEditor = {
     tryClose() {
       if (this.dirty && !confirm('有未保存的修改，确定关闭？')) return
       this.open = false
+      this.destroyMde()
     },
     /* F21：导出当前文档（HTML / PDF / Word，读权限即可） */
     async exportDoc(fmt) {
@@ -293,13 +327,8 @@ const MdEditor = {
         <!-- 编辑 + 预览 -->
         <div style="flex:1;display:flex;min-height:0">
           <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--line)">
-            <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">编辑区（Markdown · frontmatter 自动补齐 created）</div>
-            <textarea
-              v-model="doc"
-              @input="onInput"
-              spellcheck="false"
-              style="flex:1;width:100%;border:none;outline:none;resize:none;padding:14px;font-family:Consolas,monospace;font-size:14px;line-height:1.7;background:var(--panel2);color:var(--text)"
-            ></textarea>
+            <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">编辑区（Markdown · 工具栏排版 · frontmatter 自动补齐 created）</div>
+            <textarea id="privhub-md-editor" spellcheck="false" style="display:none"></textarea>
           </div>
           <div style="flex:1;display:flex;flex-direction:column">
             <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">预览（双链 [[文件名]] 可点击定位）</div>

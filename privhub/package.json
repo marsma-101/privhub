@@ -11,6 +11,9 @@
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/schemastery": "3.18.1",
-    "tsx": "^4.22.4"
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "tsx": "^4.22.4",
+    "xlsx": "^0.18.5"
   }
 }

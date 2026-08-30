@@ -26,11 +26,35 @@ export const inject = ['privhub', 'storage', 'meta']
 
 export interface KgNode { id: string; name: string; path: string; tags: string[] }
 export interface KgEdge { source: string; target: string; type: 'link' | 'tag' }
+/** G3 洞察：图结构统计。 */
+export interface KgInsights {
+  /** 总节点数 */
+  nodeCount: number
+  /** 总边数 */
+  edgeCount: number
+  /** 连通分量数（社区数） */
+  communityCount: number
+  /** 最大社区节点数 */
+  maxCommunitySize: number
+  /** 孤立节点数（无任何边） */
+  isolatedCount: number
+  /** 双链边数 / 标签共现边数 */
+  linkEdges: number
+  tagEdges: number
+  /** 双链密度：有双链的文档数 / 文档节点数（0~1） */
+  linkDensity: number
+  /** 标签 Top（按出现次数降序，最多 5 个） */
+  topTags: { tag: string; count: number }[]
+  /** 关联最多的节点（最多 3 个：入边+出边数） */
+  hubs: { name: string; degree: number }[]
+}
 export interface KgGraph {
   nodes: KgNode[]
   edges: KgEdge[]
   /** 连通分量：每组一个节点 id 数组（按组内节点数降序） */
   communities: string[][]
+  /** G3 洞察 */
+  insights: KgInsights
 }
 
 /** 双链语法：[[文件名]] / [[文件名|别名]] */
@@ -170,7 +194,50 @@ export function apply(ctx: Context): void {
     }
     const communities = [...groups.values()].sort((a, b) => b.length - a.length)
 
-    const graph: KgGraph = { nodes, edges, communities }
+    /* G3 洞察：图结构统计 */
+    const insights: KgInsights = (() => {
+      const nodeCount = nodes.length
+      const edgeCount = edges.length
+      const linkEdges = edges.filter((e) => e.type === 'link').length
+      const tagEdges = edges.filter((e) => e.type === 'tag').length
+      // 孤立节点：度（link+tag 合计）为 0
+      const degree = new Map<string, number>()
+      for (const n of nodes) degree.set(n.path, 0)
+      for (const e of edges) {
+        degree.set(e.source, (degree.get(e.source) ?? 0) + 1)
+        degree.set(e.target, (degree.get(e.target) ?? 0) + 1)
+      }
+      const isolatedCount = [...degree.values()].filter((d) => d === 0).length
+      // 双链密度：至少有一条 link 边的文档数 / 文档节点数
+      const linkedDocs = new Set<string>()
+      for (const e of edges) if (e.type === 'link') { linkedDocs.add(e.source); linkedDocs.add(e.target) }
+      const docNodes = nodes.filter((n) => n.path.toLowerCase().endsWith('.md')).length
+      const linkDensity = docNodes > 0 ? linkedDocs.size / docNodes : 0
+      // 标签 Top
+      const tagCount = new Map<string, number>()
+      for (const n of nodes) for (const t of n.tags) tagCount.set(t, (tagCount.get(t) ?? 0) + 1)
+      const topTags = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([tag, count]) => ({ tag, count }))
+      // 关联最多的节点
+      const hubs = [...degree.entries()]
+        .filter(([path]) => degree.get(path) !== 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([path, d]) => ({ name: nodes.find((n) => n.path === path)?.name ?? path, degree: d }))
+      return {
+        nodeCount,
+        edgeCount,
+        communityCount: communities.length,
+        maxCommunitySize: communities.length ? communities[0].length : 0,
+        isolatedCount,
+        linkEdges,
+        tagEdges,
+        linkDensity: Math.round(linkDensity * 100) / 100,
+        topTags,
+        hubs,
+      }
+    })()
+
+    const graph: KgGraph = { nodes, edges, communities, insights }
     cache.set(project, { at: Date.now(), graph })
     return graph
   }

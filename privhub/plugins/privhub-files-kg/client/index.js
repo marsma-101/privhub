@@ -174,6 +174,32 @@ const KgView = {
             </span>
             <span>实线=双链 · 虚线=标签共现</span>
           </div>
+
+          <!-- G3 洞察卡片 -->
+          <div v-if="graph && graph.insights && graph.nodes.length" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:12px">
+            <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px">📊 图结构</div>
+              <div style="font-size:13px;color:var(--text)">{{ graph.insights.nodeCount }} 节点 · {{ graph.insights.edgeCount }} 边</div>
+              <div style="font-size:12px;color:var(--muted)">{{ graph.insights.communityCount }} 个社区（最大 {{ graph.insights.maxCommunitySize }} 节点）· {{ graph.insights.isolatedCount }} 孤立</div>
+            </div>
+            <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🔗 关联</div>
+              <div style="font-size:13px;color:var(--text)">{{ graph.insights.linkEdges }} 双链 · {{ graph.insights.tagEdges }} 标签共现</div>
+              <div style="font-size:12px;color:var(--muted)">双链密度 {{ Math.round(graph.insights.linkDensity * 100) }}%</div>
+            </div>
+            <div v-if="graph.insights.hubs.length" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px">⭐ 核心节点</div>
+              <div v-for="hb in graph.insights.hubs" :key="hb.name" style="font-size:12.5px;color:var(--text);display:flex;justify-content:space-between;gap:8px">
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ hb.name }}</span><span style="color:var(--accent)">{{ hb.degree }}</span>
+              </div>
+            </div>
+            <div v-if="graph.insights.topTags.length" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🏷️ 热门标签</div>
+              <div v-for="tg in graph.insights.topTags" :key="tg.tag" style="font-size:12.5px;color:var(--text);display:flex;justify-content:space-between;gap:8px">
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ tg.tag }}</span><span style="color:var(--warn)">×{{ tg.count }}</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="$emit('close')">关 闭</button>
