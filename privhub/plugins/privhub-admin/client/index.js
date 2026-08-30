@@ -37,22 +37,22 @@ const UserAdmin = {
     async saveUser() {
       const r = await api('/privhub/api/admin/user-update', { method: 'POST', body: JSON.stringify(this.editUser) })
       if (r.ok) { this.editUser = null; await this.load() }
-      else alert(r.error || '保存失败')
+      else window.PrivHub.toast(r.error || '保存失败', 'error')
     },
     async deleteUser(u) {
       if (!confirm('确认删除用户 ' + u.username + ' ？')) return
       const r = await api('/privhub/api/admin/user-delete', { method: 'POST', body: JSON.stringify({ username: u.username }) })
       if (r.ok) await this.load()
-      else alert(r.error || '删除失败')
+      else window.PrivHub.toast(r.error || '删除失败', 'error')
     },
     openResetPwd(u) { this.resetPwdUser = u; this.resetPwdValue = '' },
     async submitResetPwd() {
       const u = this.resetPwdUser
       if (!u) return
-      if (this.resetPwdValue.length < 6) { alert('新密码至少6位'); return }
+      if (this.resetPwdValue.length < 6) { window.PrivHub.toast('新密码至少6位', 'error'); return }
       const r = await api('/privhub/api/admin/user-reset-password', { method: 'POST', body: JSON.stringify({ username: u.username, newPassword: this.resetPwdValue }) })
       if (r.ok) { this.resetPwdUser = null; this.resetPwdValue = ''; window.PrivHub.toast('密码已重置'); await this.load() }
-      else alert(r.error || '重置失败')
+      else window.PrivHub.toast(r.error || '重置失败', 'error')
     },
   },
   template: `

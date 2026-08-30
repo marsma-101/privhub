@@ -60,7 +60,7 @@ const TagsAdmin = {
         await this.loadAll()
         nav.refreshTree && nav.refreshTree()
       } else {
-        alert(r.error || '保存失败')
+        window.PrivHub.toast(r.error || '保存失败', 'error')
       }
     },
     async filterBy(tag) {

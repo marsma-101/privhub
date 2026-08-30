@@ -711,10 +711,7 @@
           }
         } catch (e) { console.error('[shell] manifest 拉取失败:', e) }
         const self = this
-        if (AUTH.token) {
-          const r = await api('/privhub/api/me')
-          if (r.ok) { AUTH.user = r.user; await nav.loadProjects() } else { logout() }
-        }
+        // B2：watch 提前注册——reload 场景 me() 恢复用户导致的 loggedIn 变化必须被捕获
         this._unwatch = watch(() => self.loggedIn, (v) => {
           if (v) {
             nav.loadProjects(); window.PrivHub.loadBarItems(); bus.emit('auth:login')
@@ -725,6 +722,11 @@
           }
           else { bus.emit('auth:logout') }
         })
+        if (AUTH.token) {
+          const r = await api('/privhub/api/me')
+          // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
+          if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); window.PrivHub.loadBarItems() } else { logout() }
+        }
         /* 供插件（F04 设置面板 / 图标栏分发）打开弹窗 */
         window.PrivHub.openAdmin = () => { self.adminOpen = true }
         window.PrivHub.openSettings = () => { self.settingsOpen = true }

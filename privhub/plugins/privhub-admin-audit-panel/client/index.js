@@ -109,7 +109,7 @@ const AuditPanel = {
       // 复用 api 的鉴权头；blob 触发下载（RFC 5987 文件名由服务端下发）
       const token = window.PrivHub.AUTH.token || ''
       const r = await fetch('/privhub/api/audit/export?' + q.toString(), { headers: { authorization: 'Bearer ' + token } })
-      if (!r.ok) { alert('导出失败'); return }
+      if (!r.ok) { window.PrivHub.toast('导出失败', 'error'); return }
       const blob = await r.blob()
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)

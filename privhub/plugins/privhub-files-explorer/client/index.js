@@ -88,6 +88,8 @@ const FilePanel = {
       ctxMenu: null,
       pressTimer: null,
       batchBusy: false, // E5：批量操作进行中禁用按钮防连点
+      detailTarget: null, // B1：详情弹窗目标（必须在 data 声明，否则关闭不触发重渲染）
+      promptState: null, // P2-1：内联输入模态 { mode:'move'|'mkdir', title, value, target }
     }
   },
   computed: {
@@ -154,7 +156,7 @@ const FilePanel = {
         const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel), {
           headers: { authorization: 'Bearer ' + window.PrivHub.AUTH.token },
         })
-        if (!r.ok) { alert('下载失败（HTTP ' + r.status + '）'); return }
+        if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
         const blob = await r.blob()
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -163,7 +165,7 @@ const FilePanel = {
         a.click()
         a.remove()
         setTimeout(() => URL.revokeObjectURL(a.href), 5000)
-      } catch { alert('下载失败') }
+      } catch { window.PrivHub.toast('下载失败', 'error') }
     },
     /* 批量下载所选（逐个触发，浏览器按队列处理） */
     async batchDownload() {
@@ -176,13 +178,14 @@ const FilePanel = {
         window.PrivHub.toast('已开始下载 ' + files.length + ' 个文件')
       } finally { this.batchBusy = false }
     },
-    /* 批量移动所选（目标目录必须已存在；同卷 rename） */
-    async batchMove() {
+    /* 批量移动所选（目标目录必须已存在；同卷 rename；P2-1：内联输入模态替代 prompt） */
+    batchMove() {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       if (!names.length) return
-      const toDir = prompt('请输入目标目录（相对当前项目根，留空 = 项目根）：')
-      if (toDir === null) return
-      const dir = toDir.trim()
+      this.promptState = { mode: 'move', title: '移动到哪个目录？（相对当前项目根，留空 = 项目根）', value: '' }
+    },
+    async doBatchMove(dir) {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       this.batchBusy = true
       let okCount = 0
       try {
@@ -201,18 +204,33 @@ const FilePanel = {
         await nav.openDir(nav.project, nav.path)
       }
     },
-    async doMkdirHere() {
+    /* 新建子文件夹（P2-1：内联输入模态替代 prompt） */
+    doMkdirHere() {
       const e = this.ctxMenu ? this.ctxMenu.entry : null
       this.ctxMenu = null
       if (!e) return
+      this.promptState = { mode: 'mkdir', title: '在「' + e.name + '」中新建文件夹的名称：', value: '', target: e }
+    },
+    async doMkdirHereSubmit(name) {
+      const e = this.promptState ? this.promptState.target : null
+      if (!e) return
       // 在长按的文件夹内新建子文件夹：临时切到该目录创建
       const rel = nav.relPathOf(e.name)
-      const name = prompt('请输入在「' + e.name + '」中新建的文件夹名称：')
-      if (!name) return
       const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, name }) })
       if (r.ok) { nav.refreshTree(); nav.openDir(nav.project, rel); window.PrivHub.toast('文件夹「' + name + '」已创建') }
       else window.PrivHub.toast(r.error || '新建失败', 'error')
     },
+    /* P2-1：内联输入模态提交/取消 */
+    submitPrompt() {
+      const st = this.promptState
+      if (!st) return
+      const value = st.value.trim()
+      this.promptState = null
+      if (!value) return
+      if (st.mode === 'move') void this.doBatchMove(value)
+      else if (st.mode === 'mkdir') void this.doMkdirHereSubmit(value)
+    },
+    cancelPrompt() { this.promptState = null },
     doSubmitMkdir() { nav.submitMkdir() },
     doAddFile() { nav.addFile() },
     /* ---- F10 批量操作：多选 + 批量删除 ---- */
@@ -357,6 +375,23 @@ const FilePanel = {
           </div>
           <div class="modal-foot">
             <button class="btn btn-ghost" @click="detailTarget = null">关 闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- P2-1：内联输入模态（替代原生 prompt：批量移动目录 / 新建子文件夹命名） -->
+      <div v-if="promptState" class="modal-mask" @click.self="cancelPrompt">
+        <div class="modal" style="width:380px">
+          <h2>{{ promptState.mode === 'move' ? '📦 批量移动' : '＋ 新建子文件夹' }}</h2>
+          <div class="modal-body">
+            <div class="field">
+              <label>{{ promptState.title }}</label>
+              <input v-model="promptState.value" @keyup.enter="submitPrompt" placeholder="输入后回车确认" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)" />
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-ghost" @click="cancelPrompt">取 消</button>
+            <button class="btn btn-primary" style="width:auto" @click="submitPrompt">确 定</button>
           </div>
         </div>
       </div>

@@ -85,7 +85,7 @@ const AclAdmin = {
           this.entries = r.entries
           this.selected = null
         } else {
-          alert(r.error || '读取目录失败')
+          window.PrivHub.toast(r.error || '读取目录失败', 'error')
         }
       } finally { this.loading = false }
     },
@@ -99,7 +99,7 @@ const AclAdmin = {
     },
     select(e) { this.selected = e },
     async savePolicy() {
-      if (!this.selected) { alert('请先选中文件或文件夹'); return }
+      if (!this.selected) { window.PrivHub.toast('请先选中文件或文件夹', 'error'); return }
       this.saving = true
       try {
         const target = (this.path ? this.path + '/' : '') + this.selected.name
@@ -108,14 +108,14 @@ const AclAdmin = {
           body: JSON.stringify({ project: this.project, path: target, target: this.selected.isDir ? 'dir' : 'file', role: this.role, mode: this.mode }),
         })
         if (r.ok) { await this.loadRules(); window.PrivHub.toast('已保存：' + this.selTarget + ' → ' + this.modeLabel(this.mode)) }
-        else alert(r.error || '保存失败')
+        else window.PrivHub.toast(r.error || '保存失败', 'error')
       } finally { this.saving = false }
     },
     async removeRule(id) {
       if (!confirm('确认删除这条规则？')) return
       const r = await api('/privhub/api/acl/rules', { method: 'DELETE', body: JSON.stringify({ id }) })
       if (r.ok) await this.loadRules()
-      else alert(r.error || '删除失败')
+      else window.PrivHub.toast(r.error || '删除失败', 'error')
     },
   },
   async mounted() {
