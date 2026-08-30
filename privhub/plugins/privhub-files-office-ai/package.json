@@ -1,0 +1,6 @@
+{
+  "name": "privhub-files-office-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Office 智能体入口（API Key 鉴权，外部 AI 读写项目 Office 文档）"
+}

@@ -117,6 +117,8 @@ export class AuditService extends Service {
   async query(filter: AuditFilter = {}): Promise<AuditEntry[]> {
     const all = await this.readAll()
     const out = all.filter((e) => {
+      // 防御：跳过 at 无效的损坏记录（历史遗留坏数据，避免 CSV/展示崩溃）
+      if (typeof e.at !== 'number' || Number.isNaN(e.at)) return false
       if (filter.user !== undefined && e.user !== filter.user) return false
       if (filter.action !== undefined && e.action !== filter.action) return false
       if (filter.from !== undefined && e.at < filter.from) return false
