@@ -41,7 +41,7 @@ export function apply(ctx: Context): void {
 
   /** 读一个文件并索引（不存在/超限/非文本忽略）。 */
   async function indexFile(project: string, path: string): Promise<void> {
-    const target = svc.resolveInProject(project, path)
+    const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return
     const s = await stat(target).catch(() => null)
     if (!s || s.isDirectory() || s.size > MAX_BYTES) return
@@ -53,13 +53,13 @@ export function apply(ctx: Context): void {
 
   /** 递归扫描项目内文本文件并索引。 */
   async function indexTree(project: string, rel = ''): Promise<void> {
-    const dir = svc.resolveInProject(project, rel)
+    const dir = await svc.resolveReal(project, rel)
     if (dir === null || !existsSync(dir)) return
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const e of entries) {
       if (e.name.startsWith('.')) continue
       const child = rel === '' ? e.name : rel + '/' + e.name
-      if (e.isDirectory()) await indexTree(project, child)
+      if (e.isDirectory() && !e.isSymbolicLink()) await indexTree(project, child)
       else await indexFile(project, child)
     }
   }

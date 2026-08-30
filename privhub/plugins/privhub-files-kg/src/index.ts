@@ -65,14 +65,14 @@ export function apply(ctx: Context): void {
 
   /** 递归收集项目内文件列表（.md 全部 + 其余扩展名仅作候选）。 */
   async function collectFiles(project: string, rel = ''): Promise<{ path: string; name: string; isMd: boolean }[]> {
-    const dir = svc.resolveInProject(project, rel)
+    const dir = await svc.resolveReal(project, rel)
     if (dir === null || !existsSync(dir)) return []
     const out: { path: string; name: string; isMd: boolean }[] = []
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const e of entries) {
       if (e.name.startsWith('.')) continue
       const child = rel === '' ? e.name : rel + '/' + e.name
-      if (e.isDirectory()) {
+      if (e.isDirectory() && !e.isSymbolicLink()) {
         out.push(...await collectFiles(project, child))
       } else if (extname(e.name).toLowerCase() === '.md') {
         out.push({ path: child, name: e.name, isMd: true })
@@ -85,7 +85,7 @@ export function apply(ctx: Context): void {
 
   /** 读取 .md 文本（≤512KB）。 */
   async function readMd(project: string, path: string): Promise<string> {
-    const target = svc.resolveInProject(project, path)
+    const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return ''
     const s = await stat(target).catch(() => null)
     if (!s || s.isDirectory() || s.size > 512 * 1024) return ''

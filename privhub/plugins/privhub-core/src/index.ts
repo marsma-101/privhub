@@ -310,14 +310,25 @@ export class PrivHubStore extends Service {
   }
 
   /** 安全解析 + realpath 防 junction/symlink 穿越（读取/写入类接口调用）。
-   *  字符串校验通过后仍可能经 junction 指向数据根之外（如 data/），必须二次校验。 */
+   *  字符串校验通过后仍可能经 junction 指向数据根之外（如 data/），必须二次校验。
+   *  目标不存在时（新建场景）校验其父目录，父目录安全即放行。 */
   async resolveReal(project: string, relPath: string): Promise<string | null> {
     const target = this.resolveInProject(project, relPath)
     if (target === null) return null
     try {
       const base = resolve(this.dataRoot, project)
-      const [rb, rt] = await Promise.all([realpath(base), realpath(target)])
-      if (rt !== rb && !rt.startsWith(rb + sep)) return null
+      const rb = await realpath(base)
+      const check = (real: string): boolean => real === rb || real.startsWith(rb + sep)
+      let rt: string
+      try {
+        rt = await realpath(target)
+      } catch {
+        // 目标不存在：父目录 realpath 校验（防 junction 目录下新建穿透）
+        const parent = await realpath(dirname(target)).catch(() => null)
+        if (parent === null || !check(parent)) return null
+        return target
+      }
+      if (!check(rt)) return null
       return target
     } catch { return null }
   }
@@ -326,9 +337,10 @@ export class PrivHubStore extends Service {
   async listFiles(project: string, subPath = ''): Promise<{ name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[]> {
     const dir = this.resolveInProject(project, subPath)
     if (dir === null || !existsSync(dir)) return []
+    // 防 junction/symlink 目录穿越：不跟随符号链接条目（Windows junction 的 isSymbolicLink() 为 true）
     const ents = await readdir(dir, { withFileTypes: true })
     const stats = await Promise.all(ents.map(async (e) => {
-      if (e.name.startsWith('.')) return null
+      if (e.name.startsWith('.') || e.isSymbolicLink()) return null
       const full = join(dir, e.name)
       try {
         const s = await stat(full)

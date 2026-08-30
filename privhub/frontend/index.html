@@ -637,6 +637,7 @@
       else if (view === 'tags') { window.PrivHub.openTags && window.PrivHub.openTags() }
       else if (view === 'template') { window.PrivHub.openTemplate && window.PrivHub.openTemplate() }
       else if (view === 'kg') { window.PrivHub.openKg && window.PrivHub.openKg() }
+      else if (view === 'wiki') { window.PrivHub.openWiki && window.PrivHub.openWiki() }
     }
 
     /* ============ 根组件（骨架容器） ============ */
@@ -654,6 +655,7 @@
           tagsOpen: false,
           templateOpen: false,
           kgOpen: false,
+          wikiOpen: false,
           adminOpen: false,
         }
       },
@@ -731,6 +733,7 @@
         window.PrivHub.openTags = () => { self.tagsOpen = true }
         window.PrivHub.openTemplate = () => { self.templateOpen = true }
         window.PrivHub.openKg = () => { self.kgOpen = true }
+        window.PrivHub.openWiki = () => { self.wikiOpen = true }
       },
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
@@ -808,6 +811,9 @@
 
           <!-- KG view (F18 files-kg plugin client) -->
           <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-if="kgOpen && slotComps.kg && slotComps.kg.length" @close="kgOpen = false"></component>
+
+          <!-- Wiki view (F22 files-wiki plugin client) -->
+          <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-if="wikiOpen && slotComps.wiki && slotComps.wiki.length" @close="wikiOpen = false"></component>
 
           <!-- 用户管理（admin 插件 client 提供） -->
           <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-if="adminOpen && slotComps.admin && slotComps.admin.length" @close="adminOpen = false"></component>

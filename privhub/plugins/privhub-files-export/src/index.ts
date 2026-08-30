@@ -135,7 +135,7 @@ export function apply(ctx: Context): void {
       if (!['html', 'doc', 'pdf'].includes(format)) return json(res, 400, { ok: false, error: 'format 必须为 html/doc/pdf' })
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
       if (extname(path).toLowerCase() !== '.md') return json(res, 400, { ok: false, error: '仅支持 .md 文档导出' })
-      const target = svc.resolveInProject(project, path)
+      const target = await svc.resolveReal(project, path)
       if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文档不存在' })
       const s = await stat(target)
       if (s.isDirectory() || s.size > MAX_BYTES) return json(res, 400, { ok: false, error: '文档过大或为文件夹（≤512KB）' })

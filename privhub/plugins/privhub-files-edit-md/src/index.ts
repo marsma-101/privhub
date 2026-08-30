@@ -60,7 +60,7 @@ export function apply(ctx: Context): void {
 
   /** 版本存档：把当前文件内容快照存入版本库（上限 MAX_VERSIONS；S7 版本快照同样加密）。 */
   async function snapshot(project: string, path: string): Promise<void> {
-    const target = svc.resolveInProject(project, path)
+    const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return
     const at = Date.now()
     const hash = createHash('sha1').update(project + '::' + path).digest('hex').slice(0, 8)
@@ -92,7 +92,7 @@ export function apply(ctx: Context): void {
         const path = url.searchParams.get('path') ?? ''
         if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
         if (!isMd(path)) return json(res, 400, { ok: false, error: '仅支持 .md 文档' })
-        const target = svc.resolveInProject(project, path)
+        const target = await svc.resolveReal(project, path)
         if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文档不存在' })
         const s = await stat(target)
         if (s.isDirectory()) return json(res, 400, { ok: false, error: '目标为文件夹' })
@@ -107,12 +107,13 @@ export function apply(ctx: Context): void {
       const doc = String(body.doc ?? '')
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
       if (!isMd(path)) return json(res, 400, { ok: false, error: '仅支持 .md 文档' })
-      const target = svc.resolveInProject(project, path)
+      const target = await svc.resolveReal(project, path)
       if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
       if (!existsSync(target)) {
-        // 允许新建 .md（父目录须存在）
+        // 允许新建 .md（父目录须存在；父目录同样 realpath 校验防 junction 目录写穿越）
         const parent = dirname(target)
-        if (parent !== svc.resolveInProject(project, '') && !existsSync(parent)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+        const rootReal = await svc.resolveReal(project, '')
+        if (rootReal === null || (parent !== rootReal && !existsSync(parent))) return json(res, 400, { ok: false, error: '目标目录不存在' })
         await mkdir(parent, { recursive: true })
       }
       // 冲突检测：baseMtime 与当前文件 mtime 不一致 → 409（客户端确认覆盖后重试）
@@ -169,7 +170,7 @@ export function apply(ctx: Context): void {
       const rec = list.find((v) => v.at === at)
       if (!rec) return json(res, 404, { ok: false, error: '版本不存在' })
       const body2 = await ctx.storage.readBuffer(join(VERSIONS_DIR, rec.file))
-      const target = svc.resolveInProject(project, path)
+      const target = await svc.resolveReal(project, path)
       if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
       await snapshot(project, path) // 回滚前先存档当前版（回滚可逆）
       await ctx.storage.writeBuffer(target, body2)
