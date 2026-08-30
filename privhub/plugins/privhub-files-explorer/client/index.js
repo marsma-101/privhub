@@ -241,6 +241,19 @@ const FilePanel = {
       else { nav.checked[e.name] = true }
     },
     checkedCount() { return Object.keys(nav.checked).filter(n => nav.checked[n]).length },
+    /* P2-6：选中文件合计大小（仅文件计入；文件夹不计） */
+    checkedSizeText() {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      let total = 0
+      for (const n of names) {
+        const e = nav.entries.find(x => x.name === n)
+        if (e && !e.isDir && typeof e.size === 'number') total += e.size
+      }
+      if (total === 0) return ''
+      if (total < 1024) return total + ' B'
+      if (total < 1024 * 1024) return (total / 1024).toFixed(1) + ' KB'
+      return (total / 1024 / 1024).toFixed(1) + ' MB'
+    },
     selectAll() {
       const all = this.entries.every(e => nav.checked[e.name])
       if (all) nav.checked = {}
@@ -282,6 +295,8 @@ const FilePanel = {
           </span>
         </span>
         <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 项</span>
+        <!-- P2-6：状态栏信息（已选 M 项 · 合计大小） -->
+        <span v-if="checkedCount() > 0" class="crumb" style="margin-left:8px;color:var(--accent)">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
         <span class="spacer"></span>
         <!-- F10 批量工具栏：有选中项时出现 -->
         <template v-if="checkedCount() > 0">

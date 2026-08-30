@@ -380,6 +380,8 @@
          'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki
          trashView/searchView/favView 为兼容镜像（视图型测试仍可读） */
       activeView: 'files',
+      /* P2-3：骨架级内联输入模态（{ title, value, onOk } | null） */
+      inputState: null,
       viewMode: 'grid',
       sortKey: 'name',
       sortAsc: true,
@@ -514,20 +516,28 @@
       },
 
       /* ---- 文件操作 ---- */
+      /* P2-3：输入类 prompt → 骨架级内联输入模态（nav.askInput 由 App 渲染，onOk 回执行） */
+      askInput(title, initial, onOk) {
+        nav.inputState = { title, value: initial || '', onOk }
+      },
       async submitMkdir() {
-        const name = prompt('请输入文件夹名称：')
-        if (!name) return
-        const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: nav.path, name }) })
-        if (r.ok) { await nav.openDir(nav.project, nav.path); nav.refreshTree(); toast('文件夹「' + name + '」已创建') }
-        else toast(r.error || '新建失败', 'error')
+        const navSelf = nav
+        nav.askInput('请输入文件夹名称：', '', async (name) => {
+          if (!name) return
+          const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: navSelf.project, path: navSelf.path, name }) })
+          if (r.ok) { await navSelf.openDir(navSelf.project, navSelf.path); navSelf.refreshTree(); toast('文件夹「' + name + '」已创建') }
+          else toast(r.error || '新建失败', 'error')
+        })
       },
       async doRename(entry) {
-        const rel = nav.relPathOf(entry.name)
-        const newName = prompt('请输入新名称：', entry.name)
-        if (!newName || newName === entry.name) return
-        const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, newName }) })
-        if (r.ok) { await nav.openDir(nav.project, nav.path); toast('已重命名为「' + newName + '」') }
-        else toast(r.error || '重命名失败', 'error')
+        const navSelf = nav
+        const rel = navSelf.relPathOf(entry.name)
+        nav.askInput('请输入新名称：', entry.name, async (newName) => {
+          if (!newName || newName === entry.name) return
+          const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: navSelf.project, path: rel, newName }) })
+          if (r.ok) { await navSelf.openDir(navSelf.project, navSelf.path); toast('已重命名为「' + newName + '」') }
+          else toast(r.error || '重命名失败', 'error')
+        })
       },
       async doDelete(entry) {
         if (!confirm('将「' + entry.name + '」移入回收站？')) return
@@ -570,7 +580,7 @@
       },
       async restoreTrash(t) {
         const r = await api('/privhub/api/trash-restore', { method: 'POST', body: JSON.stringify({ id: t.id }) })
-        if (!r.ok) { alert(r.error || '恢复失败'); return }
+        if (!r.ok) { toast(r.error || '恢复失败', 'error'); return }
         nav.tree = reactive({})
         if (t.relPath === '') await nav.loadProjects()
         const parent = t.relPath.includes('/') ? t.relPath.slice(0, t.relPath.lastIndexOf('/')) : ''
@@ -582,24 +592,26 @@
       async purgeTrash(t) {
         if (!confirm('彻底删除「' + t.name + '」？此操作不可恢复！')) return
         const r = await api('/privhub/api/trash-purge', { method: 'POST', body: JSON.stringify({ id: t.id }) })
-        if (!r.ok) { alert(r.error || '删除失败'); return }
+        if (!r.ok) { toast(r.error || '删除失败', 'error'); return }
         await nav.loadTrash()
         bus.emit('trash:changed', { id: t.id })
       },
       async cleanExpiredTrash() {
         if (!confirm('清理在回收站中超过 30 天的条目（物理删除，不可恢复）？')) return
         const r = await api('/privhub/api/trash-clean', { method: 'POST', body: '{}' })
-        if (r.ok) { alert('已清理 ' + (r.purged || 0) + ' 条'); await nav.loadTrash() }
-        else alert(r.error || '清理失败')
+        if (r.ok) { toast('已清理 ' + (r.purged || 0) + ' 条'); await nav.loadTrash() }
+        else toast(r.error || '清理失败', 'error')
       },
 
       /* ---- 管理员 ---- */
       async newProject() {
-        const name = prompt('新项目名称：')
-        if (!name) return
-        const r = await api('/privhub/api/project-create', { method: 'POST', body: JSON.stringify({ name }) })
-        if (r.ok) await nav.loadProjects()
-        else alert(r.error || '新建失败')
+        const navSelf = nav
+        nav.askInput('新项目名称：', '', async (name) => {
+          if (!name) return
+          const r = await api('/privhub/api/project-create', { method: 'POST', body: JSON.stringify({ name }) })
+          if (r.ok) await navSelf.loadProjects()
+          else toast(r.error || '新建失败', 'error')
+        })
       },
       async doLogout() {
         try { await api('/privhub/api/logout') } catch {}
@@ -685,6 +697,7 @@
           theme: THEME,
           nav,
           badges: window.PrivHub.badges,
+          inputValue: '',   // P2-3：内联输入模态值
         }
       },
       computed: {
@@ -698,7 +711,22 @@
           return arr
         },
       },
+      watch: {
+        // P2-3：输入模态打开时预填初始值
+        'nav.inputState'(st) {
+          if (st) this.inputValue = st.value || ''
+        },
+      },
       methods: {
+        /* P2-3：内联输入模态确认/取消 */
+        confirmNavInput() {
+          const st = this.nav.inputState
+          if (!st) return
+          this.nav.inputState = null
+          const fn = st.onOk
+          if (fn) void fn(this.inputValue.trim())
+        },
+        cancelNavInput() { this.nav.inputState = null },
         /* A2：左面板拖拽调宽（52 = 图标栏宽度；clamp 0~420；mouseup 持久化） */
         startResize(e) {
           e.preventDefault()
@@ -852,6 +880,25 @@
 
           <!-- Markdown editor overlay (F16 files-edit-md) -->
           <component v-for="c in slotComps['md-editor']" :is="c" :key="c.name" v-if="loggedIn && slotComps['md-editor'] && slotComps['md-editor'].length"></component>
+
+          <!-- P2-3：骨架级内联输入模态（替代原生 prompt：新建文件夹/重命名/新建项目） -->
+          <div v-if="loggedIn && nav.inputState" class="modal-mask" @click.self="cancelNavInput">
+            <div class="modal" style="width:380px">
+              <h2>{{ nav.inputState.title }}</h2>
+              <div class="modal-body">
+                <input
+                  v-model="inputValue"
+                  @keyup.enter="confirmNavInput"
+                  placeholder="输入后回车确认"
+                  style="width:100%;padding:9px 12px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:14px;outline:none"
+                />
+              </div>
+              <div class="modal-foot">
+                <button class="btn btn-ghost" @click="cancelNavInput">取 消</button>
+                <button class="btn btn-primary" style="width:auto" @click="confirmNavInput">确 定</button>
+              </div>
+            </div>
+          </div>
         </div>
       `,
     }
