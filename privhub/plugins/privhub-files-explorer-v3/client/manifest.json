@@ -3,7 +3,7 @@
   "title": "文件浏览 V3",
   "icon": "📁",
   "description": "V3 布局：侧边栏文件树（含文件+⋯菜单）+ 中央 VS Code 式标签页内容区",
-  "slots": ["tree", "panel"],
+  "slots": ["tree", "panel", "preview", "user-area"],
   "barItems": [
     { "icon": "📁", "title": "文件", "slot": "panel", "view": "files" }
   ]

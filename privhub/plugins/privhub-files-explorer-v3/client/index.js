@@ -52,7 +52,7 @@ styleEl.textContent = `
 .v3-content-title .v3-path { font-weight:400; font-size:11.5px; color:var(--muted); }
 .v3-op-btn { font-size:12px; padding:4px 10px; border-radius:6px; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; }
 .v3-op-btn:hover { color:var(--accent); border-color:var(--accent); }
-.v3-md { font-size:13.5px; line-height:1.75; color:var(--text); max-width:900px; }
+.v3-md { font-size:var(--v3-preview-font, 13.5px); line-height:1.75; color:var(--text); max-width:900px; }
 .v3-md h1,.v3-md h2,.v3-md h3 { margin:16px 0 8px; }
 .v3-md pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; font-size:12.5px; }
 .v3-md code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12.5px; }
@@ -62,7 +62,7 @@ styleEl.textContent = `
 .v3-md th { background:var(--panel); }
 .v3-md blockquote { border-left:3px solid var(--accent); margin:8px 0; padding:2px 12px; color:var(--muted); }
 .v3-md a { color:var(--accent); }
-.v3-text { font-size:13px; white-space:pre-wrap; word-break:break-all; color:var(--text); font-family:Consolas,Menlo,monospace; }
+.v3-text { font-size:var(--v3-preview-font, 13.5px); white-space:pre-wrap; word-break:break-all; color:var(--text); font-family:Consolas,Menlo,monospace; }
 .v3-img { max-width:100%; border-radius:8px; }
 .v3-pdf { width:100%; height:calc(100vh - 260px); border:1px solid var(--line); border-radius:8px; }
 .v3-loading { color:var(--muted); font-size:13px; padding:60px 0; text-align:center; }
@@ -593,7 +593,7 @@ const TreeV3 = {
 /* ================= 文件面板（panel slot）：标签栏 + 主区 ================= */
 const PanelV3 = {
   name: 'files-panel-v3',
-  data() { return { nav, store, AUTH, pressTimer: null, batchBusy: false } },
+  data() { return { nav, store, AUTH, pressTimer: null, batchBusy: false, previewFont: parseFloat(localStorage.getItem('privhub_preview_font') || '13.5') || 13.5 } },
   computed: {
     /* 中间栏只显示文件（文件夹在左侧目录树管理） */
     entries() {
@@ -677,6 +677,14 @@ const PanelV3 = {
       nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
       nav.rightOpen = true
     },
+    /* ---- 预览字体大小（独立于页面字体） ---- */
+    applyPreviewFont() {
+      document.documentElement.style.setProperty('--v3-preview-font', this.previewFont + 'px')
+      try { localStorage.setItem('privhub_preview_font', String(this.previewFont)) } catch { /* 忽略 */ }
+    },
+    previewFontInc() { this.previewFont = Math.min(24, Math.round((this.previewFont + 1) * 10) / 10); this.applyPreviewFont() },
+    previewFontDec() { this.previewFont = Math.max(10, Math.round((this.previewFont - 1) * 10) / 10); this.applyPreviewFont() },
+    previewFontReset() { this.previewFont = 13.5; this.applyPreviewFont() },
     reloadActive() { const t = this.activeTab; if (t) void loadContent(t.key) },
     /* ---- 目录浏览 ---- */
     onEntryClick(e) {
@@ -830,6 +838,7 @@ const PanelV3 = {
   },
   mounted() {
     restoreTabs()
+    this.applyPreviewFont()
     this.maybeHint()
     this._offMd = bus.on('md:changed', () => {
       const t = store.tabs.find(x => x.key === store.activeKey)
@@ -875,6 +884,11 @@ const PanelV3 = {
             <button class="v3-op-btn" @click="reloadActive">🔄 刷新</button>
             <button class="v3-op-btn" @click="downloadActive">⬇ 下载</button>
             <button class="v3-op-btn" @click="detailActive">ℹ️ 详情</button>
+            <span style="display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:1px 4px;font-size:12px;color:var(--muted)" title="预览内容字体大小（独立于页面字体）">
+              <span style="cursor:pointer;padding:0 5px" @click="previewFontDec">A−</span>
+              <span style="cursor:pointer;padding:0 5px;min-width:32px;text-align:center" @click="previewFontReset">{{ previewFont }}px</span>
+              <span style="cursor:pointer;padding:0 5px" @click="previewFontInc">A+</span>
+            </span>
           </div>
           <div v-if="content.state === 'loading'" class="v3-loading">正在加载…</div>
           <div v-else-if="content.state === 'error'" class="v3-loading">{{ content.error }}</div>
@@ -1215,11 +1229,39 @@ const RightDetail = {
   `,
 }
 
+/* ================= 顶栏字体缩放（user-area slot） ================= */
+const FontZoom = {
+  name: 'v3-font-zoom',
+  data() {
+    return {
+      scale: parseFloat(localStorage.getItem('privhub_ui_font_scale') || '1') || 1,
+    }
+  },
+  methods: {
+    apply() {
+      document.documentElement.style.zoom = String(this.scale)
+      try { localStorage.setItem('privhub_ui_font_scale', String(this.scale)) } catch { /* 忽略 */ }
+    },
+    inc() { this.scale = Math.min(1.4, Math.round((this.scale + 0.1) * 10) / 10); this.apply() },
+    dec() { this.scale = Math.max(0.8, Math.round((this.scale - 0.1) * 10) / 10); this.apply() },
+    reset() { this.scale = 1; this.apply() },
+  },
+  mounted() { this.apply() },
+  template: `
+    <span style="display:flex;align-items:center;gap:2px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:2px 4px">
+      <span title="页面字体调小" style="cursor:pointer;padding:0 4px" @click="dec">A−</span>
+      <span title="重置页面字体" style="cursor:pointer;padding:0 4px;min-width:34px;text-align:center" @click="reset">{{ Math.round(scale * 100) }}%</span>
+      <span title="页面字体调大" style="cursor:pointer;padding:0 4px" @click="inc">A+</span>
+    </span>
+  `,
+}
+
 export default {
   id: 'privhub-files-explorer-v3',
   slots: {
     tree: TreeV3,
     panel: PanelV3,
     preview: RightDetail,
+    'user-area': FontZoom,
   },
 }
