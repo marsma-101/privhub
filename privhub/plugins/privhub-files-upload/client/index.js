@@ -56,6 +56,19 @@ const UploadController = {
       if (!confirm('上传 ' + files.length + ' 个文件到「' + dest + '」？同名文件将被覆盖。')) return
       await this.uploadAll(files)
     },
+    /* 文件夹选择：webkitdirectory 的 File 带 webkitRelativePath（含顶层文件夹名），
+       赋给 _relPath 后复用递归上传管道（目录自动创建、同名覆盖） */
+    handleDirFiles(fileList) {
+      const files = Array.from(fileList).map((f) => {
+        f._relPath = f.webkitRelativePath || f.name
+        return f
+      })
+      if (!files.length || !nav.project) return
+      const top = files[0]._relPath.split('/')[0]
+      const dest = nav.path ? nav.project + '/' + nav.path + '/' + top : nav.project + '/' + top
+      if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + dest + '」？同名文件将被覆盖。')) return
+      void this.uploadAll(files)
+    },
     /* 确保目录树存在（递归上传需要） */
     async ensureDirs(dirs) {
       for (const d of dirs) {
@@ -130,15 +143,18 @@ const UploadController = {
     document.addEventListener('dragover', this._onDragOver)
     document.addEventListener('drop', this._onDrop)
     this._offReq = bus.on('upload:request', () => { this.$refs.fileInput && this.$refs.fileInput.click() })
+    this._offReqDir = bus.on('upload:request-dir', () => { this.$refs.dirInput && this.$refs.dirInput.click() })
   },
   beforeUnmount() {
     document.removeEventListener('dragover', this._onDragOver)
     document.removeEventListener('drop', this._onDrop)
     if (this._offReq) this._offReq()
+    if (this._offReqDir) this._offReqDir()
   },
   template: `
     <div style="display:none">
       <input ref="fileInput" type="file" multiple @change="e => { handleFiles(e.target.files); e.target.value = '' }" />
+      <input ref="dirInput" type="file" webkitdirectory multiple @change="e => { handleDirFiles(e.target.files); e.target.value = '' }" />
     </div>
   `,
 }

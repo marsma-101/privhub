@@ -28,7 +28,6 @@ const store = reactive({
   detailTarget: null,
   permTarget: null,
   promptState: null, // { mode:'move'|'mkdir', title, value, target }
-  dup: null,         // { loading, error, project, groups:[{name,size,sizeText,count,files:[{path,mtime}]}], keep:{g:idx}, del:{g:{idx:true}} }
 })
 
 /* ================= 样式注入（V3 专属，不依赖骨架 CSS） ================= */
@@ -71,22 +70,6 @@ styleEl.textContent = `
 .file-table-row .v3-row-dots { visibility:hidden; margin-left:auto; width:22px; height:22px; border-radius:5px; text-align:center; line-height:20px; font-size:13px; color:var(--muted); cursor:pointer; flex-shrink:0; }
 .file-table-row:hover .v3-row-dots { visibility:visible; }
 .file-table-row .v3-row-dots:hover { background:var(--panel); color:var(--accent); }
-/* ===== 查重面板 ===== */
-.v3-dup-head { display:flex; align-items:center; gap:10px; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line); }
-.v3-dup-title { font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
-.v3-dup-sum { font-size:12px; color:var(--muted); }
-.v3-dup-group { border:1px solid var(--line); border-radius:8px; margin-bottom:12px; background:var(--panel); overflow:hidden; }
-.v3-dup-group-head { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel2); border-bottom:1px solid var(--line); font-size:12.5px; font-weight:600; }
-.v3-dup-group-head .v3-dup-count { color:var(--warn); font-weight:400; }
-.v3-dup-file { display:flex; align-items:center; gap:10px; padding:7px 12px; font-size:12.5px; border-bottom:1px solid var(--line); }
-.v3-dup-file:last-child { border-bottom:none; }
-.v3-dup-file:hover { background:var(--panel2); }
-.v3-dup-file .v3-dup-path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
-.v3-dup-file .v3-dup-keep { display:flex; align-items:center; gap:4px; color:var(--accent); font-size:12px; cursor:pointer; flex-shrink:0; }
-.v3-dup-file .v3-dup-del { display:flex; align-items:center; gap:4px; color:var(--danger); font-size:12px; cursor:pointer; flex-shrink:0; }
-.v3-dup-file.keep { background:rgba(90,130,200,.07); }
-.v3-dup-file.todel { opacity:.55; }
-.v3-dup-foot { display:flex; align-items:center; gap:10px; margin-top:14px; }
 `
 document.head.appendChild(styleEl)
 
@@ -691,75 +674,6 @@ const PanelV3 = {
     doEdit() { doEdit() },
     doMkdirHere() { doMkdirHere() },
     async openPerm() { await openPerm() },
-    /* ---- 查重（文件名+大小相同的文件，仅当前项目） ---- */
-    async openDup() {
-      const project = nav.project
-      if (!project) return
-      store.dup = { loading: true, error: '', project, groups: [], keep: {}, del: {} }
-      try {
-        const r = await api('/privhub/api/duplicates?project=' + encodeURIComponent(project))
-        if (r.ok) {
-          const groups = r.groups || []
-          const keep = {}
-          for (let g = 0; g < groups.length; g++) keep[g] = 0 // 每组默认保留第一个
-          store.dup = { loading: false, error: '', project, groups, keep, del: {} }
-        } else {
-          store.dup = { loading: false, error: r.error || '查重失败', project, groups: [], keep: {}, del: {} }
-        }
-      } catch {
-        store.dup = { loading: false, error: '查重失败（网络错误）', project, groups: [], keep: {}, del: {} }
-      }
-    },
-    closeDup() { store.dup = null },
-    dupKeep(g, idx) {
-      store.dup.keep[g] = idx
-      // 保留的文件不能标记删除
-      const del = store.dup.del[g]
-      if (del && del[idx]) { delete del[idx]; if (!Object.keys(del).length) delete store.dup.del[g] }
-    },
-    dupToggleDel(g, idx) {
-      if (!store.dup.del[g]) store.dup.del[g] = {}
-      if (store.dup.del[g][idx]) { delete store.dup.del[g][idx]; if (!Object.keys(store.dup.del[g]).length) delete store.dup.del[g] }
-      else {
-        store.dup.del[g][idx] = true
-        // 若删的是当前保留项 → 保留自动切到组内第一个未删的
-        if (store.dup.keep[g] === idx) {
-          const files = store.dup.groups[g].files
-          for (let i = 0; i < files.length; i++) {
-            if (i !== idx && !store.dup.del[g][i]) { store.dup.keep[g] = i; break }
-          }
-        }
-      }
-    },
-    dupIsDel(g, idx) { const d = store.dup && store.dup.del && store.dup.del[g]; return !!(d && d[idx]) },
-    dupDelCount() {
-      if (!store.dup || !store.dup.del) return 0
-      return Object.values(store.dup.del).reduce((s, m) => s + Object.keys(m).length, 0)
-    },
-    dupGroupsTotal() { return store.dup ? store.dup.groups.reduce((s, g) => s + g.count, 0) : 0 },
-    async dupDelete() {
-      const d = store.dup
-      if (!d || this.dupDelCount() === 0) return
-      if (!confirm('将勾选的 ' + this.dupDelCount() + ' 个重复文件移入回收站？')) return
-      let okCount = 0
-      for (let g = 0; g < d.groups.length; g++) {
-        const del = d.del[g]
-        if (!del) continue
-        for (const idxStr of Object.keys(del)) {
-          const file = d.groups[g].files[Number(idxStr)]
-          if (!file) continue
-          try {
-            const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: d.project, path: file.path }) })
-            if (r.ok) okCount++
-          } catch { /* 单条失败继续 */ }
-        }
-      }
-      window.PrivHub.toast('已将 ' + okCount + '/' + this.dupDelCount() + ' 个重复文件移入回收站')
-      bus.emit('trash:changed', {})
-      if (nav.project === d.project) { await nav.openDir(nav.project, nav.path); await refreshTree() }
-      // 重新查重（删除后可能产生新的重复组）
-      await this.openDup()
-    },
     /* ---- 内联输入模态（批量移动 / 新建子文件夹） ---- */
     batchMove() {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
@@ -869,6 +783,7 @@ const PanelV3 = {
     /* ---- 其他 ---- */
     doSubmitMkdir() { nav.submitMkdir() },
     doAddFile() { nav.addFile() },
+    doAddFolder() { bus.emit('upload:request-dir') },
     renderMd() { return this.content && this.content.markdown !== undefined ? renderMarkdown(this.content.markdown) : '' },
     /* E3：长按功能发现性——首次进入面板提示一次 */
     maybeHint() {
@@ -965,53 +880,13 @@ const PanelV3 = {
           <button class="icon-btn" @click="nav.toggleSort('name')">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
           <button class="icon-btn" @click="nav.toggleSort('size')">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
           <button class="icon-btn" @click="nav.toggleSort('mtime')">时间{{ nav.sortKey==='mtime' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
-          <button class="icon-btn" title="项目内查重（文件名+大小相同）" @click="openDup">🔁 查重</button>
           <button class="icon-btn" @click="doSubmitMkdir">＋新建文件夹</button>
           <button class="icon-btn" @click="doAddFile">＋添加文件</button>
+          <button class="icon-btn" title="上传整个文件夹（含所有子文件夹和文件）" @click="doAddFolder">📁＋上传文件夹</button>
           <span v-if="nav.uploading" class="crumb">上传中 {{ nav.uploadDone }}/{{ nav.uploadTotal }}…</span>
         </div>
         <div class="main-body">
-          <!-- 查重面板（优先于文件列表） -->
-          <div v-if="store.dup">
-            <div class="v3-dup-head">
-              <span class="v3-dup-title">🔁 重复文件查重 <span class="v3-path">{{ store.dup.project }}</span></span>
-              <span class="spacer"></span>
-              <span v-if="!store.dup.loading && !store.dup.error" class="v3-dup-sum">{{ store.dup.groups.length }} 组重复 · 共 {{ dupGroupsTotal() }} 个文件</span>
-              <button class="icon-btn" @click="closeDup">← 返回文件浏览</button>
-            </div>
-            <div v-if="store.dup.loading" class="v3-loading">正在扫描项目…</div>
-            <div v-else-if="store.dup.error" class="v3-loading">{{ store.dup.error }}</div>
-            <div v-else-if="store.dup.groups.length === 0" class="v3-loading">✅ 当前项目未发现重复文件（文件名 + 大小均相同才算重复）</div>
-            <template v-else>
-              <div v-for="(g, gi) in store.dup.groups" :key="gi" class="v3-dup-group">
-                <div class="v3-dup-group-head">
-                  <span>📄 {{ g.name }}</span>
-                  <span class="v3-dup-count">（{{ g.sizeText }} × {{ g.count }} 份）</span>
-                </div>
-                <div
-                  v-for="(f, fi) in g.files" :key="f.path"
-                  class="v3-dup-file"
-                  :class="{ keep: store.dup.keep[gi] === fi, todel: dupIsDel(gi, fi) }"
-                >
-                  <label class="v3-dup-keep" :title="'保留此文件'">
-                    <input type="radio" :name="'dup-keep-' + gi" :checked="store.dup.keep[gi] === fi" @click="dupKeep(gi, fi)" />
-                    保留
-                  </label>
-                  <label class="v3-dup-del" :title="'勾选后移入回收站'">
-                    <input type="checkbox" :checked="dupIsDel(gi, fi)" @click="dupToggleDel(gi, fi)" />
-                    删除
-                  </label>
-                  <span class="v3-dup-path">{{ f.path }}</span>
-                  <span style="color:var(--muted);flex-shrink:0;font-size:11.5px">{{ f.mtime }}</span>
-                </div>
-              </div>
-              <div class="v3-dup-foot">
-                <button class="icon-btn" style="color:var(--danger)" :disabled="dupDelCount() === 0" @click="dupDelete">🗑 删除勾选的 {{ dupDelCount() }} 个重复文件（移入回收站）</button>
-                <span class="v3-dup-sum">每组必须保留 1 个（默认第一个）；删除不可恢复时请从回收站找回</span>
-              </div>
-            </template>
-          </div>
-          <div v-else-if="nav.listLoading" class="empty">加载中…</div>
+          <div v-if="nav.listLoading" class="empty">加载中…</div>
           <div v-else-if="entries.length === 0" class="empty">（空目录）</div>
           <div v-else class="file-table-wrap">
             <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
