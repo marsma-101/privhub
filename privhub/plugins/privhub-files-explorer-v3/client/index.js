@@ -25,7 +25,6 @@ const store = reactive({
   activeKey: '',     // 激活 tab key
   content: null,     // { key, state: 'loading'|'ready'|'error', text, markdown, url, office, error }
   ctxMenu: null,     // { x, y, entry, kind }  ⋯/右键/长按共用
-  detailTarget: null,
   permTarget: null,
   promptState: null, // { mode:'move'|'mkdir', title, value, target }
 })
@@ -168,21 +167,23 @@ function openTab(entry, project, dirPath) {
   if (store.tabs.length > 30) store.tabs.splice(0, store.tabs.length - 30)
   store.activeKey = key
   persistTabs()
-  // 兼容 tags 等插件对「当前选中文件」的依赖（不调 selectEntry：不开右侧预览）
+  // 兼容 tags 等插件对「当前选中文件」的依赖；右侧详情面板随选中/打开显示
   nav.selected = { ...entry }
-  nav.rightOpen = false
+  nav.rightOpen = true
   void loadContent(key)
   bus.emit('v3:tab-opened', { project, path, name: entry.name })
 }
 function activateTab(key) {
-  if (store.activeKey === key) return
-  store.activeKey = key
   const tab = store.tabs.find(t => t.key === key)
+  // 幂等：即使已是激活标签也恢复选中/右侧面板（Esc/切视图后 rightOpen 被骨架清零）
   if (tab) {
     nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
-    nav.rightOpen = false
+    nav.rightOpen = true
   }
-  if (!store.content || store.content.key !== key) void loadContent(key)
+  if (store.activeKey !== key) {
+    store.activeKey = key
+    if (!store.content || store.content.key !== key) void loadContent(key)
+  }
 }
 function closeTab(key) {
   const idx = store.tabs.findIndex(t => t.key === key)
@@ -327,30 +328,37 @@ function ctxRelPath() {
   const m = store.ctxMenu
   return m ? relPath(m.project, m.dirPath, m.entry.name) : ''
 }
+/* ⋯ 菜单「详情」：取消弹窗，改为在右侧详情面板显示 */
 function openDetail() {
-  const m = store.ctxMenu
-  if (m) store.detailTarget = { entry: m.entry, project: m.project, dirPath: m.dirPath }
-  closeMenu()
-}
-async function openPerm() {
   const m = store.ctxMenu
   closeMenu()
   if (!m) return
-  const rel = relPath(m.project, m.dirPath, m.entry.name)
-  store.permTarget = { entry: m.entry, project: m.project, path: rel, loading: true, rules: null, error: '' }
+  nav.selected = { ...m.entry }
+  nav.rightOpen = true
+}
+/* 权限弹窗（按参数，菜单/右侧详情面板共用） */
+async function openPermFor(entry, project, dirPath) {
+  if (!entry) return
+  const rel = relPath(project, dirPath, entry.name)
+  store.permTarget = { entry, project, path: rel, loading: true, rules: null, error: '' }
   const isAdmin = AUTH.user && AUTH.user.role === 'admin'
   if (!isAdmin) { store.permTarget.loading = false; return }
   try {
     const r = await api('/privhub/api/acl/rules')
     if (r.ok) {
       const visible = (r.rules || []).filter(x =>
-        x.project === m.project &&
+        x.project === project &&
         (x.path === '' || rel === x.path || rel.startsWith(x.path + '/'))
       )
       store.permTarget.rules = visible
     } else store.permTarget.error = r.error || '无法读取权限规则'
   } catch { store.permTarget.error = '无法读取权限规则' }
   store.permTarget.loading = false
+}
+async function openPerm() {
+  const m = store.ctxMenu
+  closeMenu()
+  if (m) await openPermFor(m.entry, m.project, m.dirPath)
 }
 function doRename() {
   const m = store.ctxMenu
@@ -665,7 +673,9 @@ const PanelV3 = {
     detailActive() {
       const t = this.activeTab
       if (!t) return
-      store.detailTarget = { entry: { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, mtime: '' }, project: t.project, dirPath: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' }
+      // 内容区「ℹ️ 详情」：右侧详情面板显示该文件
+      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
+      nav.rightOpen = true
     },
     reloadActive() { const t = this.activeTab; if (t) void loadContent(t.key) },
     /* ---- 目录浏览 ---- */
@@ -953,24 +963,6 @@ const PanelV3 = {
         <div class="ctx-item danger" @click="doDelete">🗑 删除</div>
       </div>
 
-      <!-- 详情弹窗 -->
-      <div v-if="store.detailTarget" class="modal-mask" @click.self="store.detailTarget = null">
-        <div class="modal" style="width:380px">
-          <h2>{{ store.detailTarget.entry.isDir ? '📁' : '📄' }} {{ store.detailTarget.entry.name }}</h2>
-          <div class="modal-body">
-            <div class="kv"><span class="k">名称</span><span>{{ store.detailTarget.entry.name }}</span></div>
-            <div class="kv"><span class="k">类型</span><span>{{ store.detailTarget.entry.isDir ? '文件夹' : store.detailTarget.entry.type }}</span></div>
-            <div class="kv"><span class="k">大小</span><span>{{ store.detailTarget.entry.sizeText || '—' }}</span></div>
-            <div class="kv"><span class="k">修改时间</span><span>{{ store.detailTarget.entry.mtime || '—' }}</span></div>
-            <div class="kv"><span class="k">所属项目</span><span>{{ store.detailTarget.project }}</span></div>
-            <div class="kv"><span class="k">路径</span><span>{{ store.detailTarget.dirPath ? store.detailTarget.project + '/' + store.detailTarget.dirPath : store.detailTarget.project }}</span></div>
-          </div>
-          <div class="modal-foot">
-            <button class="btn btn-ghost" @click="store.detailTarget = null">关 闭</button>
-          </div>
-        </div>
-      </div>
-
       <!-- 权限弹窗 -->
       <div v-if="store.permTarget" class="modal-mask" @click.self="store.permTarget = null">
         <div class="modal" style="width:420px">
@@ -1039,10 +1031,195 @@ PanelV3.computed.isMdMenu = function () {
 TreeV3.components = { 'v3-tree-node': TreeNodeV3 }
 PanelV3.components = { 'v3-tree-node': TreeNodeV3 }
 
+/* ================= 右侧详情面板（preview slot） ================= */
+const detailStyle = document.createElement('style')
+detailStyle.textContent = `
+.v3-detail { width: 320px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+.v3-detail-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+.v3-detail-head .v3-detail-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v3-detail-close { cursor: pointer; color: var(--muted); }
+.v3-detail-close:hover { color: var(--danger); }
+.v3-detail-body { flex: 1; overflow: auto; padding: 12px 14px; }
+.v3-detail-kv { display: flex; gap: 8px; padding: 5px 0; font-size: 12.5px; border-bottom: 1px dashed var(--line); }
+.v3-detail-kv .k { flex-shrink: 0; width: 62px; color: var(--muted); }
+.v3-detail-kv .v { word-break: break-all; }
+.v3-detail-tags { margin-top: 10px; }
+.v3-detail-tags .v3-detail-tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 9px; border-radius: 10px; background: rgba(90,130,200,.14); color: var(--accent); font-size: 11.5px; }
+.v3-detail-tags input { width: 100%; padding: 5px 9px; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 12px; outline: none; }
+.v3-detail-actions { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.v3-detail-act { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-size: 11.5px; color: var(--text); position: relative; }
+.v3-detail-act:hover { border-color: var(--accent); color: var(--accent); }
+.v3-detail-act .v3-detail-act-ico { font-size: 17px; }
+.v3-detail-act.dev { cursor: not-allowed; opacity: .55; }
+.v3-detail-act.dev:hover { border-color: var(--line); color: var(--text); }
+.v3-detail-act .v3-dev-badge { position: absolute; top: -6px; right: -6px; font-size: 9px; background: var(--warn); color: #fff; border-radius: 8px; padding: 0 5px; line-height: 14px; }
+`
+document.head.appendChild(detailStyle)
+
+const RightDetail = {
+  name: 'right-detail',
+  data() {
+    return {
+      nav,
+      tags: [],
+      tagInput: '',
+      tagBusy: false,
+      tagLoadedFor: '',
+    }
+  },
+  computed: {
+    /* 详情目标 = 当前选中/打开的文件（非目录） */
+    target() {
+      const s = nav.selected
+      if (!s || s.isDir) return null
+      return {
+        name: s.name,
+        path: nav.relPathOf(s.name),
+        project: nav.project,
+        isDir: false,
+        sizeText: s.sizeText || '',
+        type: s.type || '',
+        mtime: s.mtime || '',
+      }
+    },
+    isOffice() {
+      const t = this.target
+      return t ? /\.(doc|docx|xls|xlsx|ppt|pptx|pdf)$/i.test(t.name) : false
+    },
+    isMd() {
+      const t = this.target
+      return t ? /\.md$/i.test(t.name) : false
+    },
+  },
+  watch: {
+    target(n, o) {
+      if (!n || !o || n.project !== o.project || n.path !== o.path) this.loadTags()
+    },
+  },
+  methods: {
+    close() { nav.rightOpen = false },
+    /* ---- 标签 ---- */
+    async loadTags() {
+      const t = this.target
+      if (!t) { this.tags = []; this.tagLoadedFor = ''; return }
+      this.tags = []
+      this.tagLoadedFor = ''
+      try {
+        const r = await api('/privhub/api/meta/tags?project=' + encodeURIComponent(t.project) + '&path=' + encodeURIComponent(t.path))
+        if (r.ok) { this.tags = r.tags || []; this.tagLoadedFor = t.path }
+      } catch { /* 标签读取失败静默 */ }
+    },
+    async addTag() {
+      const t = this.target
+      const v = this.tagInput.trim()
+      if (!t || !v || this.tagBusy) return
+      this.tagBusy = true
+      try {
+        const r = await api('/privhub/api/meta/tags', { method: 'POST', body: JSON.stringify({ project: t.project, path: t.path, tags: [...this.tags, v] }) })
+        if (r.ok) { this.tags = r.tags || []; this.tagInput = ''; window.PrivHub.toast('已添加标签 🏷') }
+        else window.PrivHub.toast(r.error || '标签保存失败', 'error')
+      } catch { window.PrivHub.toast('标签保存失败', 'error') }
+      this.tagBusy = false
+    },
+    removeTag(tag) {
+      const t = this.target
+      if (!t || this.tagBusy) return
+      this.tagBusy = true
+      api('/privhub/api/meta/tags', { method: 'POST', body: JSON.stringify({ project: t.project, path: t.path, tags: this.tags.filter(x => x !== tag) }) })
+        .then(r => { if (r.ok) { this.tags = r.tags || [] } else window.PrivHub.toast(r.error || '标签保存失败', 'error') })
+        .catch(() => window.PrivHub.toast('标签保存失败', 'error'))
+        .finally(() => { this.tagBusy = false })
+    },
+    /* ---- 操作按钮 ---- */
+    fav() {
+      const t = this.target
+      if (!t) return
+      bus.emit('fav:add', { project: t.project, path: t.path, name: t.name, isDir: false })
+      window.PrivHub.toast('已加入收藏 ⭐')
+    },
+    async download() {
+      const t = this.target
+      if (!t) return
+      try {
+        const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(t.project) + '&path=' + encodeURIComponent(t.path), {
+          headers: { authorization: 'Bearer ' + AUTH.token },
+        })
+        if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
+        const blob = await r.blob()
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = t.name
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+      } catch { window.PrivHub.toast('下载失败', 'error') }
+    },
+    edit() {
+      const t = this.target
+      if (!t) return
+      if (this.isOffice) bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
+      else if (this.isMd) bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
+    },
+    perm() { const t = this.target; if (t) void openPermFor({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, mtime: t.mtime }, t.project, t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '') },
+    async copyPath() {
+      const t = this.target
+      if (!t) return
+      try {
+        await navigator.clipboard.writeText(t.project + '/' + t.path)
+        window.PrivHub.toast('路径已复制 📋')
+      } catch { window.PrivHub.toast('复制失败', 'error') }
+    },
+  },
+  template: `
+    <div class="v3-detail">
+      <div class="v3-detail-head">
+        <span>{{ target ? fileIcon(target.type) : '📄' }}</span>
+        <span class="v3-detail-name" :title="target ? target.project + ' / ' + target.path : ''">{{ target ? target.name : '文件详情' }}</span>
+        <span class="v3-detail-close" title="关闭详情" @click="close">✕</span>
+      </div>
+      <div class="v3-detail-body">
+        <template v-if="!target">
+          <div style="color:var(--muted);font-size:12px;text-align:center;padding:40px 0">选中或打开文件后<br/>在此显示详细信息</div>
+        </template>
+        <template v-else>
+          <div class="v3-detail-kv"><span class="k">类型</span><span class="v">{{ target.type || '文件' }}</span></div>
+          <div class="v3-detail-kv"><span class="k">大小</span><span class="v">{{ target.sizeText || '—' }}</span></div>
+          <div class="v3-detail-kv"><span class="k">修改时间</span><span class="v">{{ target.mtime ? target.mtime.replace('T',' ').slice(0,16) : '—' }}</span></div>
+          <div class="v3-detail-kv"><span class="k">所属项目</span><span class="v">{{ target.project }}</span></div>
+          <div class="v3-detail-kv"><span class="k">完整路径</span><span class="v">{{ target.project + ' / ' + target.path }}</span></div>
+
+          <!-- 标签 -->
+          <div class="v3-detail-tags">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:4px">🏷 标签{{ tagLoadedFor === target.path && tags.length ? '（' + tags.length + '）' : '' }}</div>
+            <div v-if="tags.length">
+              <span v-for="tg in tags" :key="tg" class="v3-detail-tag" :title="'移除标签' + tg" style="cursor:pointer" @click="removeTag(tg)">{{ tg }} ✕</span>
+            </div>
+            <input v-model="tagInput" @keyup.enter="addTag" :disabled="tagBusy" placeholder="输入标签名回车添加…" />
+          </div>
+
+          <!-- 功能按钮 -->
+          <div class="v3-detail-actions">
+            <div class="v3-detail-act" title="收藏到星标列表" @click="fav"><span class="v3-detail-act-ico">⭐</span>收藏</div>
+            <div class="v3-detail-act" title="复制完整路径" @click="copyPath"><span class="v3-detail-act-ico">📋</span>复制路径</div>
+            <div class="v3-detail-act" title="下载文件" @click="download"><span class="v3-detail-act-ico">⬇️</span>下载</div>
+            <div class="v3-detail-act" :title="isOffice || isMd ? '在编辑器中打开' : '仅支持 md / Office 文档'" :class="{ dev: !(isOffice || isMd) }" @click="isOffice || isMd ? edit() : null"><span class="v3-detail-act-ico">✏️</span>编辑</div>
+            <div class="v3-detail-act" title="查看/管理权限规则" @click="perm"><span class="v3-detail-act-ico">🔐</span>权限</div>
+            <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">📚</span>向量数据库<span class="v3-dev-badge">开发中</span></div>
+            <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">🔗</span>分享链接<span class="v3-dev-badge">开发中</span></div>
+            <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">🕘</span>版本历史<span class="v3-dev-badge">开发中</span></div>
+          </div>
+        </template>
+      </div>
+    </div>
+  `,
+}
+
 export default {
   id: 'privhub-files-explorer-v3',
   slots: {
     tree: TreeV3,
     panel: PanelV3,
+    preview: RightDetail,
   },
 }
