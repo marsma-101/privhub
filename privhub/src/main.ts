@@ -49,6 +49,7 @@ import * as filesExport from '../plugins/privhub-files-export/src/index.ts'
 import * as filesOffice from '../plugins/privhub-files-office/src/index.ts'
 import * as filesOfficeUi from '../plugins/privhub-files-office-ui/src/index.ts'
 import * as filesOfficeAi from '../plugins/privhub-files-office-ai/src/index.ts'
+import * as filesExplorerV3 from '../plugins/privhub-files-explorer-v3/src/index.ts'
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -113,6 +114,7 @@ async function main(): Promise<void> {
   await mount(filesOffice)
   await mount(filesOfficeUi)
   await mount(filesOfficeAi)
+  await mount(filesExplorerV3)
 
   /* 5. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)
