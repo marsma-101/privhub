@@ -469,6 +469,20 @@ async function refreshAfterChange(project, dirPath) {
   await refreshTree()
 }
 
+/* 新建文件夹（自实现：骨架 nav.submitMkdir 只刷新 V2 树缓存，V3 树需一并刷新） */
+function submitMkdirV3() {
+  const navSelf = nav
+  nav.askInput('请输入文件夹名称：', '', async (name) => {
+    if (!name) return
+    const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: navSelf.project, path: navSelf.path, name }) })
+    if (r.ok) {
+      window.PrivHub.toast('文件夹「' + name + '」已创建')
+      await navSelf.openDir(navSelf.project, navSelf.path)
+      await refreshTree()
+    } else window.PrivHub.toast(r.error || '新建失败', 'error')
+  })
+}
+
 /* ================= 递归树节点 ================= */
 const TreeNodeV3 = {
   name: 'v3-tree-node',
@@ -534,7 +548,9 @@ const TreeV3 = {
   methods: {
     onRootToggle() { void toggleTree(nav.project, '') },
     onRootOpen() { nav.openDir(nav.project, '') },
-    onNewFolder() { nav.submitMkdir() },
+    onNewFolder() { submitMkdirV3() },
+    onAddFile() { nav.addFile() },
+    onAddFolder() { bus.emit('upload:request-dir') },
     onDelProject() { nav.delProject(nav.project) },
     onRootDots(ev) {
       const entry = { name: nav.project, isDir: true, type: 'folder', sizeText: '', mtime: '' }
@@ -548,6 +564,8 @@ const TreeV3 = {
     <div class="sidebar">
       <div class="side-head">
         <button class="icon-btn" style="padding:3px;font-size:14px" title="新建文件夹" @click="onNewFolder">📁＋</button>
+        <button class="icon-btn" style="padding:3px;font-size:14px" title="添加文件" @click="onAddFile">＋📄</button>
+        <button class="icon-btn" style="padding:3px;font-size:14px" title="上传文件夹到当前目录" @click="onAddFolder">📁⬆</button>
         <button v-if="isAdmin && nav.path === ''" class="icon-btn" style="padding:3px;font-size:14px;color:var(--danger)" :title="'删除项目：' + nav.project" @click="onDelProject">🗑</button>
       </div>
       <div class="v3-tn" :class="{ active: nav.path === '' }" :style="{ paddingLeft: '8px' }">
@@ -569,15 +587,15 @@ const PanelV3 = {
   name: 'files-panel-v3',
   data() { return { nav, store, AUTH, pressTimer: null, batchBusy: false } },
   computed: {
+    /* 中间栏只显示文件（文件夹在左侧目录树管理） */
     entries() {
-      const arr = [...nav.entries]
+      const arr = [...nav.entries].filter(e => !e.isDir)
       const key = nav.sortKey
       const asc = nav.sortAsc ? 1 : -1
       arr.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
         let va, vb
         if (key === 'name') { va = a.name; vb = b.name }
-        else if (key === 'size') { va = a.isDir ? -1 : a.size; vb = b.isDir ? -1 : b.size }
+        else if (key === 'size') { va = a.size; vb = b.size }
         else if (key === 'mtime') { va = a.mtime; vb = b.mtime }
         else { va = a.name; vb = b.name }
         if (va < vb) return -1 * asc
@@ -673,6 +691,15 @@ const PanelV3 = {
     doDownload() { void doDownload() },
     doEdit() { doEdit() },
     doMkdirHere() { doMkdirHere() },
+    /* 文件夹 ⋯ 菜单：上传整个文件夹到该文件夹（根节点 → 项目根） */
+    doUploadHere() {
+      const m = store.ctxMenu
+      closeMenu()
+      if (!m || !m.entry.isDir) return
+      const isRoot = m.dirPath === '' && m.entry.name === m.project
+      const rel = isRoot ? '' : relPath(m.project, m.dirPath, m.entry.name)
+      bus.emit('upload:request-dir', { path: rel })
+    },
     async openPerm() { await openPerm() },
     /* ---- 内联输入模态（批量移动 / 新建子文件夹） ---- */
     batchMove() {
@@ -781,9 +808,8 @@ const PanelV3 = {
       window.PrivHub.toast('已将 ' + okCount + '/' + names.length + ' 项移入回收站')
     },
     /* ---- 其他 ---- */
-    doSubmitMkdir() { nav.submitMkdir() },
+    doSubmitMkdir() { submitMkdirV3() },
     doAddFile() { nav.addFile() },
-    doAddFolder() { bus.emit('upload:request-dir') },
     renderMd() { return this.content && this.content.markdown !== undefined ? renderMarkdown(this.content.markdown) : '' },
     /* E3：长按功能发现性——首次进入面板提示一次 */
     maybeHint() {
@@ -867,7 +893,7 @@ const PanelV3 = {
               <span v-if="i < crumbs.length - 1" class="crumb"> / </span>
             </span>
           </span>
-          <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 项</span>
+          <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 个文件</span>
           <span v-if="checkedCount() > 0" class="crumb" style="margin-left:8px;color:var(--accent)">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
           <span class="spacer"></span>
           <template v-if="checkedCount() > 0">
@@ -877,24 +903,18 @@ const PanelV3 = {
             <button class="icon-btn" :disabled="batchBusy" @click="batchMove">{{ batchBusy ? '处理中…' : '📦 移动所选' }}</button>
             <button class="icon-btn" style="color:var(--danger)" :disabled="batchBusy" @click="batchDelete">{{ batchBusy ? '处理中…' : '🗑 删除所选 (' + checkedCount() + ')' }}</button>
           </template>
-          <button class="icon-btn" @click="nav.toggleSort('name')">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
-          <button class="icon-btn" @click="nav.toggleSort('size')">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
-          <button class="icon-btn" @click="nav.toggleSort('mtime')">时间{{ nav.sortKey==='mtime' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
-          <button class="icon-btn" @click="doSubmitMkdir">＋新建文件夹</button>
-          <button class="icon-btn" @click="doAddFile">＋添加文件</button>
-          <button class="icon-btn" title="上传整个文件夹（含所有子文件夹和文件）" @click="doAddFolder">📁＋上传文件夹</button>
           <span v-if="nav.uploading" class="crumb">上传中 {{ nav.uploadDone }}/{{ nav.uploadTotal }}…</span>
         </div>
         <div class="main-body">
           <div v-if="nav.listLoading" class="empty">加载中…</div>
-          <div v-else-if="entries.length === 0" class="empty">（空目录）</div>
+          <div v-else-if="entries.length === 0" class="empty">此文件夹下没有文件（文件夹请在左侧目录树中查看）</div>
           <div v-else class="file-table-wrap">
             <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
               <span><input type="checkbox" @click="selectAll" /></span>
-              <span class="col-name">名称</span>
-              <span class="col-size">大小</span>
+              <span class="col-name" style="cursor:pointer" @click="nav.toggleSort('name')" title="按名称排序">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
+              <span class="col-size" style="cursor:pointer" @click="nav.toggleSort('size')" title="按大小排序">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
               <span class="col-type">类型</span>
-              <span class="col-time">修改时间</span>
+              <span class="col-time" style="cursor:pointer" @click="nav.toggleSort('mtime')" title="按修改时间排序">修改时间{{ nav.sortKey==='mtime' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
               <span></span>
             </div>
             <div
@@ -909,7 +929,7 @@ const PanelV3 = {
               @contextmenu.prevent="openCtxMenu(e, $event)"
             >
               <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
-              <span class="col-name"><span class="tico">{{ e.isDir ? '📁' : fileIcon(e.type) }}</span>{{ e.name }}</span>
+              <span class="col-name"><span class="tico">{{ fileIcon(e.type) }}</span>{{ e.name }}</span>
               <span class="col-size">{{ e.sizeText }}</span>
               <span class="col-type">{{ e.type }}</span>
               <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
@@ -929,6 +949,7 @@ const PanelV3 = {
         <div v-if="!store.ctxMenu.entry.isDir && (isOfficeMenu || isMdMenu)" class="ctx-item" @click="doEdit">✏️ 编辑</div>
         <div class="ctx-item" @click="doRename">✏️ 重命名</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doMkdirHere">＋ 新建子文件夹</div>
+        <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadHere">📁 上传到该文件夹</div>
         <div class="ctx-item danger" @click="doDelete">🗑 删除</div>
       </div>
 

@@ -15,7 +15,7 @@ const { api, AUTH, nav, bus } = window.PrivHub
 
 const UploadController = {
   name: 'upload-controller',
-  data() { return { nav } },
+  data() { return { nav, _dirTarget: null } },
   methods: {
     /* 递归收集拖入的目录树（webkitGetAsEntry） */
     collectEntries(dataTransfer) {
@@ -57,16 +57,18 @@ const UploadController = {
       await this.uploadAll(files)
     },
     /* 文件夹选择：webkitdirectory 的 File 带 webkitRelativePath（含顶层文件夹名），
-       赋给 _relPath 后复用递归上传管道（目录自动创建、同名覆盖） */
+       赋给 _relPath 后复用递归上传管道（目录自动创建、同名覆盖）。
+       目标目录：bus payload.path（文件夹 ⋯ 菜单「上传到该文件夹」）或当前导航目录 */
     handleDirFiles(fileList) {
       const files = Array.from(fileList).map((f) => {
         f._relPath = f.webkitRelativePath || f.name
         return f
       })
       if (!files.length || !nav.project) return
+      const base = this._dirTarget !== null && this._dirTarget !== undefined ? this._dirTarget : nav.path || ''
       const top = files[0]._relPath.split('/')[0]
-      const dest = nav.path ? nav.project + '/' + nav.path + '/' + top : nav.project + '/' + top
-      if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + dest + '」？同名文件将被覆盖。')) return
+      const dest = (base ? base + '/' : '') + top
+      if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + nav.project + '/' + dest + '」？同名文件将被覆盖。')) return
       void this.uploadAll(files)
     },
     /* 确保目录树存在（递归上传需要） */
@@ -79,9 +81,11 @@ const UploadController = {
     },
     async uploadAll(files) {
       nav.uploading = true; nav.uploadDone = 0; nav.uploadTotal = files.length
+      // 目标目录：本次上传指定（文件夹 ⋯ 菜单）或当前导航目录
+      const base = this._dirTarget !== null && this._dirTarget !== undefined ? this._dirTarget : nav.path || ''
       let okCount = 0
       const fails = []
-      // 预收集需要创建的目录（按深度排序去重）
+      // 预收集需要创建的目录（相对项目根，含目标目录前缀；按深度排序去重）
       const dirSet = new Set()
       for (const f of files) {
         const rel = f._relPath || f.name
@@ -90,7 +94,7 @@ const UploadController = {
           let acc = ''
           for (let i = 0; i < parts.length - 1; i++) {
             acc = acc ? acc + '/' + parts[i] : parts[i]
-            dirSet.add(acc)
+            dirSet.add(base ? base + '/' + acc : acc)
           }
         }
       }
@@ -104,7 +108,7 @@ const UploadController = {
         const name = rel.includes('/') ? rel.split('/').pop() : rel
         bus.emit('upload:progress', { name, sub, status: 'uploading', index: nav.uploadDone, total: files.length })
         try {
-          const r = await fetch('/privhub/api/upload?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(nav.path ? nav.path + (sub ? '/' + sub : '') : sub) + '&name=' + encodeURIComponent(name), {
+          const r = await fetch('/privhub/api/upload?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(base ? base + (sub ? '/' + sub : '') : sub) + '&name=' + encodeURIComponent(name), {
             method: 'POST',
             headers: { authorization: 'Bearer ' + AUTH.token, 'content-type': 'application/octet-stream' },
             body: f,
@@ -129,7 +133,9 @@ const UploadController = {
       if (fails.length === 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个文件')
       else if (okCount > 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个，失败 ' + fails.length + ' 个', 'warn')
       else window.PrivHub.toast('上传失败 ' + fails.length + ' 个文件', 'error')
-      await nav.openDir(nav.project, nav.path)
+      // 上传完成后导航到目标目录（看到结果）；同目录时等价于刷新
+      await nav.openDir(nav.project, base)
+      this._dirTarget = null
     },
   },
   async mounted() {
@@ -143,7 +149,11 @@ const UploadController = {
     document.addEventListener('dragover', this._onDragOver)
     document.addEventListener('drop', this._onDrop)
     this._offReq = bus.on('upload:request', () => { this.$refs.fileInput && this.$refs.fileInput.click() })
-    this._offReqDir = bus.on('upload:request-dir', () => { this.$refs.dirInput && this.$refs.dirInput.click() })
+    // payload.path：文件夹 ⋯ 菜单「上传到该文件夹」指定的目标目录（相对项目根）；缺省 = 当前导航目录
+    this._offReqDir = bus.on('upload:request-dir', (payload) => {
+      this._dirTarget = payload && payload.path !== undefined && payload.path !== null ? String(payload.path) : null
+      this.$refs.dirInput && this.$refs.dirInput.click()
+    })
   },
   beforeUnmount() {
     document.removeEventListener('dragover', this._onDragOver)
