@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-comments",
+  "title": "批注评论",
+  "icon": "💬",
+  "description": "md 文档位置锚定批注：选区评论、高亮锚点、回复线程、状态流转",
+  "slots": ["office-editor"]
+}

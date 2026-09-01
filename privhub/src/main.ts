@@ -50,6 +50,12 @@ import * as filesOffice from '../plugins/privhub-files-office/src/index.ts'
 import * as filesOfficeUi from '../plugins/privhub-files-office-ui/src/index.ts'
 import * as filesOfficeAi from '../plugins/privhub-files-office-ai/src/index.ts'
 import * as filesExplorerV3 from '../plugins/privhub-files-explorer-v3/src/index.ts'
+import * as filesInvite from '../plugins/privhub-files-invite/src/index.ts'
+import * as filesVersions from '../plugins/privhub-files-versions/src/index.ts'
+import * as filesMdPage from '../plugins/privhub-files-mdpage/src/index.ts'
+import * as filesPublish from '../plugins/privhub-files-publish/src/index.ts'
+import * as filesComments from '../plugins/privhub-files-comments/src/index.ts'
+import * as filesDataview from '../plugins/privhub-files-dataview/src/index.ts'
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -115,6 +121,12 @@ async function main(): Promise<void> {
   await mount(filesOfficeUi)
   await mount(filesOfficeAi)
   await mount(filesExplorerV3)
+  await mount(filesInvite)
+  await mount(filesVersions)
+  await mount(filesMdPage)
+  await mount(filesPublish)
+  await mount(filesComments)
+  await mount(filesDataview)
 
   /* 5. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)

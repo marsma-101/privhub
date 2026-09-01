@@ -27,6 +27,17 @@ const store = reactive({
   ctxMenu: null,     // { x, y, entry, kind }  ⋯/右键/长按共用
   permTarget: null,
   promptState: null, // { mode:'move'|'mkdir', title, value, target }
+  renameState: null, // 行内重命名 { project, dirPath, entry, value }
+  moveState: null,   // 移动选择器 { project, from, entry, tree:[{path,name,depth}], loading, target, busy }
+  lightbox: null,    // 图片放大预览 url
+  newMenu: false,    // 侧边栏「+」下拉
+})
+/* 全局 Esc：取消行内重命名（焦点不在输入框时兜底） */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (store.renameState) { cancelRename(); e.stopPropagation() }
+    if (store.newMenu) store.newMenu = false
+  }
 })
 
 /* ================= 样式注入（V3 专属，不依赖骨架 CSS） ================= */
@@ -235,6 +246,8 @@ async function loadContent(key) {
       store.content = { key, state: 'error', error: r.error || '读取失败' }
     }
   } catch { store.content = { key, state: 'error', error: '读取失败（网络错误）' } }
+  // 广播渲染完成（批注评论插件监听，重建锚点高亮）
+  if (store.content && store.content.state === 'ready') bus.emit('v3:md-rendered', { project: tab.project, path: tab.path, key })
 }
 
 /* ================= Markdown 轻量渲染（离线） ================= */
@@ -360,35 +373,107 @@ async function openPerm() {
   closeMenu()
   if (m) await openPermFor(m.entry, m.project, m.dirPath)
 }
+/* ---- 行内重命名（⋯ 菜单 → 行内输入框，回车保存 / Esc 取消） ---- */
 function doRename() {
   const m = store.ctxMenu
   closeMenu()
   if (!m) return
+  store.renameState = { project: m.project, dirPath: m.dirPath, entry: m.entry, rel: relPath(m.project, m.dirPath, m.entry.name), value: m.entry.name }
+}
+function cancelRename() { store.renameState = null }
+async function submitRename() {
+  const st = store.renameState
+  if (!st) return
+  const newName = (st.value || '').trim()
+  store.renameState = null
+  if (!newName || newName === st.entry.name) return
+  const rel = relPath(st.project, st.dirPath, st.entry.name)
+  const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: st.project, path: rel, newName }) })
+  if (r.ok) {
+    window.PrivHub.toast('已重命名为「' + newName + '」')
+    await refreshAfterChange(st.project, st.dirPath)
+    // 更新打开的标签（重命名文件本身）
+    const oldKey = tabKey(st.project, rel)
+    const idx = store.tabs.findIndex(t => t.key === oldKey)
+    if (idx >= 0) {
+      const t = store.tabs[idx]
+      const newPath = relPath(st.project, st.dirPath, newName)
+      store.tabs[idx] = { ...t, key: tabKey(st.project, newPath), path: newPath, name: newName }
+      if (store.activeKey === oldKey) { store.activeKey = store.tabs[idx].key; store.content = null; void loadContent(store.activeKey) }
+      persistTabs()
+    }
+  } else window.PrivHub.toast(r.error || '重命名失败', 'error')
+}
+/* ---- 复制副本（同目录「原名（副本）.ext」） ---- */
+async function doCopyHere() {
+  const m = store.ctxMenu
+  closeMenu()
+  if (!m || m.entry.isDir) return
   const rel = relPath(m.project, m.dirPath, m.entry.name)
-  nav.askInput('请输入新名称：', m.entry.name, async (newName) => {
-    if (!newName || newName === m.entry.name) return
-    const r = await api('/privhub/api/rename', { method: 'POST', body: JSON.stringify({ project: m.project, path: rel, newName }) })
-    if (r.ok) {
-      window.PrivHub.toast('已重命名为「' + newName + '」')
+  const dot = m.entry.name.lastIndexOf('.')
+  const base = dot > 0 ? m.entry.name.slice(0, dot) : m.entry.name
+  const ext = dot > 0 ? m.entry.name.slice(dot) : ''
+  const copyName = base + '（副本）' + ext
+  try {
+    const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(m.project) + '&path=' + encodeURIComponent(rel), {
+      headers: { authorization: 'Bearer ' + AUTH.token },
+    })
+    if (!r.ok) { window.PrivHub.toast('复制失败（HTTP ' + r.status + '）', 'error'); return }
+    const blob = await r.blob()
+    const up = await fetch('/privhub/api/upload?project=' + encodeURIComponent(m.project) + '&path=' + encodeURIComponent(m.dirPath || '') + '&name=' + encodeURIComponent(copyName), {
+      method: 'POST', headers: { authorization: 'Bearer ' + AUTH.token, 'content-type': 'application/octet-stream' }, body: blob,
+    })
+    const j = await up.json().catch(() => ({}))
+    if (j.ok) {
+      window.PrivHub.toast('已复制为「' + copyName + '」')
       await refreshAfterChange(m.project, m.dirPath)
-      // 更新打开的标签（重命名文件本身）
-      const oldKey = tabKey(m.project, rel)
-      const idx = store.tabs.findIndex(t => t.key === oldKey)
-      if (idx >= 0) {
-        const t = store.tabs[idx]
-        const newPath = relPath(m.project, m.dirPath, newName)
-        store.tabs[idx] = { ...t, key: tabKey(m.project, newPath), path: newPath, name: newName }
-        if (store.activeKey === oldKey) { store.activeKey = store.tabs[idx].key; store.content = null; void loadContent(store.activeKey) }
-        persistTabs()
+    } else window.PrivHub.toast(j.error || '复制失败', 'error')
+  } catch { window.PrivHub.toast('复制失败', 'error') }
+}
+/* ---- 移动：目录树形选择器 ---- */
+async function doMoveOpen() {
+  const m = store.ctxMenu
+  closeMenu()
+  if (!m) return
+  store.moveState = { project: m.project, from: relPath(m.project, m.dirPath, m.entry.name), entry: m.entry, tree: [], loading: true, target: null, busy: false }
+  try {
+    const nodes = []
+    const walk = async (prefix, depth) => {
+      const q = prefix ? '&path=' + encodeURIComponent(prefix) : ''
+      const r = await api('/privhub/api/list?project=' + encodeURIComponent(m.project) + q)
+      if (!r.ok) return
+      for (const e of r.entries) {
+        if (!e.isDir) continue
+        const p = prefix ? prefix + '/' + e.name : e.name
+        nodes.push({ path: p, name: e.name, depth })
+        await walk(p, depth + 1)
       }
-    } else window.PrivHub.toast(r.error || '重命名失败', 'error')
-  })
+    }
+    await walk('', 0)
+    store.moveState.tree = nodes
+  } catch { /* 树加载失败 */ }
+  store.moveState.loading = false
+}
+async function doMoveSubmit() {
+  const st = store.moveState
+  if (!st || st.busy) return
+  if (st.target === null || st.target === undefined) { window.PrivHub.toast('请选择目标目录', 'warn'); return }
+  if (st.target === st.from || st.from.startsWith(st.target + '/')) { window.PrivHub.toast('不能移动到自身或其子目录', 'warn'); return }
+  st.busy = true
+  const r = await api('/privhub/api/move', { method: 'POST', body: JSON.stringify({ project: st.project, from: st.from, toDir: st.target }) })
+  st.busy = false
+  if (r.ok) {
+    window.PrivHub.toast('已移动到「' + (st.target || '项目根') + '」')
+    store.moveState = null
+    await refreshAfterChange(st.project, st.target)
+    await nav.openDir(st.project, st.target)
+  } else window.PrivHub.toast(r.error || '移动失败', 'error')
 }
 async function doDelete() {
   const m = store.ctxMenu
   closeMenu()
   if (!m) return
-  if (!confirm('将「' + m.entry.name + '」移入回收站？')) return
+  if (!confirm('《' + m.entry.name + '》将移入回收站，30 天后自动清除，可在回收站恢复。确定删除？')) return
   const rel = relPath(m.project, m.dirPath, m.entry.name)
   const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: m.project, path: rel }) })
   if (r.ok) {
@@ -491,12 +576,46 @@ function submitMkdirV3() {
   })
 }
 
+/* 新建数据表（空 xlsx，走 office 能力库写回） */
+async function newSheetFile() {
+  if (!nav.project) return
+  const name = '未命名数据表-' + Date.now().toString(36).slice(-4) + '.xlsx'
+  const rel = nav.path ? nav.path + '/' + name : name
+  const r = await api('/privhub/api/office/write', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, content: [['']] }) })
+  if (r.ok) {
+    window.PrivHub.toast('已创建「' + name + '」')
+    await nav.openDir(nav.project, nav.path)
+    await refreshTree()
+  } else window.PrivHub.toast(r.error || '创建失败', 'error')
+}
+
+/* 新建页面（空 HTML 模板） */
+async function newPageFile() {
+  if (!nav.project) return
+  const name = '未命名页面-' + Date.now().toString(36).slice(-4) + '.html'
+  const html = '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<title>未命名页面</title>\n</head>\n<body style="font-family:system-ui,sans-serif;padding:24px;color:#333">\n  <h1>未命名页面</h1>\n  <p>在此编写你的页面内容……</p>\n</body>\n</html>\n'
+  const rel = nav.path ? nav.path + '/' + name : name
+  try {
+    const r = await fetch('/privhub/api/upload?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(nav.path || '') + '&name=' + encodeURIComponent(name), {
+      method: 'POST', headers: { authorization: 'Bearer ' + AUTH.token, 'content-type': 'application/octet-stream' }, body: new TextEncoder().encode(html),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (j.ok) {
+      window.PrivHub.toast('已创建「' + name + '」')
+      await nav.openDir(nav.project, nav.path)
+      await refreshTree()
+    } else window.PrivHub.toast(j.error || '创建失败', 'error')
+  } catch { window.PrivHub.toast('创建失败（网络错误）', 'error') }
+  void rel
+}
+
 /* ================= 递归树节点 ================= */
 const TreeNodeV3 = {
   name: 'v3-tree-node',
   props: {
     label: String, project: String, path: String, depth: Number, entry: Object,
   },
+  data() { return { store } },
   computed: {
     node() { return treeOf(this.project, this.path) },
     expanded() { const n = this.node; return n ? n.expanded : false },
@@ -514,6 +633,8 @@ const TreeNodeV3 = {
       // 树里文件点击 = 打开标签（路径即文件完整相对路径）
       openTab(this.entry, this.project, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '')
     },
+    submitRename() { void submitRename() },
+    cancelRename() { cancelRename() },
   },
   template: `
     <div>
@@ -521,10 +642,22 @@ const TreeNodeV3 = {
         <span class="tree-arrow" @click.stop="onToggle" style="cursor:pointer;width:14px;display:inline-block;flex-shrink:0;text-align:center;font-size:10px;color:var(--muted)">
           {{ entry.isDir ? (expanded ? '▾' : '▸') : '·' }}
         </span>
-        <span @click="entry.isDir ? onClick() : openFileInDir()" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
-          <span>{{ entry.isDir ? (expanded ? '📂' : '📁') : fileIcon(entry.type) }}</span>
-          <span class="v3-name" :title="entry.name">{{ label }}</span>
-        </span>
+        <template v-if="store.renameState && store.renameState.rel === entry.path">
+          <input
+            v-model="store.renameState.value"
+            @keyup.enter="submitRename"
+            @keyup.esc="cancelRename"
+            @click.stop
+            @mousedown.stop
+            style="flex:1;min-width:0;padding:2px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
+          />
+        </template>
+        <template v-else>
+          <span @click="entry.isDir ? onClick() : openFileInDir()" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
+            <span>{{ entry.isDir ? (expanded ? '📂' : '📁') : fileIcon(entry.type) }}</span>
+            <span class="v3-name" :title="entry.name">{{ label }}</span>
+          </span>
+        </template>
         <span class="v3-dots" title="操作" @click.stop="onDots($event)">⋯</span>
       </div>
       <div v-if="entry.isDir && expanded">
@@ -556,9 +689,13 @@ const TreeV3 = {
   methods: {
     onRootToggle() { void toggleTree(nav.project, '') },
     onRootOpen() { nav.openDir(nav.project, '') },
-    onNewFolder() { submitMkdirV3() },
-    onAddFile() { nav.addFile() },
-    onAddFolder() { bus.emit('upload:request-dir') },
+    onNewFolder() { store.newMenu = false; submitMkdirV3() },
+    onNewDoc() { store.newMenu = false; nav.setActiveView('template') },
+    onNewSheet() { store.newMenu = false; void newSheetFile() },
+    onNewPage() { store.newMenu = false; void newPageFile() },
+    onNewDataview() { store.newMenu = false; bus.emit('dataview:new') },
+    onAddFile() { store.newMenu = false; nav.addFile() },
+    onAddFolder() { store.newMenu = false; bus.emit('upload:request-dir') },
     onDelProject() { nav.delProject(nav.project) },
     onRootDots(ev) {
       const entry = { name: nav.project, isDir: true, type: 'folder', sizeText: '', mtime: '' }
@@ -570,11 +707,22 @@ const TreeV3 = {
   },
   template: `
     <div class="sidebar">
-      <div class="side-head">
-        <button class="icon-btn" style="padding:3px;font-size:14px" title="新建文件夹" @click="onNewFolder">📁＋</button>
-        <button class="icon-btn" style="padding:3px;font-size:14px" title="添加文件" @click="onAddFile">＋📄</button>
-        <button class="icon-btn" style="padding:3px;font-size:14px" title="上传文件夹到当前目录" @click="onAddFolder">📁⬆</button>
+      <div class="side-head" style="position:relative">
+        <button class="icon-btn" style="padding:3px;font-size:16px;font-weight:700;line-height:1" title="新建 / 上传" @click="store.newMenu = !store.newMenu">＋</button>
         <button v-if="isAdmin && nav.path === ''" class="icon-btn" style="padding:3px;font-size:14px;color:var(--danger)" :title="'删除项目：' + nav.project" @click="onDelProject">🗑</button>
+        <!-- + 下拉：新建文档/数据表/页面 / 上传 -->
+        <div v-if="store.newMenu" class="ctx-mask" @click="store.newMenu = false"></div>
+        <div v-if="store.newMenu" style="position:absolute;top:36px;left:0;z-index:1100;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 0;box-shadow:0 10px 30px rgba(0,0,0,.25);min-width:180px">
+          <div class="ctx-item" @click="onNewDoc">📄 新建文档</div>
+          <div class="ctx-item" @click="onNewSheet">📊 新建数据表</div>
+          <div class="ctx-item" @click="onNewPage">🌐 新建页面</div>
+          <div class="ctx-item" @click="onNewDataview">📈 数据看板页面</div>
+          <div style="height:1px;background:var(--line);margin:5px 0"></div>
+          <div class="ctx-item" @click="onAddFile">⬆ 上传文件</div>
+          <div class="ctx-item" @click="onAddFolder">📁⬆ 上传文件夹</div>
+          <div style="height:1px;background:var(--line);margin:5px 0"></div>
+          <div class="ctx-item" @click="onNewFolder">📁 新建文件夹</div>
+        </div>
       </div>
       <div class="v3-tn" :class="{ active: nav.path === '' }" :style="{ paddingLeft: '8px' }">
         <span class="tree-arrow" style="width:14px;display:inline-block;text-align:center;font-size:10px;color:var(--muted);cursor:pointer;flex-shrink:0" @click.stop="onRootToggle">{{ rootExpanded ? '▾' : '▸' }}</span>
@@ -627,6 +775,11 @@ const PanelV3 = {
       return t ? ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(t.kind === 'office' ? (t.name.split('.').pop() || '').toLowerCase() : '') : false
     },
     isMdFile() { const t = this.activeTab; return t ? t.kind === 'md' : false },
+    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    isRootMenu() {
+      const m = store.ctxMenu
+      return m ? m.entry.isDir && m.dirPath === '' && m.entry.name === m.project : false
+    },
   },
   watch: {
     // 切项目（旧项目非空）→ 清空标签；刷新恢复场景（null → 项目）不清
@@ -704,9 +857,14 @@ const PanelV3 = {
     closeMenu() { closeMenu() },
     openDetail() { openDetail() },
     doRename() { doRename() },
+    submitRename() { void submitRename() },
+    cancelRename() { cancelRename() },
     doDelete() { doDelete() },
     doFavorite() { doFavorite() },
     doDownload() { void doDownload() },
+    doCopyHere() { void doCopyHere() },
+    doMoveOpen() { void doMoveOpen() },
+    doMoveSubmit() { void doMoveSubmit() },
     doEdit() { doEdit() },
     doMkdirHere() { doMkdirHere() },
     /* 文件夹 ⋯ 菜单：上传整个文件夹到该文件夹（根节点 → 项目根） */
@@ -717,6 +875,13 @@ const PanelV3 = {
       const isRoot = m.dirPath === '' && m.entry.name === m.project
       const rel = isRoot ? '' : relPath(m.project, m.dirPath, m.entry.name)
       bus.emit('upload:request-dir', { path: rel })
+    },
+    /* 树根 ⋯ 菜单：邀请成员（admin，privhub-files-invite 插件弹窗） */
+    doInvite() {
+      const m = store.ctxMenu
+      closeMenu()
+      if (!m) return
+      bus.emit('invite:open', { project: m.project })
     },
     async openPerm() { await openPerm() },
     /* ---- 内联输入模态（批量移动 / 新建子文件夹） ---- */
@@ -810,7 +975,7 @@ const PanelV3 = {
     async batchDelete() {
       const names = Object.keys(nav.checked).filter(n => nav.checked[n])
       if (!names.length) return
-      if (!confirm('将选中的 ' + names.length + ' 项移入回收站？')) return
+      if (!confirm('将选中的 ' + names.length + ' 项移入回收站（30 天后自动清除，可在回收站恢复）？')) return
       this.batchBusy = true
       let okCount = 0
       try {
@@ -902,7 +1067,7 @@ const PanelV3 = {
             <pre class="v3-text">{{ content.text }}</pre>
           </template>
           <template v-else-if="content.url">
-            <div v-if="activeTab.kind === 'image'" style="text-align:center"><img class="v3-img" :src="content.url" :alt="activeTab.name" /></div>
+            <div v-if="activeTab.kind === 'image'" style="text-align:center"><img class="v3-img" style="cursor:zoom-in" :src="content.url" :alt="activeTab.name" @click="store.lightbox = content.url" /></div>
             <iframe v-else class="v3-pdf" :src="content.url"></iframe>
           </template>
         </div>
@@ -931,7 +1096,13 @@ const PanelV3 = {
         </div>
         <div class="main-body">
           <div v-if="nav.listLoading" class="empty">加载中…</div>
-          <div v-else-if="entries.length === 0" class="empty">此文件夹下没有文件（文件夹请在左侧目录树中查看）</div>
+          <div v-else-if="entries.length === 0" class="empty">
+            <div style="font-size:32px;margin-bottom:10px">📂</div>
+            <div style="font-size:13.5px;color:var(--text)">此文件夹下没有文件</div>
+            <div style="font-size:12px;color:var(--muted);margin:6px 0 14px">上传文件，或从左侧目录树管理文件夹</div>
+            <button class="btn btn-primary" style="width:auto" @click="doAddFile">⬆ 上传文件</button>
+            <button class="icon-btn" style="margin-left:8px" @click="doSubmitMkdir">📁 新建文件夹</button>
+          </div>
           <div v-else class="file-table-wrap">
             <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
               <span><input type="checkbox" @click="selectAll" /></span>
@@ -953,7 +1124,20 @@ const PanelV3 = {
               @contextmenu.prevent="openCtxMenu(e, $event)"
             >
               <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
-              <span class="col-name"><span class="tico">{{ fileIcon(e.type) }}</span>{{ e.name }}</span>
+              <span class="col-name">
+                <template v-if="store.renameState && store.renameState.entry.name === e.name && !e.isDir">
+                  <input
+                    v-model="store.renameState.value"
+                    @keyup.enter="submitRename"
+                    @keyup.esc="cancelRename"
+                    @click.stop
+                    @dblclick.stop
+                    @mousedown.stop
+                    style="width:100%;padding:3px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
+                  />
+                </template>
+                <template v-else><span class="tico">{{ fileIcon(e.type) }}</span>{{ e.name }}</template>
+              </span>
               <span class="col-size">{{ e.sizeText }}</span>
               <span class="col-type">{{ e.type }}</span>
               <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
@@ -970,11 +1154,20 @@ const PanelV3 = {
         <div class="ctx-item" @click="openPerm">🔐 权限</div>
         <div class="ctx-item" @click="doFavorite">⭐ 收藏</div>
         <div v-if="!store.ctxMenu.entry.isDir" class="ctx-item" @click="doDownload">⬇ 下载</div>
+        <div v-if="!store.ctxMenu.entry.isDir" class="ctx-item" @click="doCopyHere">📄 复制副本</div>
+        <div class="ctx-item" @click="doMoveOpen">📦 移动</div>
         <div v-if="!store.ctxMenu.entry.isDir && (isOfficeMenu || isMdMenu)" class="ctx-item" @click="doEdit">✏️ 编辑</div>
         <div class="ctx-item" @click="doRename">✏️ 重命名</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doMkdirHere">＋ 新建子文件夹</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadHere">📁 上传到该文件夹</div>
+        <div v-if="isRootMenu && isAdmin" class="ctx-item" @click="doInvite">📨 邀请成员</div>
         <div class="ctx-item danger" @click="doDelete">🗑 删除</div>
+      </div>
+
+      <!-- 图片放大预览（lightbox） -->
+      <div v-if="store.lightbox" class="modal-mask" style="background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center" @click.self="store.lightbox = null">
+        <span style="position:fixed;top:16px;right:24px;font-size:24px;color:#fff;cursor:pointer;z-index:1101" @click="store.lightbox = null">✕</span>
+        <img :src="store.lightbox" style="max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)" />
       </div>
 
       <!-- 权限弹窗 -->
@@ -1006,6 +1199,31 @@ const PanelV3 = {
           </div>
           <div class="modal-foot">
             <button class="btn btn-ghost" @click="store.permTarget = null">关 闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 移动选择器（⋯ 菜单「移动」→ 树形目录选择） -->
+      <div v-if="store.moveState" class="modal-mask" @click.self="store.moveState = null">
+        <div class="modal" style="width:430px">
+          <h2>📦 移动「{{ store.moveState.entry.name }}」到…</h2>
+          <div class="modal-body">
+            <div v-if="store.moveState.loading" style="color:var(--muted);font-size:12.5px;padding:12px 0">加载目录…</div>
+            <template v-else>
+              <div style="font-size:12.5px;max-height:320px;overflow:auto">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ background: store.moveState.target === '' ? 'rgba(90,130,200,.12)' : '' }">
+                  <input type="radio" v-model="store.moveState.target" value="" /> 🏠 项目根目录
+                </label>
+                <label v-for="n in store.moveState.tree" :key="n.path" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ paddingLeft: (8 + n.depth * 18) + 'px', background: store.moveState.target === n.path ? 'rgba(90,130,200,.12)' : '' }">
+                  <input type="radio" v-model="store.moveState.target" :value="n.path" /> 📁 {{ n.name }}
+                </label>
+              </div>
+              <div style="color:var(--muted);font-size:12px;margin-top:6px">不能移动到自身或其子目录</div>
+            </template>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-ghost" @click="store.moveState = null">取 消</button>
+            <button class="btn btn-primary" style="width:auto" :disabled="store.moveState.busy" @click="doMoveSubmit">确 定</button>
           </div>
         </div>
       </div>
@@ -1104,6 +1322,14 @@ const RightDetail = {
       const t = this.target
       return t ? /\.md$/i.test(t.name) : false
     },
+    isHtml() {
+      const t = this.target
+      return t ? /\.html?$/i.test(t.name) : false
+    },
+    isText() {
+      const t = this.target
+      return t ? /\.(txt|md|json|js|ts|css|html|xml|csv|log|yaml|yml|ini|py|sh|bat|sql)$/i.test(t.name) : false
+    },
   },
   watch: {
     target(n, o) {
@@ -1176,6 +1402,11 @@ const RightDetail = {
       else if (this.isMd) bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
     },
     perm() { const t = this.target; if (t) void openPermFor({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, mtime: t.mtime }, t.project, t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '') },
+    /* 批注评论 / 生成页面 / 发布 / 版本历史（跨插件 bus 触发） */
+    comments() { const t = this.target; if (t) bus.emit('file:comments', { project: t.project, path: t.path, name: t.name }) },
+    genpage() { const t = this.target; if (t) bus.emit('md:genpage', { project: t.project, path: t.path }) },
+    publish() { const t = this.target; if (t) bus.emit('html:publish', { project: t.project, path: t.path, name: t.name }) },
+    versions() { const t = this.target; if (t) bus.emit('file:versions', { project: t.project, path: t.path, name: t.name }) },
     async copyPath() {
       const t = this.target
       if (!t) return
@@ -1219,9 +1450,11 @@ const RightDetail = {
             <div class="v3-detail-act" title="下载文件" @click="download"><span class="v3-detail-act-ico">⬇️</span>下载</div>
             <div class="v3-detail-act" :title="isOffice || isMd ? '在编辑器中打开' : '仅支持 md / Office 文档'" :class="{ dev: !(isOffice || isMd) }" @click="isOffice || isMd ? edit() : null"><span class="v3-detail-act-ico">✏️</span>编辑</div>
             <div class="v3-detail-act" title="查看/管理权限规则" @click="perm"><span class="v3-detail-act-ico">🔐</span>权限</div>
+            <div class="v3-detail-act" :title="isMd ? '选中正文添加评论 / 查看评论线程' : '仅支持 md 文档'" :class="{ dev: !isMd }" @click="isMd ? comments() : null"><span class="v3-detail-act-ico">💬</span>批注评论</div>
+            <div class="v3-detail-act" :title="isMd ? '一键生成 HTML 展示页' : '仅支持 md 文档'" :class="{ dev: !isMd }" @click="isMd ? genpage() : null"><span class="v3-detail-act-ico">🌐</span>生成页面</div>
+            <div class="v3-detail-act" :title="isHtml ? '发布为内网只读链接' : '仅支持 HTML 页面'" :class="{ dev: !isHtml }" @click="isHtml ? publish() : null"><span class="v3-detail-act-ico">🔗</span>发布链接</div>
+            <div class="v3-detail-act" :title="isText ? '创建/查看版本快照（最近 20 版）' : '仅支持文本类文件'" :class="{ dev: !isText }" @click="isText ? versions() : null"><span class="v3-detail-act-ico">🕘</span>版本历史</div>
             <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">📚</span>向量数据库<span class="v3-dev-badge">开发中</span></div>
-            <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">🔗</span>分享链接<span class="v3-dev-badge">开发中</span></div>
-            <div class="v3-detail-act dev" title="开发中"><span class="v3-detail-act-ico">🕘</span>版本历史<span class="v3-dev-badge">开发中</span></div>
           </div>
         </template>
       </div>

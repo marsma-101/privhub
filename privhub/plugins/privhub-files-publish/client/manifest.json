@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-publish",
+  "title": "页面发布",
+  "icon": "🔗",
+  "description": "HTML 内网发布：免登录只读分享链接（有效期/撤销）",
+  "slots": ["office-editor"]
+}

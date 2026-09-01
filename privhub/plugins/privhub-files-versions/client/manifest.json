@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-versions",
+  "title": "版本历史",
+  "icon": "🕘",
+  "description": "通用文件版本历史：文本类文件快照/列表/预览/恢复（每文件 20 版）",
+  "slots": ["office-editor"]
+}
