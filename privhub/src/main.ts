@@ -12,6 +12,9 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
+import { readdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 import { WebServerService } from './web-server.js'
 
 /* ---- L1 六枢纽 ---- */
@@ -31,33 +34,52 @@ import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
 import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
 import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
-
-/* ---- L3 功能插件（含后端） ---- */
-import * as settings from '../plugins/privhub-shell-settings/src/index.ts'
-import * as authWatermark from '../plugins/privhub-auth-watermark/src/index.ts'
-import * as filesSearch from '../plugins/privhub-files-search/src/index.ts'
-import * as favorites from '../plugins/privhub-shell-favorites/src/index.ts'
-import * as recent from '../plugins/privhub-shell-recent/src/index.ts'
-import * as adminAudit from '../plugins/privhub-admin-audit/src/index.ts'
+/* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
 import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
-import * as filesEditMd from '../plugins/privhub-files-edit-md/src/index.ts'
-import * as filesFulltext from '../plugins/privhub-files-fulltext/src/index.ts'
-import * as filesTags from '../plugins/privhub-files-tags/src/index.ts'
-import * as filesTemplate from '../plugins/privhub-files-template/src/index.ts'
-import * as filesKg from '../plugins/privhub-files-kg/src/index.ts'
-import * as filesExport from '../plugins/privhub-files-export/src/index.ts'
-import * as filesOffice from '../plugins/privhub-files-office/src/index.ts'
-import * as filesOfficeUi from '../plugins/privhub-files-office-ui/src/index.ts'
-import * as filesOfficeAi from '../plugins/privhub-files-office-ai/src/index.ts'
-import * as filesExplorerV3 from '../plugins/privhub-files-explorer-v3/src/index.ts'
-import * as filesInvite from '../plugins/privhub-files-invite/src/index.ts'
-import * as filesVersions from '../plugins/privhub-files-versions/src/index.ts'
-import * as filesMdPage from '../plugins/privhub-files-mdpage/src/index.ts'
-import * as filesPublish from '../plugins/privhub-files-publish/src/index.ts'
-import * as filesComments from '../plugins/privhub-files-comments/src/index.ts'
-import * as filesDataview from '../plugins/privhub-files-dataview/src/index.ts'
+
+/* ---- L3 功能插件：自动发现装配（装卸 = 增删 plugins/ 目录） ----
+ * 核心清单（L1/L2/adminAcl/shell）手动挂载；其余带 src/index.ts 的插件
+ * 在【进程根目录】（PRIVHUB_ROOT 或 cwd）的 plugins/ 下扫描发现，动态加载。
+ * 生产环境跑在 deploy/privhub-deploy 时即扫描该目录，与开发环境零耦合。 */
+const CORE_PLUGINS = new Set([
+  'privhub-svc-storage', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
+  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-office',
+  'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
+  'privhub-admin', 'privhub-shell',
+])
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
+async function discoverL3(): Promise<Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }>> {
+  const pluginsDir = join(rootDir, 'plugins')
+  const out: Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }> = []
+  if (!existsSync(pluginsDir)) return out
+  const entries = await readdir(pluginsDir, { withFileTypes: true })
+  entries.sort((a, b) => a.name.localeCompare(b.name))
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue
+    if (ent.name.startsWith('_')) continue // _retired-v2 等归档目录不参与装配
+    if (CORE_PLUGINS.has(ent.name)) continue
+    const src = join(pluginsDir, ent.name, 'src', 'index.ts')
+    if (!existsSync(src)) continue
+    try {
+      const mod = await import(pathToFileURL(src).href) as {
+        name?: string
+        inject?: string[]
+        apply?: (ctx: Context, config?: unknown) => unknown
+      }
+      if (typeof mod.name === 'string' && typeof mod.apply === 'function') {
+        out.push({ name: mod.name, inject: mod.inject, apply: mod.apply })
+        console.log('[assembly] 发现 L3 插件: ' + ent.name)
+      } else {
+        console.warn('[assembly] 跳过（非标准插件形态）: ' + ent.name)
+      }
+    } catch (e) {
+      console.error('[assembly] 插件加载失败: ' + ent.name + ' → ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+  return out
+}
 
 function argPort(): number {
   const idx = process.argv.indexOf('--port')
@@ -104,29 +126,15 @@ async function main(): Promise<void> {
   await mount(admin)
   await mount(shell)
 
-  /* 4. L3 功能插件（含后端） */
-  await mount(settings)
-  await mount(authWatermark)
-  await mount(filesSearch)
-  await mount(favorites)
-  await mount(recent)
-  await mount(adminAudit)
-  await mount(filesEditMd)
-  await mount(filesFulltext)
-  await mount(filesTags)
-  await mount(filesTemplate)
-  await mount(filesKg)
-  await mount(filesExport)
-  await mount(filesOffice)
-  await mount(filesOfficeUi)
-  await mount(filesOfficeAi)
-  await mount(filesExplorerV3)
-  await mount(filesInvite)
-  await mount(filesVersions)
-  await mount(filesMdPage)
-  await mount(filesPublish)
-  await mount(filesComments)
-  await mount(filesDataview)
+  /* 4. L3 功能插件：自动发现装配（装卸 = 增删 plugins/ 目录；无需改本文件） */
+  const l3 = await discoverL3()
+  for (const p of l3) {
+    try {
+      await mount(p)
+    } catch (e) {
+      console.error('[assembly] 插件挂载失败: ' + p.name + ' → ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
 
   /* 5. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)
