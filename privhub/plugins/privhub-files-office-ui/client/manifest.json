@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-office-ui",
+  "title": "Office 编辑",
+  "icon": "✏️",
+  "description": "Office 文档人工编辑（docx/xlsx 编辑保存，pptx/pdf 只读查看）",
+  "slots": ["office-editor"]
+}

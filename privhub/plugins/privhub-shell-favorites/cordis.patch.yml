@@ -1,0 +1,5 @@
+# privhub-shell-favorites bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-shell-favorites
+      name: privhub-shell-favorites
+      config: {}

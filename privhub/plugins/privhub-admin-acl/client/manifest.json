@@ -1,0 +1,10 @@
+{
+  "id": "privhub-admin-acl",
+  "title": "权限管理",
+  "icon": "🔒",
+  "description": "细粒度 ACL（F14）：文件/目录级权限规则（继承/覆盖），仅管理员",
+  "slots": ["acl"],
+  "barItems": [
+    { "icon": "🔒", "title": "权限管理", "slot": "acl", "view": "acl", "adminOnly": true }
+  ]
+}

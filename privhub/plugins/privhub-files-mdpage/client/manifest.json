@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-mdpage",
+  "title": "生成页面",
+  "icon": "🌐",
+  "description": "Markdown 一键生成 HTML 展示页（md → html）",
+  "slots": ["office-editor"]
+}

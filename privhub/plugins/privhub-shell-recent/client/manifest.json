@@ -1,0 +1,7 @@
+{
+  "id": "privhub-shell-recent",
+  "title": "最近打开",
+  "icon": "🕘",
+  "description": "最近打开文件列表（顶栏下拉，点击定位）",
+  "slots": ["user-area"]
+}

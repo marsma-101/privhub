@@ -1,0 +1,7 @@
+# PrivHub .gitignore —— 整个文件夹直接上传（自动排除依赖与运行数据）
+node_modules/
+data/
+data-files/
+.DS_Store
+Thumbs.db
+*.log

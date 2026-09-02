@@ -1,0 +1,7 @@
+# privhub-svc-collab bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-svc-collab
+      name: privhub-svc-collab
+      config:
+        maxSessions: 500
+        maxPatches: 100

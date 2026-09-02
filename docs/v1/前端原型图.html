@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公司文件管理系统 · 前端原型图</title>
+<style>
+  :root {
+    --bg: #1b1f27;
+    --panel: #232833;
+    --panel2: #2a3040;
+    --line: #3a4254;
+    --text: #d7dde8;
+    --muted: #8a94a6;
+    --accent: #4f8cff;
+    --warn: #e8a13c;
+    --danger: #e05b5b;
+    --ok: #4fbf7f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+
+  /* ===== 整体 App 框架 ===== */
+  .app {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    max-width: 1200px;
+  }
+
+  /* 顶栏 */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 18px;
+    background: var(--panel2);
+    border-bottom: 1px solid var(--line);
+  }
+  .logo { font-weight: 700; font-size: 15px; color: #fff; display:flex; align-items:center; gap:8px; }
+  .logo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  .crumb { color: var(--muted); font-size: 13px; }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .badge {
+    font-size: 12px; padding: 3px 10px; border-radius: 20px;
+    background: rgba(79,140,255,.15); color: var(--accent); border: 1px solid rgba(79,140,255,.35);
+  }
+  .badge.admin { background: rgba(232,161,60,.15); color: var(--warn); border-color: rgba(232,161,60,.4); }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: linear-gradient(135deg, #4f8cff, #7a5cff);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff; font-weight: 600;
+  }
+
+  /* 主体三栏 */
+  .body { display: flex; min-height: 520px; }
+  .sidebar { width: 240px; background: var(--panel); border-right: 1px solid var(--line); padding: 12px 10px; }
+  .content { flex: 1; padding: 16px 18px; }
+  .inspector { width: 260px; background: var(--panel); border-left: 1px solid var(--line); padding: 12px 14px; }
+
+  .section-title {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin: 6px 4px 10px;
+  }
+
+  /* 树 */
+  .tree-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 6px; font-size: 13.5px; cursor: default;
+  }
+  .tree-item:hover { background: var(--panel2); }
+  .tree-item.active { background: rgba(79,140,255,.15); color: #fff; }
+  .tree-item .ico { width: 16px; text-align: center; }
+  .tree-item .name { flex: 1; }
+  .tree-indent { display: inline-block; width: 16px; }
+
+  /* 文件卡片列表 */
+  .file-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .file-card {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 12px; text-align: center; cursor: default;
+  }
+  .file-card:hover { border-color: var(--accent); }
+  .file-ico { font-size: 30px; margin-bottom: 8px; }
+  .file-name { font-size: 12.5px; word-break: break-all; }
+
+  /* 检查器 */
+  .kv { display: flex; justify-content: space-between; font-size: 12.5px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .kv .k { color: var(--muted); }
+  .kv .v { color: var(--text); }
+
+  /* 上传区 */
+  .dropzone {
+    border: 2px dashed var(--line); border-radius: 8px;
+    padding: 18px 12px; text-align: center; color: var(--muted); font-size: 12.5px;
+    margin-top: 14px;
+  }
+  .dropzone:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* 操作按钮条 */
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .btn {
+    font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: default;
+    background: var(--panel2); border: 1px solid var(--line);
+  }
+
+  /* ===== 说明卡片（气泡提示）===== */
+  .tooltip-host {
+    position: relative;
+  }
+  .tip {
+    position: absolute;
+    z-index: 999;
+    max-width: 300px;
+    background: #10131a;
+    color: #e6ebf5;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px);
+    transition: opacity .18s ease, transform .18s ease, visibility .18s;
+    pointer-events: none;
+    left: 50%;
+    bottom: calc(100% + 12px);
+    transform-origin: bottom center;
+    white-space: normal;
+  }
+  .tip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -6px;
+    border: 6px solid transparent;
+    border-top-color: #10131a;
+  }
+  .tooltip-host:hover .tip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
+  .tip .tip-title {
+    font-weight: 700; font-size: 13px; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tip .tip-plugin {
+    font-size: 11px; color: var(--accent);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    margin-bottom: 6px; display: block;
+  }
+  .tip .tip-body { color: #b8c0cf; }
+
+  /* 大区域的气泡用类 */
+  .tip.region { max-width: 360px; }
+
+  .legend { display: flex; gap: 20px; margin: 20px 0 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+  .legend .dot.ok { background: var(--ok); }
+  .legend .dot.warn { background: var(--warn); }
+  .hint { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+  <h1>公司文件管理系统 · 前端原型图</h1>
+  <div class="subtitle">鼠标移到任意「区域」或「按钮」上，会弹出气泡说明它的作用与对应插件</div>
+
+  <div class="legend">
+    <span><i class="dot"></i> 蓝色 = 阶段一必做</span>
+    <span><i class="dot ok"></i> 绿色 = 阶段二</span>
+    <span><i class="dot warn"></i> 橙色 = 阶段三/后话</span>
+  </div>
+  <div class="hint">💡 所有可交互位点都带 hover 气泡，逐个悬停查看即可。</div>
+
+  <div class="app tooltip-host">
+    <span class="tip region">
+      <span class="tip-title">🏠 整个 App 框架</span>
+      <span class="tip-plugin">ds-app-shell（地基）</span>
+      <span class="tip-body">这是登录后进入的「主界面」外壳。它本身是 DSH 里的一个布局承载器，下面每个区域都是独立插件插进来的。</span>
+    </span>
+
+    <!-- 顶栏 -->
+    <div class="topbar">
+      <div class="logo tooltip-host">
+        <span class="logo-dot"></span> P-Hub
+        <span class="tip">
+          <span class="tip-title">🏷️ 系统 LOGO / 名称</span>
+          <span class="tip-plugin">ds-ui-layout（顶栏区）</span>
+          <span class="tip-body">显示系统名（暂用 P-Hub 占位）。点击可回到根目录。</span>
+        </span>
+      </div>
+      <div class="crumb tooltip-host">
+        🗂 我的空间 / A项目 / 设计稿
+        <span class="tip">
+          <span class="tip-title">🍞 面包屑导航</span>
+          <span class="tip-plugin">ds-file-tree（导航联动）</span>
+          <span class="tip-body">显示当前所在目录的路径，点击任意一级可快速跳回上层目录。</span>
+        </span>
+      </div>
+      <div class="topbar-right">
+        <span class="badge admin tooltip-host">
+          👑 管理员
+          <span class="tip">
+            <span class="tip-title">🛡️ 权限标识</span>
+            <span class="tip-plugin">ds-auth-login</span>
+            <span class="tip-body">显示当前用户的角色（管理员/高层/普通用户）。不同角色看到的界面和能做的操作不同。</span>
+          </span>
+        </span>
+        <div class="avatar tooltip-host">
+          张
+          <span class="tip">
+            <span class="tip-title">👤 当前用户</span>
+            <span class="tip-plugin">ds-auth-login</span>
+            <span class="tip-body">登录账号的头像。点击可打开个人菜单（改密码、退出登录）。</span>
+          </span>
+        </div>
+        <div class="btn tooltip-host">
+          ⏻ 退出
+          <span class="tip">
+            <span class="tip-title">🚪 退出登录</span>
+            <span class="tip-plugin">ds-auth-login</span>
+            <span class="tip-body">注销当前会话，回到登录页。</span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主体三栏 -->
+    <div class="body">
+      <!-- 左侧树 -->
+      <div class="sidebar tooltip-host">
+        <span class="tip region">
+          <span class="tip-title">🌲 左侧树形栏（整体）</span>
+          <span class="tip-plugin">ds-file-tree</span>
+          <span class="tip-body">目录树。左键点击展开文件夹、切换当前目录；长按/右键弹出「复制/移动/重命名/删除」右键菜单。</span>
+        </span>
+        <div class="section-title">文件目录</div>
+        <div class="tree-item tooltip-host">
+          <span class="ico">📁</span><span class="name">我的空间</span>
+          <span class="tip">
+            <span class="tip-title">根节点</span>
+            <span class="tip-plugin">ds-file-tree</span>
+            <span class="tip-body">每个用户登录后看到的「根」。普通用户只看到自己有权限的项目文件夹。</span>
+          </span>
+        </div>
+        <div class="tree-item active tooltip-host">
+          <span class="tree-indent"></span><span class="ico">📁</span><span class="name">A项目</span>
+          <span class="tip">
+            <span class="tip-title">项目文件夹</span>
+            <span class="tip-plugin">ds-permission-scope</span>
+            <span class="tip-body">按项目划分的隔离区。负责 A 项目的人只能看到并操作 A 项目，看不到 B 项目。</span>
+          </span>
+        </div>
+        <div class="tree-item tooltip-host">
+          <span class="tree-indent"></span><span class="tree-indent"></span><span class="ico">📁</span><span class="name">设计稿</span>
+          <span class="tip">
+            <span class="tip-title">子文件夹</span>
+            <span class="tip-plugin">ds-file-tree</span>
+            <span class="tip-body">普通子目录，点击展开查看里面文件。</span>
+          </span>
+        </div>
+        <div class="tree-item tooltip-host">
+          <span class="tree-indent"></span><span class="ico">📁</span><span class="name">B项目</span>
+          <span class="tip">
+            <span class="tip-title">项目文件夹（无权时隐藏）</span>
+            <span class="tip-plugin">ds-permission-scope</span>
+            <span class="tip-body">非本项目成员不可见。管理员/高层可看到全部项目。</span>
+          </span>
+        </div>
+        <div class="tree-item tooltip-host">
+          <span class="tree-indent"></span><span class="ico">🗑</span><span class="name">回收站</span>
+          <span class="tip">
+            <span class="tip-title">🗑 回收站</span>
+            <span class="tip-plugin">ds-recycle-bin（阶段二）</span>
+            <span class="tip-body">删除的文件先进这里，可恢复或彻底删除。防止误删。</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- 中间内容 -->
+      <div class="content tooltip-host">
+        <span class="tip region">
+          <span class="tip-title">📁 中间文件面板（整体）</span>
+          <span class="tip-plugin">ds-file-panel</span>
+          <span class="tip-body">显示当前目录下的文件/文件夹。支持网格/列表两种视图，可排序、搜索。</span>
+        </span>
+        <div class="file-list">
+          <div class="file-card tooltip-host">
+            <div class="file-ico">📁</div>
+            <div class="file-name">子文件夹A</div>
+            <span class="tip">
+              <span class="tip-title">文件夹卡片</span>
+              <span class="tip-plugin">ds-file-panel</span>
+              <span class="tip-body">双击进入；右键弹出操作菜单。</span>
+            </span>
+          </div>
+          <div class="file-card tooltip-host">
+            <div class="file-ico">📄</div>
+            <div class="file-name">合同_v2.docx</div>
+            <span class="tip">
+              <span class="tip-title">文件卡片</span>
+              <span class="tip-plugin">ds-file-panel</span>
+              <span class="tip-body">双击预览或下载（取决于你的权限）。</span>
+            </span>
+          </div>
+          <div class="file-card tooltip-host">
+            <div class="file-ico">🖼</div>
+            <div class="file-name">封面.png</div>
+            <span class="tip">
+              <span class="tip-title">图片文件</span>
+              <span class="tip-plugin">ds-file-preview（后话）</span>
+              <span class="tip-body">阶段三支持在线预览图片/PDF/Office。</span>
+            </span>
+          </div>
+          <div class="file-card tooltip-host">
+            <div class="file-ico">📊</div>
+            <div class="file-name">报表.xlsx</div>
+            <span class="tip">
+              <span class="tip-title">表格文件</span>
+              <span class="tip-plugin">ds-file-preview（后话）</span>
+              <span class="tip-body">阶段三支持在线预览 Office。</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <div class="btn tooltip-host">
+            ➕ 新建
+            <span class="tip">
+              <span class="tip-title">➕ 新建</span>
+              <span class="tip-plugin">ds-file-ops</span>
+              <span class="tip-body">新建子文件夹（或空白文件）。</span>
+            </span>
+          </div>
+          <div class="btn tooltip-host">
+            ⬆ 上传
+            <span class="tip">
+              <span class="tip-title">⬆ 上传文件</span>
+              <span class="tip-plugin">ds-file-upload</span>
+              <span class="tip-body">点击选择文件上传，也可以直接拖拽文件到上传区。</span>
+            </span>
+          </div>
+          <div class="btn tooltip-host">
+            ⬇ 下载
+            <span class="tip">
+              <span class="tip-title">⬇ 下载</span>
+              <span class="tip-plugin">ds-file-upload</span>
+              <span class="tip-body">下载选中的文件。需要「下载」权限。</span>
+            </span>
+          </div>
+          <div class="btn tooltip-host">
+            ✂ 移动 / 复制
+            <span class="tip">
+              <span class="tip-title">✂ 移动 / 复制</span>
+              <span class="tip-plugin">ds-file-ops</span>
+              <span class="tip-body">把选中文件移动到其它目录，或复制一份。</span>
+            </span>
+          </div>
+          <div class="btn tooltip-host">
+            🗑 删除
+            <span class="tip">
+              <span class="tip-title">🗑 删除</span>
+              <span class="tip-plugin">ds-file-ops</span>
+              <span class="tip-body">删除选中项（进入回收站）。需要「删除」权限。</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="dropzone tooltip-host">
+          📥 拖拽文件到这里即可上传
+          <span class="tip">
+            <span class="tip-title">📥 拖拽上传区</span>
+            <span class="tip-plugin">ds-file-upload（复用 DSH 拖拽能力）</span>
+            <span class="tip-body">把桌面/本机文件直接拖进这里 = 上传到当前目录。复用 DSH 现成的拖拽读取能力，省开发量。</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- 右侧检查器 -->
+      <div class="inspector tooltip-host">
+        <span class="tip region">
+          <span class="tip-title">📌 右侧可伸缩功能条（整体）</span>
+          <span class="tip-plugin">ds-inspector</span>
+          <span class="tip-body">可伸缩的侧边信息/操作面板。显示选中项的详情、权限、操作入口。阶段一先做空壳，后续填充。</span>
+        </span>
+        <div class="section-title">选中项详情</div>
+        <div class="tooltip-host">
+          <div class="kv"><span class="k">名称</span><span class="v">合同_v2.docx</span></div>
+          <div class="kv"><span class="k">大小</span><span class="v">2.4 MB</span></div>
+          <div class="kv"><span class="k">修改时间</span><span class="v">2025-06-12</span></div>
+          <span class="tip">
+            <span class="tip-title">📋 文件详情</span>
+            <span class="tip-plugin">ds-inspector</span>
+            <span class="tip-body">选中一个文件后，这里显示它的名称、大小、修改时间等元信息。</span>
+          </span>
+        </div>
+        <div class="tooltip-host" style="margin-top:12px;">
+          <div class="kv"><span class="k">谁能看</span><span class="v">A项目成员</span></div>
+          <div class="kv"><span class="k">谁能改</span><span class="v">张三、李四</span></div>
+          <div class="kv"><span class="k">谁能删</span><span class="v">仅管理员</span></div>
+          <span class="tip">
+            <span class="tip-title">🔐 待办：细粒度权限</span>
+            <span class="tip-plugin">ds-permission-matrix（阶段三）</span>
+            <span class="tip-body">后话功能：对单个文件显示「谁能看/改/删」，并可在此调整。</span>
+          </span>
+        </div>
+        <div class="tooltip-host" style="margin-top:12px;">
+          <div class="kv"><span class="k">版本</span><span class="v">v2 · 3 个历史版本</span></div>
+          <span class="tip">
+            <span class="tip-title">🕓 待办：版本历史</span>
+            <span class="tip-plugin">ds-version（阶段三）</span>
+            <span class="tip-body">后话功能：查看并回滚文件的旧版本。</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend" style="margin-top:18px;">
+    <span>颜色说明：阶段一地基/登录/布局 · 阶段二 文件增删改/回收站 · 阶段三 预览/细粒度权限/版本/搜索</span>
+  </div>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "id": "privhub-files-tags",
+  "title": "标签",
+  "icon": "🏷️",
+  "description": "文件标签（F19）：为选中文件打标签（联想已有标签），按标签筛选定位文件",
+  "slots": ["tags"],
+  "barItems": [
+    { "icon": "🏷️", "title": "标签", "slot": "panel", "view": "tags" }
+  ]
+}

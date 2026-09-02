@@ -1,0 +1,437 @@
+/**
+ * privhub-files-explorer · client — 目录树（tree slot）+ 文件面板（panel slot）
+ *
+ * 消费骨架桥（window.PrivHub）：
+ *   - nav：导航状态机（project/path/entries/selected/…与骨架共享）
+ *   - bus：事件总线（emit file:opened / file:trash）
+ *   - api：统一 fetch
+ * 长按 1.5s 弹操作菜单（详情/重命名/新建子文件夹/删除）。
+ *
+ * @module privhub-files-explorer/client
+ */
+
+const { api, nav, bus, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries } = window.PrivHub
+
+/* ============ 递归目录树节点 ============ */
+const TreeNode = {
+  name: 'tree-node',
+  props: {
+    label: String, project: String, path: String, depth: Number, active: Boolean,
+  },
+  computed: {
+    expanded() { return nav.isExpanded(this.project, this.path) },
+    children() { return nav.childrenOf(this.project, this.path) },
+    isActivePath() { return nav.project === this.project && nav.path === this.path },
+  },
+  methods: {
+    onToggle() { nav.toggleTree(this.project, this.path) },
+    onOpen() { nav.openDir(this.project, this.path) },
+  },
+  template: `
+    <div>
+      <div class="tree-item" :class="{ active: active }" :style="{ paddingLeft: (10 + depth * 16) + 'px' }">
+        <span class="tree-arrow" @click.stop="onToggle" style="cursor:pointer;width:14px;display:inline-block">
+          {{ expanded ? '▾' : '▸' }}
+        </span>
+        <span @click="onOpen" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span>{{ expanded ? '📂' : '📁' }}</span><span class="name">{{ label }}</span>
+        </span>
+      </div>
+      <tree-node
+        v-for="c in (expanded ? children : [])"
+        :key="c.path"
+        :label="c.name"
+        :project="project"
+        :path="c.path"
+        :depth="depth + 1"
+        :active="isActivePath"
+      ></tree-node>
+    </div>
+  `,
+}
+
+/* 树视图（tree slot） */
+const TreeView = {
+  name: 'files-tree',
+  data() { return { nav } },
+  computed: {
+    isAdmin() { return window.PrivHub.AUTH.user && window.PrivHub.AUTH.user.role === 'admin' },
+  },
+  template: `
+    <div class="sidebar">
+      <div class="side-head">
+        <button class="icon-btn" style="padding:3px;font-size:14px" title="新建文件夹" @click="nav.submitMkdir()">📁＋</button>
+        <button v-if="isAdmin && nav.path === ''" class="icon-btn" style="padding:3px;font-size:14px;color:var(--danger)" :title="'删除项目：' + nav.project" @click="nav.delProject(nav.project)">🗑</button>
+      </div>
+      <div class="tree-item" :class="{ active: nav.path === '' }" @click="nav.openDir(nav.project, '')">
+        <span>🏠</span><span class="name">{{ nav.project }}</span>
+      </div>
+      <div v-for="c in nav.childrenOf(nav.project, '')" :key="c.path">
+        <tree-node
+          :label="c.name"
+          :project="nav.project"
+          :path="c.path"
+          :depth="0"
+          :active="nav.path === c.path"
+        ></tree-node>
+      </div>
+    </div>
+  `,
+}
+
+/* 文件面板（panel slot） */
+const FilePanel = {
+  name: 'files-panel',
+  data() {
+    return {
+      nav,
+      ctxMenu: null,
+      pressTimer: null,
+      batchBusy: false, // E5：批量操作进行中禁用按钮防连点
+      detailTarget: null, // B1：详情弹窗目标（必须在 data 声明，否则关闭不触发重渲染）
+      promptState: null, // P2-1：内联输入模态 { mode:'move'|'mkdir', title, value, target }
+    }
+  },
+  computed: {
+    entries() { return sortedEntries() },
+    crumbs() {
+      const parts = this.nav.path ? this.nav.path.split('/').filter(Boolean) : []
+      const arr = [{ label: this.nav.project, path: '' }]
+      let acc = ''
+      for (const p of parts) { acc = acc ? acc + '/' + p : p; arr.push({ label: p, path: acc }) }
+      return arr
+    },
+  },
+  methods: {
+    /* 长按 1.5 秒弹菜单（移动端补充；桌面端用右键 A17） */
+    startPress(e, el) {
+      this.pressTimer = setTimeout(() => {
+        const rect = el.getBoundingClientRect()
+        this.ctxMenu = {
+          x: Math.min(rect.left + 20, window.innerWidth - 170),
+          y: Math.min(rect.top + 20, window.innerHeight - 150),
+          entry: e,
+        }
+      }, 1500)
+    },
+    cancelPress() { if (this.pressTimer) { clearTimeout(this.pressTimer); this.pressTimer = null } },
+    /* A17：右键呼出同一操作菜单（替代被禁用的系统菜单） */
+    openCtxMenu(e, ev) {
+      this.cancelPress()
+      this.ctxMenu = {
+        x: Math.min(ev.clientX, window.innerWidth - 170),
+        y: Math.min(ev.clientY, window.innerHeight - 150),
+        entry: e,
+      }
+    },
+    closeMenu() { this.ctxMenu = null },
+    openDetail() { this.detailTarget = this.ctxMenu ? this.ctxMenu.entry : null; this.ctxMenu = null },
+    doRename() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (e) nav.doRename(e)
+    },
+    doDelete() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (e) nav.doDelete(e)
+    },
+    doFavorite() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (!e) return
+      // 走事件总线：F02 收藏插件监听 fav:add 后调 API（本插件不依赖 F02）
+      bus.emit('fav:add', {
+        project: nav.project,
+        path: nav.relPathOf(e.name),
+        name: e.name,
+        isDir: e.isDir,
+      })
+      window.PrivHub.toast('已加入收藏 ⭐')
+    },
+    /* Office 文件编辑（跨插件：bus → privhub-files-office-ui 监听） */
+    isOfficeFile(e) { return /\.(doc|docx|xlsx|pptx|pdf)$/i.test(e.name) },
+    doOfficeEdit() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (!e || e.isDir) return
+      bus.emit('office:edit', { entry: e, project: nav.project, path: nav.relPathOf(e.name) })
+    },
+    /* 下载单个文件（fetch blob + a 标签，带 token 鉴权） */
+    async doDownload(entry) {
+      const rel = nav.relPathOf(entry.name)
+      try {
+        const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel), {
+          headers: { authorization: 'Bearer ' + window.PrivHub.AUTH.token },
+        })
+        if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
+        const blob = await r.blob()
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = entry.name
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+      } catch { window.PrivHub.toast('下载失败', 'error') }
+    },
+    /* 批量下载所选（逐个触发，浏览器按队列处理） */
+    async batchDownload() {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      const files = names.map(n => nav.entries.find(e => e.name === n)).filter(e => e && !e.isDir)
+      if (files.length === 0) { window.PrivHub.toast('所选项目中无文件可下载', 'warn'); return }
+      this.batchBusy = true
+      try {
+        for (const e of files) await this.doDownload(e)
+        window.PrivHub.toast('已开始下载 ' + files.length + ' 个文件')
+      } finally { this.batchBusy = false }
+    },
+    /* 批量移动所选（目标目录必须已存在；同卷 rename；P2-1：内联输入模态替代 prompt） */
+    batchMove() {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      if (!names.length) return
+      this.promptState = { mode: 'move', title: '移动到哪个目录？（相对当前项目根，留空 = 项目根）', value: '' }
+    },
+    async doBatchMove(dir) {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      this.batchBusy = true
+      let okCount = 0
+      try {
+        for (const n of names) {
+          const rel = nav.relPathOf(n)
+          try {
+            const r = await api('/privhub/api/move', { method: 'POST', body: JSON.stringify({ project: nav.project, from: rel, toDir: dir }) })
+            if (r.ok) okCount++
+            else { window.PrivHub.toast('移动「' + n + '」失败：' + (r.error || '未知错误'), 'error'); break }
+          } catch { window.PrivHub.toast('移动「' + n + '」失败', 'error'); break }
+        }
+      } finally { this.batchBusy = false }
+      nav.checked = {}
+      if (okCount > 0) {
+        window.PrivHub.toast('已移动 ' + okCount + '/' + names.length + ' 项')
+        await nav.openDir(nav.project, nav.path)
+      }
+    },
+    /* 新建子文件夹（P2-1：内联输入模态替代 prompt） */
+    doMkdirHere() {
+      const e = this.ctxMenu ? this.ctxMenu.entry : null
+      this.ctxMenu = null
+      if (!e) return
+      this.promptState = { mode: 'mkdir', title: '在「' + e.name + '」中新建文件夹的名称：', value: '', target: e }
+    },
+    async doMkdirHereSubmit(name) {
+      const e = this.promptState ? this.promptState.target : null
+      if (!e) return
+      // 在长按的文件夹内新建子文件夹：临时切到该目录创建
+      const rel = nav.relPathOf(e.name)
+      const r = await api('/privhub/api/mkdir', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel, name }) })
+      if (r.ok) { nav.refreshTree(); nav.openDir(nav.project, rel); window.PrivHub.toast('文件夹「' + name + '」已创建') }
+      else window.PrivHub.toast(r.error || '新建失败', 'error')
+    },
+    /* P2-1：内联输入模态提交/取消 */
+    submitPrompt() {
+      const st = this.promptState
+      if (!st) return
+      const value = st.value.trim()
+      this.promptState = null
+      if (!value) return
+      if (st.mode === 'move') void this.doBatchMove(value)
+      else if (st.mode === 'mkdir') void this.doMkdirHereSubmit(value)
+    },
+    cancelPrompt() { this.promptState = null },
+    doSubmitMkdir() { nav.submitMkdir() },
+    doAddFile() { nav.addFile() },
+    /* ---- F10 批量操作：多选 + 批量删除 ---- */
+    isChecked(name) { return nav.checked[name] === true },
+    toggleCheck(e, ev) {
+      ev.stopPropagation()
+      if (nav.checked[e.name]) { delete nav.checked[e.name] }
+      else { nav.checked[e.name] = true }
+    },
+    checkedCount() { return Object.keys(nav.checked).filter(n => nav.checked[n]).length },
+    /* P2-6：选中文件合计大小（仅文件计入；文件夹不计） */
+    checkedSizeText() {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      let total = 0
+      for (const n of names) {
+        const e = nav.entries.find(x => x.name === n)
+        if (e && !e.isDir && typeof e.size === 'number') total += e.size
+      }
+      if (total === 0) return ''
+      if (total < 1024) return total + ' B'
+      if (total < 1024 * 1024) return (total / 1024).toFixed(1) + ' KB'
+      return (total / 1024 / 1024).toFixed(1) + ' MB'
+    },
+    selectAll() {
+      const all = this.entries.every(e => nav.checked[e.name])
+      if (all) nav.checked = {}
+      else { nav.checked = {}; for (const e of this.entries) nav.checked[e.name] = true }
+    },
+    clearChecked() { nav.checked = {} },
+    async batchDelete() {
+      const names = Object.keys(nav.checked).filter(n => nav.checked[n])
+      if (!names.length) return
+      if (!confirm('将选中的 ' + names.length + ' 项移入回收站？')) return
+      this.batchBusy = true
+      let okCount = 0
+      try {
+        for (const n of names) {
+          const rel = nav.relPathOf(n)
+          try { const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: nav.project, path: rel }) }); if (r.ok) okCount++ } catch { /* 单条失败继续 */ }
+        }
+      } finally { this.batchBusy = false }
+      nav.checked = {}
+      await nav.openDir(nav.project, nav.path)
+      bus.emit('trash:changed', {})
+      window.PrivHub.toast('已将 ' + okCount + '/' + names.length + ' 项移入回收站')
+    },
+    /* E3：长按功能发现性——首次进入面板提示一次 */
+    maybeHint() {
+      if (localStorage.getItem('privhub_longpress_hint')) return
+      localStorage.setItem('privhub_longpress_hint', '1')
+      window.PrivHub.toast('提示：长按文件或文件夹可呼出操作菜单', 'warn')
+    },
+  },
+  template: `
+    <div style="display:contents">
+      <div class="main-head">
+        <span class="breadcrumb">
+          <span v-for="(c, i) in crumbs" :key="i">
+            <a v-if="i < crumbs.length - 1" @click="nav.gotoCrumb(c.path)" style="cursor:pointer">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</a>
+            <span v-else style="color:var(--text)">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</span>
+            <span v-if="i < crumbs.length - 1" class="crumb"> / </span>
+          </span>
+        </span>
+        <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 项</span>
+        <!-- P2-6：状态栏信息（已选 M 项 · 合计大小） -->
+        <span v-if="checkedCount() > 0" class="crumb" style="margin-left:8px;color:var(--accent)">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
+        <span class="spacer"></span>
+        <!-- F10 批量工具栏：有选中项时出现 -->
+        <template v-if="checkedCount() > 0">
+          <button class="icon-btn" @click="selectAll">☑ 全选/取消</button>
+          <button class="icon-btn" @click="clearChecked">取消选择</button>
+          <button class="icon-btn" :disabled="batchBusy" @click="batchDownload">{{ batchBusy ? '处理中…' : '⬇ 下载所选' }}</button>
+          <button class="icon-btn" :disabled="batchBusy" @click="batchMove">{{ batchBusy ? '处理中…' : '📦 移动所选' }}</button>
+          <button class="icon-btn" style="color:var(--danger)" :disabled="batchBusy" @click="batchDelete">{{ batchBusy ? '处理中…' : '🗑 删除所选 (' + checkedCount() + ')' }}</button>
+        </template>
+        <button class="icon-btn" @click="nav.toggleSort('name')">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
+        <button class="icon-btn" @click="nav.toggleSort('size')">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
+        <button class="icon-btn" @click="nav.toggleSort('mtime')">时间{{ nav.sortKey==='mtime' ? (nav.sortAsc?' ↑':' ↓') : '' }}</button>
+        <button class="icon-btn" @click="nav.setViewMode('grid')" :class="{on: nav.viewMode==='grid'}">▦</button>
+        <button class="icon-btn" @click="nav.setViewMode('list')" :class="{on: nav.viewMode==='list'}">☰</button>
+        <button class="icon-btn" @click="doSubmitMkdir">＋新建文件夹</button>
+        <button class="icon-btn" @click="doAddFile">＋添加文件</button>
+        <span v-if="nav.uploading" class="crumb">上传中 {{ nav.uploadDone }}/{{ nav.uploadTotal }}…</span>
+      </div>
+      <div class="main-body">
+        <div v-if="nav.listLoading" class="empty">加载中…</div>
+        <div v-else-if="entries.length === 0" class="empty">（空目录）</div>
+        <!-- 网格视图 -->
+        <div v-else-if="nav.viewMode === 'grid'" class="file-list">
+          <div
+            v-for="e in entries" :key="e.name"
+            class="file-card" :class="{ sel: nav.selected && nav.selected.name === e.name }"
+            @click="nav.selectEntry(e)"
+            @dblclick="nav.openEntry(e)"
+            @mousedown="startPress(e, $event.currentTarget)"
+            @mouseup="cancelPress"
+            @mouseleave="cancelPress"
+            @contextmenu.prevent="openCtxMenu(e, $event)"
+          >
+            <input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="position:absolute;left:8px;top:8px;cursor:pointer" />
+            <div class="file-ico">{{ e.isDir ? '📁' : fileIcon(e.type) }}</div>
+            <div class="file-name">{{ e.name }}</div>
+            <div class="file-meta">{{ e.isDir ? e.type : (e.sizeText + ' · ' + e.type) }}</div>
+          </div>
+        </div>
+        <!-- 列表视图 -->
+        <div v-else class="file-table-wrap">
+          <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px">
+            <span><input type="checkbox" @click="selectAll" /></span>
+            <span class="col-name">名称</span>
+            <span class="col-size">大小</span>
+            <span class="col-type">类型</span>
+            <span class="col-time">修改时间</span>
+          </div>
+          <div
+            v-for="e in entries" :key="e.name"
+            class="file-table-row" :class="{ sel: nav.selected && nav.selected.name === e.name }"
+            style="grid-template-columns:28px 1fr 90px 120px 110px"
+            @click="nav.selectEntry(e)"
+            @dblclick="nav.openEntry(e)"
+            @mousedown="startPress(e, $event.currentTarget)"
+            @mouseup="cancelPress"
+            @mouseleave="cancelPress"
+            @contextmenu.prevent="openCtxMenu(e, $event)"
+          >
+            <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
+            <span class="col-name"><span class="tico">{{ e.isDir ? '📁' : fileIcon(e.type) }}</span>{{ e.name }}</span>
+            <span class="col-size">{{ e.sizeText }}</span>
+            <span class="col-type">{{ e.type }}</span>
+            <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 长按菜单遮罩 -->
+      <div v-if="ctxMenu" class="ctx-mask" @click="closeMenu"></div>
+      <!-- 长按菜单 -->
+      <div v-if="ctxMenu" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
+        <div class="ctx-item" @click="openDetail">ℹ️ 详情</div>
+        <div v-if="!ctxMenu.entry.isDir && isOfficeFile(ctxMenu.entry)" class="ctx-item" @click="doOfficeEdit">✏️ 编辑</div>
+        <div class="ctx-item" @click="doFavorite">⭐ 收藏</div>
+        <div v-if="!ctxMenu.entry.isDir" class="ctx-item" @click="doDownload(ctxMenu.entry)">⬇ 下载</div>
+        <div class="ctx-item" @click="doRename">✏️ 重命名</div>
+        <div v-if="ctxMenu.entry.isDir" class="ctx-item" @click="doMkdirHere">＋ 新建子文件夹</div>
+        <div class="ctx-item danger" @click="doDelete">🗑 删除</div>
+      </div>
+
+      <!-- 详情弹窗 -->
+      <div v-if="detailTarget" class="modal-mask" @click.self="detailTarget = null">
+        <div class="modal" style="width:380px">
+          <h2>{{ detailTarget.isDir ? '📁' : '📄' }} {{ detailTarget.name }}</h2>
+          <div class="modal-body">
+            <div class="kv"><span class="k">名称</span><span>{{ detailTarget.name }}</span></div>
+            <div class="kv"><span class="k">类型</span><span>{{ detailTarget.type }}</span></div>
+            <div class="kv"><span class="k">大小</span><span>{{ detailTarget.sizeText }}</span></div>
+            <div class="kv"><span class="k">修改时间</span><span>{{ detailTarget.mtime || '—' }}</span></div>
+            <div class="kv"><span class="k">所属项目</span><span>{{ nav.project }}</span></div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-ghost" @click="detailTarget = null">关 闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- P2-1：内联输入模态（替代原生 prompt：批量移动目录 / 新建子文件夹命名） -->
+      <div v-if="promptState" class="modal-mask" @click.self="cancelPrompt">
+        <div class="modal" style="width:380px">
+          <h2>{{ promptState.mode === 'move' ? '📦 批量移动' : '＋ 新建子文件夹' }}</h2>
+          <div class="modal-body">
+            <div class="field">
+              <label>{{ promptState.title }}</label>
+              <input v-model="promptState.value" @keyup.enter="submitPrompt" placeholder="输入后回车确认" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)" />
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-ghost" @click="cancelPrompt">取 消</button>
+            <button class="btn btn-primary" style="width:auto" @click="submitPrompt">确 定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  mounted() { this.maybeHint() },
+}
+
+/* 注册：tree-node 递归组件 */
+TreeView.components = { 'tree-node': TreeNode }
+FilePanel.components = { 'tree-node': TreeNode }
+
+export default {
+  id: 'privhub-files-explorer',
+  slots: {
+    tree: TreeView,
+    panel: FilePanel,
+  },
+}

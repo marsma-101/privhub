@@ -1,0 +1,19 @@
+{
+  "name": "privhub-svc-storage",
+  "description": "PrivHub 能力 Service（S7）：静态加密存储 ctx.storage — AES-256-GCM 透明读写/流式/JSON 加密/审计块/迁移",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

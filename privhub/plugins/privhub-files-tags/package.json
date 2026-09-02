@@ -1,0 +1,19 @@
+{
+  "name": "privhub-files-tags",
+  "description": "PrivHub 标签插件（F19）：文件/文件夹标签编辑 + 标签云筛选（消费 S5 ctx.meta，emit meta:changed）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

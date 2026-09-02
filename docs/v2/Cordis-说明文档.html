@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cordis 插件框架 · 技术说明文档</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f6f8fa;
+    --bg-code: #1e1e2e;
+    --text: #1f2328;
+    --text-soft: #57606a;
+    --border: #d0d7de;
+    --accent: #6e40c9;
+    --accent-soft: #f3edfb;
+    --green: #1a7f37;
+    --blue: #0969da;
+    --orange: #bc4c00;
+    --red: #cf222e;
+    --shadow: 0 1px 3px rgba(27,31,36,.08), 0 8px 24px rgba(27,31,36,.06);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .layout { display: flex; max-width: 1280px; margin: 0 auto; }
+  nav {
+    width: 260px; flex-shrink: 0; position: sticky; top: 0;
+    align-self: flex-start; height: 100vh; overflow-y: auto;
+    padding: 28px 18px; border-right: 1px solid var(--border); background: var(--bg-soft);
+  }
+  nav h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-soft); margin: 0 0 12px; }
+  nav a { display: block; color: var(--text-soft); text-decoration: none; padding: 6px 10px; border-radius: 6px; font-size: 13.5px; }
+  nav a:hover { background: var(--accent-soft); color: var(--accent); }
+  nav .sub a { padding-left: 24px; font-size: 13px; }
+  main { flex: 1; padding: 40px 56px 100px; min-width: 0; }
+  header.hero { border-bottom: 2px solid var(--accent); padding-bottom: 24px; margin-bottom: 8px; }
+  header.hero h1 { font-size: 34px; margin: 0 0 8px; color: var(--accent); }
+  header.hero .tagline { color: var(--text-soft); font-size: 16px; margin: 0; }
+  .meta { margin-top: 14px; font-size: 13px; color: var(--text-soft); }
+  .meta code { background: var(--bg-soft); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  section { margin-top: 52px; scroll-margin-top: 20px; }
+  section > h2 { font-size: 25px; border-left: 4px solid var(--accent); padding-left: 12px; margin: 0 0 16px; }
+  h3 { font-size: 18px; margin: 28px 0 10px; color: var(--text); }
+  h4 { font-size: 15px; margin: 20px 0 8px; color: var(--text-soft); }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  code { background: var(--bg-soft); padding: 1.5px 5px; border-radius: 4px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 13px; border: 1px solid var(--border); }
+  pre { background: var(--bg-code); color: #e4e4e7; padding: 18px 20px; border-radius: 10px; overflow-x: auto; margin: 14px 0; box-shadow: var(--shadow); }
+  pre code { background: none; border: none; color: inherit; padding: 0; font-size: 13px; line-height: 1.6; }
+  .tok-kw { color: #c792ea; } .tok-fn { color: #82aaff; } .tok-str { color: #c3e88d; }
+  .tok-com { color: #6b7394; font-style: italic; } .tok-num { color: #f78c6c; } .tok-cls { color: #ffcb6b; }
+  .card { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 16px 0; box-shadow: var(--shadow); }
+  .card.note { border-left: 4px solid var(--blue); }
+  .card.warn { border-left: 4px solid var(--orange); }
+  .card.key  { border-left: 4px solid var(--accent); }
+  .card.good { border-left: 4px solid var(--green); }
+  .card h4 { margin-top: 0; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; margin-right: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; box-shadow: var(--shadow); }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  .kbd { font-family: monospace; background: #fff; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; }
+  .footer { margin-top: 70px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-soft); font-size: 13px; }
+  .api-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; }
+  @media (max-width: 900px){ nav { display:none; } main{ padding: 24px; } .api-grid{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h2>目录</h2>
+  <a href="#intro">1. Cordis 是什么</a>
+  <a href="#start">2. 快速开始</a>
+  <a href="#model">3. 核心概念模型</a>
+  <a href="#forms">4. 插件的三种形态</a>
+  <a href="#service">5. 服务注入系统</a>
+  <a href="#events">6. 事件系统</a>
+  <a href="#isolate">7. 上下文隔离</a>
+  <a href="#lifecycle">8. 生命周期与可插拔</a>
+  <a href="#loading">9. 插件加载与组织</a>
+  <a href="#philosophy">10. 设计哲学</a>
+  <a href="#cheatsheet">附录 · API 速查</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Cordis 插件框架 · 技术说明</h1>
+  <p class="tagline">一份面向开发者的、与具体业务解耦的 Cordis 运行规则说明</p>
+  <div class="meta">
+    适用读者：希望基于 Cordis 搭建可插拔插件系统的工程师与 AI-Agent &nbsp;·&nbsp;
+    核心包：<code>cordis</code> &nbsp;·&nbsp; 开源：<code>cordiverse/cordis</code>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<section id="intro">
+  <h2>1. Cordis 是什么</h2>
+  <p><strong>Cordis</strong> 是一个轻量级的<strong>插件化应用框架</strong>（Node.js / 浏览器均可运行）。它的职责只有一个：<em>以一套统一、可预测的契约，把"插件"这种松散的扩展单元组织成一棵有层级、有依赖、可热插拔的运行时。</em></p>
+  <p>它最初是为聊天机器人框架 <strong>Koishi</strong> 抽离出来的底层内核（同一作者 shigma），因此天生为"大量独立功能模块共存、互不污染、可单独启停"的场景设计。</p>
+
+  <div class="card key">
+    <h4>它解决的核心问题</h4>
+    <ul>
+      <li><strong>依赖编排</strong>：插件 A 依赖插件 B 提供的某项能力，框架按依赖图自动决定启动顺序，缺依赖则不启动。</li>
+      <li><strong>隔离与共享</strong>：每插件有自己的上下文（Context），既能共享全局服务，又能被隔离出独立子环境。</li>
+      <li><strong>通信解耦</strong>：插件之间尽量不直接互相引用，而是通过事件总线通信。</li>
+      <li><strong>可逆副作用（可插拔基石）</strong>：插件注册的一切资源（监听器、定时器、连接）都能在卸载时被<strong>逆序、彻底</strong>清理，删除插件不留垃圾。</li>
+    </ul>
+  </div>
+
+  <div class="card note">
+    <h4>核心特性一览</h4>
+    <ul>
+      <li>零运行时强依赖，体积很小。</li>
+      <li><strong>Service</strong> 机制：把"可复用能力"以类型安全的方式挂到上下文上。</li>
+      <li><strong>inject</strong> 声明式依赖：框架据此做拓扑排序与按需卸载。</li>
+      <li>5 种事件分发模式（emit / parallel / serial / bail / waterfall）。</li>
+      <li>上下文树：<code>fork</code> / <code>isolate</code> / <code>group</code> 提供多级隔离。</li>
+      <li><code>effect</code> 与生命周期钩子，保证副作用可撤销。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 2 ============ -->
+<section id="start">
+  <h2>2. 快速开始</h2>
+  <h3>安装</h3>
+  <pre><code><span class="tok-com"># npm</span>
+npm install cordis
+<span class="tok-com"># pnpm</span>
+pnpm add cordis</code></pre>
+
+  <h3>最小可运行示例</h3>
+  <pre><code><span class="tok-kw">import</span> { Context } <span class="tok-kw">from</span> <span class="tok-str">'cordis'</span>
+
+<span class="tok-com">// 1. 创建一个根上下文</span>
+<span class="tok-kw">const</span> ctx = <span class="tok-kw">new</span> <span class="tok-cls">Context</span>()
+
+<span class="tok-com">// 2. 定义一个最简单的函数插件</span>
+<span class="tok-kw">const</span> hello = (ctx) => {
+  ctx.on(<span class="tok-str">'ready'</span>, () => {
+    console.log(<span class="tok-str">'Cordis is ready'</span>)
+  })
+}
+
+<span class="tok-com">// 3. 把插件挂到上下文</span>
+ctx.plugin(hello)
+
+<span class="tok-com">// 4. 触发启动（emit 事件驱动各插件就绪）</span>
+ctx.emit(<span class="tok-str">'ready'</span>)</code></pre>
+
+  <div class="card note">
+    <h4>关键点</h4>
+    <ul>
+      <li><code>new Context()</code> 是所有插件的挂载根；它本身也是一棵可派生子上下文的树。</li>
+      <li><code>ctx.plugin(plugin, config?)</code> 返回一个<strong>可释放对象</strong>（disposable），调用它即可卸载该插件。</li>
+      <li>Cordis 是<strong>事件驱动</strong>的：很多行为由 <code>emit</code> 事件触发，而非命令式调用。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 3 ============ -->
+<section id="model">
+  <h2>3. 核心概念模型</h2>
+  <p>Cordis 的世界由五个要素构成，理解它们的关系就理解了整个框架：</p>
+  <table>
+    <thead><tr><th>概念</th><th>是什么</th><th>角色</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Context（上下文）</strong></td><td>插件挂载的环境单元，本质是插件树的节点</td><td>提供 <code>plugin()</code>、事件、服务访问等 API；可派生子 Context</td></tr>
+      <tr><td><strong>Plugin（插件）</strong></td><td>一段被注册到 Context 的扩展单元</td><td>三种形态之一（函数 / 对象 / Service 子类）</td></tr>
+      <tr><td><strong>Service（服务）</strong></td><td>可复用的能力单元，挂到 Context 上供其他插件消费</td><td>通过 <code>inject</code> 被依赖，是"共享能力"的标准载体</td></tr>
+      <tr><td><strong>Event（事件）</strong></td><td>插件间解耦通信的通道</td><td>跨插件尽量只走事件，不直接引用彼此</td></tr>
+      <tr><td><strong>Effect（副作用）</strong></td><td>插件注册时产生的外部资源占用</td><td>必须可被逆序清理，是可插拔的基石</td></tr>
+    </tbody>
+  </table>
+
+  <div class="card key">
+    <h4>一张心智图</h4>
+    <p style="margin:0"><code>Root Context</code> ──挂载──▶ 多个 <code>Plugin</code><br>
+    每个 Plugin 在 <code>apply(ctx)</code> 中：<br>
+    &nbsp;&nbsp;• 消费 <code>Service</code>（通过 <code>inject</code> 拿到 <code>ctx.xxx</code>）<br>
+    &nbsp;&nbsp;• 监听 / 触发 <code>Event</code><br>
+    &nbsp;&nbsp;• 注册 <code>Effect</code>（监听器、定时器、连接等）<br>
+    卸载时：Effects 逆序清理 → 服务依赖重算 → 缺失服务的插件自动停。</p>
+  </div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section id="forms">
+  <h2>4. 插件的三种形态</h2>
+  <p>Cordis 对"插件"的定义非常宽松，只要是以下三种形态之一即可被 <code>ctx.plugin()</code> 接受。</p>
+
+  <h3>形态一：函数插件</h3>
+  <p>最简洁的形式，直接是一个函数，接收 <code>ctx</code>（及可选 <code>config</code>）。</p>
+  <pre><code><span class="tok-kw">const</span> myPlugin = (ctx, config) => {
+  ctx.on(<span class="tok-str">'ready'</span>, () => {
+    console.log(<span class="tok-str">'config value:'</span>, config?.foo)
+  })
+}
+ctx.plugin(myPlugin, { foo: <span class="tok-num">42</span> })</code></pre>
+
+  <h3>形态二：对象插件</h3>
+  <p>带 <code>apply</code> 方法的对象，可声明 <code>name</code>、<code>inject</code>、<code>using</code> 等元数据。这是<strong>最常用、最规范</strong>的形式。</p>
+  <pre><code><span class="tok-kw">export const</span> myPlugin = {
+  name: <span class="tok-str">'my-plugin'</span>,
+  inject: [<span class="tok-str">'database'</span>],   <span class="tok-com">// 声明依赖的服务</span>
+  apply(ctx, config) {
+    <span class="tok-com">// 此时 ctx.database 已被框架注入</span>
+    ctx.on(<span class="tok-str">'ready'</span>, async () => {
+      <span class="tok-kw">await</span> ctx.database.get(<span class="tok-str">'users'</span>)
+    })
+  },
+}</code></pre>
+
+  <h3>形态三：Service 子类插件</h3>
+  <p>当插件<strong>本身要对外提供能力</strong>时，继承 <code>Service</code> 基类，用 <code>super(ctx, 'key')</code> 把能力以 <code>ctx.key</code> 的形式暴露给其他插件。</p>
+  <pre><code><span class="tok-kw">import</span> { Service } <span class="tok-kw">from</span> <span class="tok-str">'cordis'</span>
+
+<span class="tok-kw">export class</span> <span class="tok-cls">DatabaseService</span> <span class="tok-kw">extends</span> <span class="tok-cls">Service</span> {
+  <span class="tok-fn">constructor</span>(ctx) {
+    <span class="tok-kw">super</span>(ctx, <span class="tok-str">'database'</span>)   <span class="tok-com">// 暴露为 ctx.database</span>
+  }
+  get(table) { <span class="tok-com">/* ... */</span> }
+  set(table, row) { <span class="tok-com">/* ... */</span> }
+}
+
+<span class="tok-com">// 注册这个服务插件</span>
+ctx.plugin(DatabaseService)</code></pre>
+
+  <div class="card warn">
+    <h4>形态选择的经验法则</h4>
+    <ul>
+      <li>只在启动时做点小事 → 函数插件。</li>
+      <li>大多数业务功能 → 对象插件（带 <code>apply</code> + <code>inject</code>）。</li>
+      <li>这个插件<strong>要被别的插件依赖</strong> → Service 子类，提供 <code>ctx.xxx</code>。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 5 ============ -->
+<section id="service">
+  <h2>5. 服务注入系统（核心机制）</h2>
+  <p>服务系统是 Cordis 实现"能力复用 + 依赖治理"的核心。它解决了两个问题：<strong>能力怎么暴露</strong>，以及<strong>依赖怎么被框架管理</strong>。</p>
+
+  <h3>5.1 提供一项服务</h3>
+  <p>继承 <code>Service</code>，在构造函数里 <code>super(ctx, '服务键名')</code>。之后任何声明了 <code>inject:['服务键名']</code> 的插件，都会拿到 <code>ctx.服务键名</code>。</p>
+  <pre><code><span class="tok-kw">class</span> <span class="tok-cls">Logger</span> <span class="tok-kw">extends</span> <span class="tok-cls">Service</span> {
+  <span class="tok-fn">constructor</span>(ctx) { <span class="tok-kw">super</span>(ctx, <span class="tok-str">'logger'</span>) }
+  info(msg) { console.log(<span class="tok-str">'[info]'</span>, msg) }
+}
+ctx.plugin(Logger)
+<span class="tok-com">// 其它插件：inject:['logger'] → ctx.logger.info(...)</span></code></pre>
+
+  <h3>5.2 消费一项服务（inject 声明依赖）</h3>
+  <p><code>inject</code> 数组里的每一项，框架都会尝试从当前上下文解析；解析到的服务会挂到 <code>ctx</code> 上供 <code>apply</code> 使用。</p>
+  <pre><code><span class="tok-kw">const</span> consumer = {
+  inject: [<span class="tok-str">'logger'</span>],
+  apply(ctx) {
+    ctx.on(<span class="tok-str">'ready'</span>, () => ctx.logger.info(<span class="tok-str">'consumer ready'</span>))
+  },
+}</code></pre>
+
+  <h3>5.3 依赖解析与启动顺序</h3>
+  <div class="card key">
+    <h4>框架自动做的事</h4>
+    <ul>
+      <li><strong>拓扑排序</strong>：插件按"被依赖者先启动"的顺序初始化。</li>
+      <li><strong>缺失依赖不启动</strong>：若某插件 <code>inject</code> 的服务始终不存在，该插件<strong>不会启动</strong>（而不是崩溃），也不会报错阻断全局。</li>
+      <li><strong>按需卸载</strong>：当一个服务插件被卸载，依赖它的插件会被框架<strong>自动逆序卸载</strong>；服务重新挂上后又会自动恢复。</li>
+    </ul>
+  </div>
+
+  <h3>5.4 拦截已有服务（intercept）</h3>
+  <p>不修改原服务源码，就能在其方法前后插入逻辑——这是"在不污染原服务的前提下增强能力"的标准手段。</p>
+  <pre><code><span class="tok-com">// 不改动原 Logger，而是拦截它的 info 方法</span>
+ctx.intercept(<span class="tok-str">'logger'</span>, {
+  info(ctx, msg) {
+    <span class="tok-com">// 在原始 info 之前/之后插入行为</span>
+    <span class="tok-kw">return</span> ctx.logger.info.call(<span class="tok-kw">this</span>, <span class="tok-str">`[intercepted] ${msg}`</span>)
+  },
+})</code></pre>
+  <div class="card warn">
+    <h4>重要约束</h4>
+    <p style="margin:0">增强能力应当通过 <code>intercept</code> 或新建一个独立 Service，<strong>不要直接往已有 Service 实例上挂载新属性</strong>（如 <code>ctx.logger.newMethod = ...</code>）。直接挂载会破坏"服务即契约"的边界，导致依赖关系脱离框架管理、卸载时无法被追踪清理。</p>
+  </div>
+
+  <h3>5.5 服务重命名 / 别名</h3>
+  <p>Service 支持 <code>provide</code> 与 <code>rename</code> 机制，让"同一个实现"以不同键暴露，或解决多实例命名冲突。具体由插件元数据 <code>name</code> / 构造时的键名控制。</p>
+</section>
+
+<!-- ============ 6 ============ -->
+<section id="events">
+  <h2>6. 事件系统</h2>
+  <p>事件是插件之间<strong>解耦通信</strong>的主通道。Cordis 提供 5 种分发模式，语义各不相同：</p>
+  <table>
+    <thead><tr><th>方法</th><th>语义</th><th>返回值 / 用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>ctx.on(ev, fn)</code> / <code>ctx.emit(ev, ...)</code></td><td>注册 / 触发监听器</td><td>触发即广播；最基础的发布订阅</td></tr>
+      <tr><td><code>ctx.parallel(ev, ...)</code></td><td>并行调用所有监听器</td><td>不关心返回值；适合"通知大家做点事"</td></tr>
+      <tr><td><code>ctx.serial(ev, ...)</code></td><td>串行依次调用</td><td>逐个 await；适合有先后依赖的处理链</td></tr>
+      <tr><td><code>ctx.bail(ev, ...)</code></td><td>串行调用直到某监听器返回非 null</td><td>返回第一个有效结果即停止；类似"短路求值"，适合"取第一个能处理的人"</td></tr>
+      <tr><td><code>ctx.waterfall(ev, init, ...)</code></td><td>串行把上一步返回值传给下一步</td><td>管道式加工数据；适合"层层修改同一份数据"</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code><span class="tok-com">// 注册监听器</span>
+ctx.on(<span class="tok-str">'message'</span>, (text) => console.log(<span class="tok-str">'got:'</span>, text))
+
+<span class="tok-com">// 触发（多个监听器并行收到）</span>
+ctx.emit(<span class="tok-str">'message'</span>, <span class="tok-str">'hello'</span>)
+
+<span class="tok-com">// waterfall：把数据流经多个插件依次加工</span>
+ctx.on(<span class="tok-str">'process'</span>, (data) => ({ ...data, a: <span class="tok-num">1</span> }))
+ctx.on(<span class="tok-str">'process'</span>, (data) => ({ ...data, b: <span class="tok-num">2</span> }))
+<span class="tok-kw">const</span> result = <span class="tok-kw">await</span> ctx.waterfall(<span class="tok-str">'process'</span>, { base: <span class="tok-num">0</span> })
+<span class="tok-com">// result => { base:0, a:1, b:2 }</span></code></pre>
+
+  <div class="card good">
+    <h4>设计建议</h4>
+    <p style="margin:0">跨插件通信优先走事件，而非互相 <code>inject</code>。这样删除任何一个功能插件，都不会因为"被别人直接引用"而引发连锁崩溃——这正是可插拔性的关键。</p>
+  </div>
+</section>
+
+<!-- ============ 7 ============ -->
+<section id="isolate">
+  <h2>7. 上下文隔离</h2>
+  <p>Context 是一棵树。根 Context 可以派生出<strong>子上下文</strong>，子上下文继承父的环境，但拥有独立生命周期。Cordis 提供三种隔离手段：</p>
+
+  <h3>7.1 fork —— 复制一份上下文</h3>
+  <pre><code><span class="tok-kw">const</span> child = ctx.fork()
+child.plugin(somePlugin)   <span class="tok-com">// 只挂在这个子上下文里</span>
+<span class="tok-com">// 卸载子上下文不会动父上下文的其他插件</span></code></pre>
+
+  <h3>7.2 isolate —— 按命名空间隔离</h3>
+  <p><code>ctx.isolate(namespaces, callback)</code> 创建一个隔离上下文，<code>callback</code> 内拿到的 ctx 与全局配置/服务按给定命名空间隔离。常用于"让同一插件的不同实例互不影响"。</p>
+  <pre><code>ctx.isolate([<span class="tok-str">'myPlugin'</span>], (isolatedCtx) => {
+  isolatedCtx.plugin(myPlugin, { /* 该命名空间专属配置 */ })
+})</code></pre>
+
+  <h3>7.3 group —— 分组隔离（多实例）</h3>
+  <p>插件可声明 <code>group: true</code>，配合 <code>isolate</code> 为每组数据/每个租户派生出独立的服务实例与子 Context。适合"一个插件按多份配置同时运行多份"的场景。</p>
+  <div class="card warn">
+    <h4>注意</h4>
+    <p style="margin:0"><code>group</code> 相关的 API 在部分 cordis 版本中标记为 <strong>unstable</strong>。若仅需要"插件间互不污染"，通常靠事件 + 服务注入已足够，未必需要引入 group 这一层。</p>
+  </div>
+</section>
+
+<!-- ============ 8 ============ -->
+<section id="lifecycle">
+  <h2>8. 生命周期与可插拔性</h2>
+
+  <h3>8.1 apply 与卸载回调</h3>
+  <p>插件在 <code>apply(ctx, config)</code> 中注册一切。若 <code>apply</code> 返回一个函数，该函数即<strong>卸载时调用的清理回调</strong>。</p>
+  <pre><code><span class="tok-kw">const</span> plugin = {
+  apply(ctx) {
+    <span class="tok-kw">const</span> timer = setInterval(() => console.log(<span class="tok-str">'tick'</span>), <span class="tok-num">1000</span>)
+    <span class="tok-kw">const</span> off = ctx.on(<span class="tok-str">'event'</span>, handler)
+
+    <span class="tok-com">// 返回清理函数：卸载时逆序执行</span>
+    <span class="tok-kw">return</span> () => {
+      clearInterval(timer)
+      off()
+    }
+  },
+}</code></pre>
+
+  <h3>8.2 effect —— 可逆副作用的推荐写法</h3>
+  <p><code>ctx.effect(fn)</code> 注册一个会产生副作用的初始化，<code>fn</code> 返回自己的清理函数。框架统一管理这些 effect 的<strong>逆序释放</strong>。</p>
+  <pre><code>apply(ctx) {
+  ctx.effect(() => {
+    <span class="tok-kw">const</span> off = ctx.on(<span class="tok-str">'ready'</span>, () => {})
+    <span class="tok-kw">return</span> () => off()   <span class="tok-com">// 卸载时执行</span>
+  })
+}</code></pre>
+
+  <h3>8.3 卸载顺序</h3>
+  <div class="card key">
+    <h4>可插拔的基石</h4>
+    <ul>
+      <li>卸载一个插件时，它注册的所有 <code>effect</code> 与 <code>apply</code> 返回的清理函数被<strong>逆序</strong>执行。</li>
+      <li>依赖该插件服务的其他插件，由框架自动逆序卸载。</li>
+      <li>结果：<strong>删掉一个插件目录 / 取消一次注册，运行时零残留</strong>——这正是"想到功能就加插件、不需要就删插件"的工程前提。</li>
+    </ul>
+  </div>
+
+  <h3>8.4 Service 的生命周期钩子</h3>
+  <p>Service 子类可覆写 <code>onApply</code> / <code>onDispose</code> 钩子，在服务被挂上 / 摘下时执行初始化与清理，便于管理连接池、文件句柄等重资源。</p>
+</section>
+
+<!-- ============ 9 ============ -->
+<section id="loading">
+  <h2>9. 插件加载与组织</h2>
+  <p>Cordis 本身<strong>不强制任何目录结构</strong>，加载本质就是一次次 <code>ctx.plugin()</code> 调用。常见的组织方式有两种：</p>
+
+  <h3>9.1 入口显式注册</h3>
+  <p>在应用入口处集中列出插件清单并注册。简单、可控，适合插件数量不多时。</p>
+  <pre><code><span class="tok-kw">import</span> { Context } <span class="tok-kw">from</span> <span class="tok-str">'cordis'</span>
+<span class="tok-kw">import</span> { Logger } <span class="tok-kw">from</span> <span class="tok-str">'./plugins/logger'</span>
+<span class="tok-kw">import</span> { Auth } <span class="tok-kw">from</span> <span class="tok-str">'./plugins/auth'</span>
+<span class="tok-kw">import</span> { Files } <span class="tok-kw">from</span> <span class="tok-str">'./plugins/files'</span>
+
+<span class="tok-kw">const</span> ctx = <span class="tok-kw">new</span> <span class="tok-cls">Context</span>()
+ctx.plugin(Logger)
+ctx.plugin(Auth)
+ctx.plugin(Files)</code></pre>
+
+  <h3>9.2 配置驱动的 Loader（推荐用于大量插件）</h3>
+  <p>当插件数量变多（例如几十个功能模块），用一份配置描述"要加载哪些插件、各自配置是什么"，由 Loader 扫描并批量 <code>ctx.plugin()</code>。这种方式天然支持：</p>
+  <ul>
+    <li><strong>目录即插件</strong>：约定"每个子目录是一个插件"，Loader 扫描目录自动发现，新增插件只需新建目录。</li>
+    <li><strong>声明式启停</strong>：在配置里增删一行即可启用 / 禁用某个插件，无需改代码。</li>
+    <li><strong>补丁式注入</strong>：通过 patch 描述文件（如 <code>*.patch.yml</code> 类约定）向某上下文插入插件，常用于在不动原包的前提下挂扩展。</li>
+  </ul>
+
+  <div class="card note">
+    <h4>组织建议</h4>
+    <p style="margin:0">无论用哪种方式，<strong>每个插件自包含</strong>（自带 manifest / 入口 / 所需后端）是核心原则。Loader 只负责"发现 + 注册"，不关心插件内部实现。这样新增功能 = 增加一个自包含插件目录 + 在加载清单里登记，完全不动其他插件。</p>
+  </div>
+
+  <h3>9.3 一个自包含插件的最小结构</h3>
+  <pre><code>plugins/
+  my-feature/
+    manifest.json        <span class="tok-com">// 声明 id / 名称 / 挂载点 / 入口</span>
+    index.ts             <span class="tok-com">// 插件主体（apply + inject）</span>
+    server/              <span class="tok-com">// 可选：该插件私有的后端能力</span>
+    package.json         <span class="tok-com">// 可选</span></code></pre>
+</section>
+
+<!-- ============ 10 ============ -->
+<section id="philosophy">
+  <h2>10. 设计哲学小结</h2>
+  <p>把前面所有机制串起来，Cordis 的设计哲学可以浓缩成几条，理解它们比记 API 更重要：</p>
+  <div class="card key">
+    <h4>① 服务即契约</h4>
+    <p style="margin:0">能力通过 <code>Service</code> 显式暴露，依赖通过 <code>inject</code> 显式声明。框架据此管理生命周期，而不是靠开发者手动维护引用。</p>
+  </div>
+  <div class="card key">
+    <h4>② 通信靠事件，不靠互相引用</h4>
+    <p style="margin:0">插件之间尽量只通过事件总线交互。一个插件消失，不会让另一个插件因为"找不到被引用对象"而崩溃。</p>
+  </div>
+  <div class="card key">
+    <h4>③ 副作用必须可逆</h4>
+    <p style="margin:0"><code>effect</code> + 返回清理函数的 <code>apply</code>，保证任何插件卸载时都干净退出。这是"可插拔"真正成立的前提。</p>
+  </div>
+  <div class="card key">
+    <h4>④ 增强用拦截，不污染原服务</h4>
+    <p style="margin:0">要扩展已有服务，用 <code>intercept</code> 或新建独立 Service，而不是直接往实例上挂属性——守住"服务即契约"的边界。</p>
+  </div>
+  <div class="card key">
+    <h4>⑤ 目录即插件，清单即编排</h4>
+    <p style="margin:0">让 Loader 按目录自动发现插件，用声明式清单控制启停。新增功能变成"加一个自包含目录"，维护成本线性可控。</p>
+  </div>
+</section>
+
+<!-- ============ 附录 ============ -->
+<section id="cheatsheet">
+  <h2>附录 · API 速查</h2>
+  <div class="api-grid">
+    <div class="card"><h4><code>new Context()</code></h4><p style="margin:0">创建根上下文，所有插件的挂载点。</p></div>
+    <div class="card"><h4><code>ctx.plugin(p, config?)</code></h4><p style="margin:0">注册插件，返回可释放对象（调用即卸载）。</p></div>
+    <div class="card"><h4><code>ctx.fork()</code></h4><p style="margin:0">派生子上下文，独立生命周期。</p></div>
+    <div class="card"><h4><code>ctx.isolate(ns, cb)</code></h4><p style="margin:0">按命名空间隔离出子上下文。</p></div>
+    <div class="card"><h4><code>class S extends Service</code></h4><p style="margin:0">定义服务；<code>super(ctx,'key')</code> 暴露为 <code>ctx.key</code>。</p></div>
+    <div class="card"><h4><code>inject: ['key']</code></h4><p style="margin:0">声明依赖，框架注入 <code>ctx.key</code> 并管理启停。</p></div>
+    <div class="card"><h4><code>ctx.intercept(key, m)</code></h4><p style="margin:0">拦截某服务的方法，增强而不污染。</p></div>
+    <div class="card"><h4><code>ctx.on / emit</code></h4><p style="margin:0">事件注册与触发（发布订阅）。</p></div>
+    <div class="card"><h4><code>ctx.parallel / serial</code></h4><p style="margin:0">并行 / 串行调用监听器。</p></div>
+    <div class="card"><h4><code>ctx.bail / waterfall</code></h4><p style="margin:0">短路取首结果 / 管道式加工数据。</p></div>
+    <div class="card"><h4><code>ctx.effect(fn)</code></h4><p style="margin:0">注册可逆副作用，卸载时逆序清理。</p></div>
+    <div class="card"><h4><code>apply() 返回函数</code></h4><p style="margin:0">该函数作为插件卸载清理回调。</p></div>
+  </div>
+
+  <div class="footer">
+    本文档仅描述 Cordis 框架本身的运行规则（基于其开源实现与官方资料整理），不含任何具体业务项目信息。<br>
+    如需最新 API 细节，请以 <code>cordiverse/cordis</code> 官方仓库与文档为准。
+  </div>
+</main>
+</div>
+</body>
+</html>

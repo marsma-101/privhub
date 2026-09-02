@@ -1,0 +1,26 @@
+{
+  "name": "privhub",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "私域枢纽 PrivHub：纯 Cordis 底座 + 自研插件（文件管理系统）",
+  "scripts": {
+    "start": "start.bat",
+    "dev": "node --import tsx/esm src/main.ts --port 3180"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/schemastery": "3.18.1",
+    "docx": "^9.7.1",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.15.0",
+    "pptxgenjs": "^3.12.0",
+    "tsx": "^4.22.4",
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5"
+  }
+}

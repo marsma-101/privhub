@@ -1,0 +1,19 @@
+{
+  "name": "privhub-files-fulltext",
+  "description": "PrivHub 全文搜索插件（F17/C15）：S4 升级驱动——启动全量构建 + 事件增量 + /api/fulltext/search（BM25+CJK bigram）",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

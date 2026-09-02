@@ -1,0 +1,8 @@
+# privhub-svc-watermark bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-svc-watermark
+      name: privhub-svc-watermark
+      config:
+        enabled: true
+        text: ''
+        opacity: 0.18

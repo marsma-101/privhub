@@ -1,0 +1,19 @@
+{
+  "name": "privhub-files-kg",
+  "description": "PrivHub 知识图谱插件（F18/C17）：双链+标签构图、连通分量、事件增量失效、/api/kg",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "privhub-svc-collab",
+  "description": "PrivHub 能力 Service（S6）：协同 ctx.collab — join/leave/presence/broadcast；批次② 服务骨架，批次③ 接 Yjs",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

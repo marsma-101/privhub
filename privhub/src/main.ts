@@ -1,0 +1,158 @@
+/**
+ * 私域枢纽 PrivHub — 纯 Cordis 装配入口
+ *
+ * 不再依赖 DSH 底座：只有 @deepseek-ai/cordis（框架）+ 自研 webServer。
+ * 插件源码沿用「export const name / inject / apply」形态，
+ * 装配时组装为 cordis 标准对象插件（{ name, inject, apply }）。
+ *
+ * 启动：node --import tsx/esm src/main.ts --port 3180
+ *
+ * @module src/main
+ */
+
+import { Context } from '@deepseek-ai/cordis'
+import { join } from 'node:path'
+import { readdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { WebServerService } from './web-server.js'
+
+/* ---- L1 六枢纽 ---- */
+import * as core from '../plugins/privhub-core/src/index.ts'
+import * as auth from '../plugins/privhub-auth/src/index.ts'
+import * as files from '../plugins/privhub-files/src/index.ts'
+import * as trash from '../plugins/privhub-trash/src/index.ts'
+import * as admin from '../plugins/privhub-admin/src/index.ts'
+import * as shell from '../plugins/privhub-shell/server/index.ts'
+
+/* ---- L2 能力 Service ---- */
+import * as svcStorage from '../plugins/privhub-svc-storage/src/index.ts'
+import * as svcAudit from '../plugins/privhub-svc-audit/src/index.ts'
+import * as svcAcl from '../plugins/privhub-svc-acl/src/index.ts'
+import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
+import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
+import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
+import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
+import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
+/* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
+import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
+
+/* ---- L3 功能插件：自动发现装配（装卸 = 增删 plugins/ 目录） ----
+ * 核心清单（L1/L2/adminAcl/shell）手动挂载；其余带 src/index.ts 的插件
+ * 在【进程根目录】（PRIVHUB_ROOT 或 cwd）的 plugins/ 下扫描发现，动态加载。
+ * 生产环境跑在 deploy/privhub-deploy 时即扫描该目录，与开发环境零耦合。 */
+const CORE_PLUGINS = new Set([
+  'privhub-svc-storage', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
+  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-office',
+  'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
+  'privhub-admin', 'privhub-shell',
+])
+
+const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
+async function discoverL3(): Promise<Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }>> {
+  const pluginsDir = join(rootDir, 'plugins')
+  const out: Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }> = []
+  if (!existsSync(pluginsDir)) return out
+  const entries = await readdir(pluginsDir, { withFileTypes: true })
+  entries.sort((a, b) => a.name.localeCompare(b.name))
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue
+    if (ent.name.startsWith('_')) continue // _retired-v2 等归档目录不参与装配
+    if (CORE_PLUGINS.has(ent.name)) continue
+    const src = join(pluginsDir, ent.name, 'src', 'index.ts')
+    if (!existsSync(src)) continue
+    try {
+      const mod = await import(pathToFileURL(src).href) as {
+        name?: string
+        inject?: string[]
+        apply?: (ctx: Context, config?: unknown) => unknown
+      }
+      if (typeof mod.name === 'string' && typeof mod.apply === 'function') {
+        out.push({ name: mod.name, inject: mod.inject, apply: mod.apply })
+        console.log('[assembly] 发现 L3 插件: ' + ent.name)
+      } else {
+        console.warn('[assembly] 跳过（非标准插件形态）: ' + ent.name)
+      }
+    } catch (e) {
+      console.error('[assembly] 插件加载失败: ' + ent.name + ' → ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+  return out
+}
+
+function argPort(): number {
+  const idx = process.argv.indexOf('--port')
+  if (idx >= 0 && process.argv[idx + 1]) {
+    const n = Number(process.argv[idx + 1])
+    if (Number.isInteger(n) && n > 0) return n
+  }
+  return 3180
+}
+
+async function main(): Promise<void> {
+  const port = argPort()
+  const ctx = new Context()
+
+  /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */
+  const mount = (mod: { name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }, config?: unknown): Promise<unknown> =>
+    ctx.plugin({ name: mod.name, inject: mod.inject, apply: mod.apply }, config)
+
+  /* 1. 自研 webServer（core 的 svc.route 依赖 ctx.webServer） */
+  await ctx.plugin(WebServerService, {
+    port,
+    frontendDir: join(rootDir, 'frontend'),
+    pluginsDir: join(rootDir, 'plugins'),
+  })
+
+  /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
+   *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
+  await mount(svcStorage, { enabled: true, keyFile: '', auditMagic: 'PHAUD1\0' })
+  await mount(svcAudit, { file: '', retentionDays: 60 })
+  await mount(svcAcl, { file: '' })
+  await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })
+  await mount(svcSearch, { maxHits: 200, skipHidden: true })
+  await mount(svcMeta, { file: '' })
+  await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
+  await mount(svcOffice)
+
+  /* 3. L1 六枢纽 */
+  await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })
+  /* F14 ACL 守卫必须在 auth/files/trash/admin 注册路由之前挂载（它包装 svc.route） */
+  await mount(adminAcl)
+  await mount(auth)
+  await mount(files)
+  await mount(trash, { ttlDays: 30, intervalHours: 6 })
+  await mount(admin)
+  await mount(shell)
+
+  /* 4. L3 功能插件：自动发现装配（装卸 = 增删 plugins/ 目录；无需改本文件） */
+  const l3 = await discoverL3()
+  for (const p of l3) {
+    try {
+      await mount(p)
+    } catch (e) {
+      console.error('[assembly] 插件挂载失败: ' + p.name + ' → ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+
+  /* 5. 启动 HTTP 服务 */
+  await ctx.webServer.listen(port)
+
+  console.log('============================================')
+  console.log('  PrivHub starting [port ' + port + ']')
+  console.log('  Local:    http://127.0.0.1:' + port)
+  console.log('  LAN:      http://<this-host-IP>:' + port)
+  console.log('============================================')
+
+  const shutdown = (): void => {
+    void ctx.webServer.close().then(() => process.exit(0))
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+void main().catch((e) => {
+  console.error('PrivHub 启动失败:', e)
+  process.exit(1)
+})

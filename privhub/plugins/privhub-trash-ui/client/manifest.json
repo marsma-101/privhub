@@ -1,0 +1,10 @@
+{
+  "id": "privhub-trash-ui",
+  "title": "回收站",
+  "icon": "🗑️",
+  "description": "回收站视图（B9）：列表/恢复/彻底删除/清空30天，角标计数",
+  "slots": ["trash-view"],
+  "barItems": [
+    { "icon": "🗑️", "title": "回收站", "slot": "panel", "view": "trash" }
+  ]
+}

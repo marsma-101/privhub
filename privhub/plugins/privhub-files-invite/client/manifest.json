@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-invite",
+  "title": "邀请成员",
+  "icon": "📨",
+  "description": "邀请链接：生成永久/限时邀请码，同事用码自助加入项目",
+  "slots": ["office-editor"]
+}

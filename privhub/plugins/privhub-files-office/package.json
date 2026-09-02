@@ -1,0 +1,6 @@
+{
+  "name": "privhub-files-office",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Office 文档读取（docx/xlsx/pptx → Markdown 预览 + 全文索引）"
+}

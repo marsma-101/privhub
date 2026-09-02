@@ -1,0 +1,5 @@
+# privhub-files-search bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-files-search
+      name: privhub-files-search
+      config: {}

@@ -1,0 +1,10 @@
+{
+  "id": "privhub-files-template",
+  "title": "新建文档",
+  "icon": "📝",
+  "description": "新建文档（F20）：选模板（会议记录/产品需求/工作日志等）→ 在当前目录创建 .md",
+  "slots": ["template"],
+  "barItems": [
+    { "icon": "📝", "title": "新建文档", "slot": "panel", "view": "template" }
+  ]
+}

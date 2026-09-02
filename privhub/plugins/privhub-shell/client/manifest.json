@@ -1,0 +1,7 @@
+{
+  "id": "privhub-shell",
+  "title": "骨架",
+  "icon": "🏠",
+  "description": "页面骨架：顶栏项目横排 + 用户区 + 图标栏容器 + 欢迎页。其他插件通过 manifest 镶嵌 UI。",
+  "slots": ["auth", "project-tabs", "user-area", "app-iconbar", "welcome"]
+}

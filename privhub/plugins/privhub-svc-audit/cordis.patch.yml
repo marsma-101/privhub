@@ -1,0 +1,7 @@
+# privhub-svc-audit bundle patch：作为 bundle 挂载（insert 即生效）
+- insert:
+    - id: privhub-svc-audit
+      name: privhub-svc-audit
+      config:
+        file: ''
+        retentionDays: 60

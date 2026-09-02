@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-dataview",
+  "title": "数据看板",
+  "icon": "📊",
+  "description": "数据表页面模板：HTML 页面 + xlsx 数据表双向编辑（ph-table 组件）",
+  "slots": ["office-editor"]
+}

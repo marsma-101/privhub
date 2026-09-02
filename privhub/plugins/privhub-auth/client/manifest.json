@@ -1,0 +1,7 @@
+{
+  "id": "privhub-auth",
+  "title": "认证",
+  "icon": "🔐",
+  "description": "登录 / 注册 / 会话（认证系统）",
+  "slots": ["auth"]
+}
