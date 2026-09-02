@@ -1,0 +1,7 @@
+{
+  "id": "privhub-files-office2",
+  "title": "Office 原生预览",
+  "icon": "📄",
+  "description": "Office 原生观感预览 + 单人独占编辑（docx 保真渲染 / xlsx 电子表格 UI；编辑锁）",
+  "slots": ["office-editor"]
+}

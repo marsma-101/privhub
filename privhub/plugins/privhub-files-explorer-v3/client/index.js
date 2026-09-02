@@ -230,6 +230,8 @@ async function loadContent(key) {
       const r = await api('/privhub/api/office/read?project=' + encodeURIComponent(tab.project) + '&path=' + encodeURIComponent(tab.path))
       if (r.ok) store.content = { key, state: 'ready', office: { kind: r.kind, markdown: officeToMd(r.kind, r.content) } }
       else store.content = { key, state: 'error', error: r.error || '无法读取 Office 文档' }
+      // 广播渲染完成（office2 等插件替换为原生预览）
+      bus.emit('v3:md-rendered', { project: tab.project, path: tab.path, key })
       return
     }
     if (tab.kind === 'image') { store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }; return }

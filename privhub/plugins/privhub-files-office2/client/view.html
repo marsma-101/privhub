@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Office 预览</title>
+<link rel="stylesheet" href="vendor/univer.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; display: flex; flex-direction: column; height: 100vh; }
+  #bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; font-size: 13px; flex-shrink: 0; flex-wrap: wrap; }
+  #bar .fname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  #bar .st { color: #888; font-size: 12px; }
+  #bar .st.locked { color: #c0392b; }
+  #bar .st.editing { color: #2b6cb0; }
+  #bar .sp { flex: 1; }
+  #bar button { padding: 5px 14px; border-radius: 6px; border: 1px solid #c9cdd4; background: #fff; cursor: pointer; font-size: 12.5px; }
+  #bar button:hover { border-color: #2b6cb0; color: #2b6cb0; }
+  #bar button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+  #bar button.primary:hover { filter: brightness(1.1); color: #fff; }
+  #bar button:disabled { opacity: .5; cursor: not-allowed; }
+  #wrap { flex: 1; overflow: auto; background: #eef0f3; padding: 18px; }
+  #docx { max-width: 860px; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.08); border-radius: 4px; padding: 28px 36px; min-height: 70vh; }
+  #docx:focus { outline: none; }
+  #sheet { width: 100%; height: calc(100vh - 96px); background: #fff; }
+  #etool { display: none; align-items: center; gap: 4px; padding: 6px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; flex-shrink: 0; flex-wrap: wrap; }
+  #etool button { padding: 4px 10px; border: 1px solid #dfe2e7; border-radius: 5px; background: #fff; cursor: pointer; font-size: 12.5px; }
+  #etool button:hover { border-color: #2b6cb0; color: #2b6cb0; }
+  #etool .sep { width: 1px; height: 18px; background: #dfe2e7; margin: 0 4px; }
+  .toast { position: fixed; right: 16px; top: 12px; z-index: 99; padding: 8px 16px; border-radius: 8px; font-size: 12.5px; background: #333; color: #fff; opacity: 0; transition: opacity .2s; }
+  .toast.show { opacity: .95; }
+  #loading { display: flex; align-items: center; justify-content: center; height: 60vh; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="fname" id="fname">加载中…</span>
+  <span class="st" id="status">准备中</span>
+  <span class="sp"></span>
+  <button id="btn-download" title="下载原文件">⬇ 下载</button>
+  <button id="btn-edit" class="primary" title="获取独占编辑锁后编辑">✏️ 编辑</button>
+  <button id="btn-save" class="primary" style="display:none" title="保存并写回文件">💾 保存</button>
+  <button id="btn-release" style="display:none" title="保存并释放锁">🔓 保存并释放</button>
+  <button id="btn-exit" style="display:none" title="放弃修改并释放锁">✕ 放弃</button>
+</div>
+<div id="etool">
+  <button data-cmd="bold" title="加粗">B</button>
+  <button data-cmd="italic" title="斜体"><i>I</i></button>
+  <button data-cmd="underline" title="下划线"><u>U</u></button>
+  <span class="sep"></span>
+  <button data-cmd="formatBlock" data-val="H1" title="标题 1">H1</button>
+  <button data-cmd="formatBlock" data-val="H2" title="标题 2">H2</button>
+  <button data-cmd="formatBlock" data-val="P" title="正文">¶</button>
+  <span class="sep"></span>
+  <button data-cmd="insertUnorderedList" title="无序列表">• 列表</button>
+  <button data-cmd="insertOrderedList" title="有序列表">1. 列表</button>
+  <button data-cmd="formatBlock" data-val="BLOCKQUOTE" title="引用">❝ 引用</button>
+  <span class="sep"></span>
+  <button data-cmd="insertHorizontalRule" title="分隔线">—</button>
+  <button data-cmd="removeFormat" title="清除格式">⌫ 清除格式</button>
+</div>
+<div id="wrap">
+  <div id="loading">正在加载文档…</div>
+  <div id="docx" style="display:none"></div>
+  <div id="sheet" style="display:none"></div>
+</div>
+<div class="toast" id="toast"></div>
+<script src="vendor/jszip.js"></script>
+<script src="vendor/docx-preview.js"></script>
+<script src="vendor/univer.bundle.js"></script>
+<script src="view.js"></script>
+</body>
+</html>

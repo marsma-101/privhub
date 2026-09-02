@@ -106,10 +106,11 @@ export class WebServerService extends Service {
         'content-type': MIME[ext] ?? 'application/octet-stream',
         'content-length': body.length,
         // A13：安全响应头基线（HTML 附加宽松 CSP；Vue 运行时模板编译需 unsafe-eval，迁移到 SFC 预编译后可移除）
+        // frame-ancestors 'self' / SAMEORIGIN：允许同源插件页（如 office2 预览页）被 iframe 嵌入，跨域仍拦截
         'x-content-type-options': 'nosniff',
-        'x-frame-options': 'DENY',
+        'x-frame-options': 'SAMEORIGIN',
         'referrer-policy': 'no-referrer',
-        ...(isHtml ? { 'content-security-policy': "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:" } : {}),
+        ...(isHtml ? { 'content-security-policy': "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data; frame-ancestors 'self'" } : {}),
       })
       res.end(body)
     } catch {
