@@ -186,6 +186,8 @@ function openTab(entry, project, dirPath) {
 }
 function activateTab(key) {
   const tab = store.tabs.find(t => t.key === key)
+  // 切换激活前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
+  if (store.activeKey && store.activeKey !== key) bus.emit('md:interrupt', {})
   // 幂等：即使已是激活标签也恢复选中/右侧面板（Esc/切视图后 rightOpen 被骨架清零）
   if (tab) {
     nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
@@ -200,6 +202,7 @@ function closeTab(key) {
   const idx = store.tabs.findIndex(t => t.key === key)
   if (idx < 0) return
   const wasActive = store.activeKey === key
+  if (wasActive) bus.emit('md:interrupt', {}) // 关闭激活标签前静默保存
   store.tabs.splice(idx, 1)
   persistTabs()
   if (wasActive) {
@@ -239,7 +242,11 @@ async function loadContent(key) {
     const r = await api('/privhub/api/preview?project=' + encodeURIComponent(tab.project) + '&path=' + encodeURIComponent(tab.path))
     if (r.ok) {
       if (r.type === 'text') {
-        if (tab.kind === 'md') store.content = { key, state: 'ready', markdown: r.data || '' }
+        if (tab.kind === 'md') {
+          store.content = { key, state: 'ready', markdown: r.data || '' }
+          // md 内容区打开 → 自动进入内嵌编辑（edit-md 监听，VS Code/Trae 式）
+          bus.emit('md:auto-edit', { entry: { name: tab.name, isDir: false }, project: tab.project, path: tab.path.includes('/') ? tab.path.slice(0, tab.path.lastIndexOf('/')) : '' })
+        }
         else store.content = { key, state: 'ready', text: r.data || '' }
       } else if (r.type === 'image') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
       else if (r.type === 'pdf') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
@@ -790,7 +797,7 @@ const PanelV3 = {
     },
     // 同项目内导航目录 → 回到目录浏览（标签保留，VS Code 语义：点标签再回内容）
     'nav.path'() {
-      if (nav.project !== null) { store.activeKey = ''; store.content = null }
+      if (nav.project !== null) { store.activeKey = ''; store.content = null; bus.emit('md:interrupt', {}) }
     },
   },
   methods: {
@@ -1013,11 +1020,18 @@ const PanelV3 = {
       if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() }
     })
     this._offTrash = bus.on('trash:changed', () => { if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() } })
+    // 脏标记：md 编辑器未保存 → 标签标题 ●
+    this._offDirty = bus.on('md:dirty', (p) => {
+      if (!p || !p.project || !p.path) return
+      const t = store.tabs.find(x => x.project === p.project && x.path === p.path)
+      if (t && !!t.dirty !== !!p.dirty) { t.dirty = !!p.dirty; persistTabs() }
+    })
     this._offTabOpened = bus.on('v3:tab-opened', () => {}) // 占位：未来跨组件联动
   },
   beforeUnmount() {
     if (this._offMd) this._offMd()
     if (this._offTrash) this._offTrash()
+    if (this._offDirty) this._offDirty()
     if (this._offTabOpened) this._offTabOpened()
   },
   template: `
@@ -1031,7 +1045,7 @@ const PanelV3 = {
           :title="t.project + ' / ' + t.path"
         >
           <span>{{ fileIcon(t.type) }}</span>
-          <span class="v3-tab-name">{{ t.name }}</span>
+          <span class="v3-tab-name">{{ t.dirty ? '● ' : '' }}{{ t.name }}</span>
           <span class="v3-tab-x" title="关闭" @click.stop="close(t.key)">✕</span>
         </div>
         <div style="flex:1"></div>
