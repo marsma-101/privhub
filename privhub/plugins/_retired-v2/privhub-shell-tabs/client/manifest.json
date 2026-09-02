@@ -1,7 +1,0 @@
-{
-  "id": "privhub-shell-tabs",
-  "title": "标签页",
-  "icon": "📑",
-  "description": "内容区多标签页（A3）：打开位置成标签，可切换/关闭，刷新恢复",
-  "slots": ["tabs"]
-}
