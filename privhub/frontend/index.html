@@ -77,6 +77,12 @@
       transition: background .15s;
     }
     .resize-handle:hover { background: var(--accent); opacity: .5; }
+    /* 侧边栏收起时的展开按钮（固定细条） */
+    .side-expand {
+      flex: 0 0 18px; border: none; background: transparent; color: var(--muted);
+      cursor: pointer; font-size: 12px; border-right: 1px solid var(--line);
+    }
+    .side-expand:hover { color: var(--accent); background: var(--panel2); }
     .side-head { display: flex; justify-content: flex-start; align-items: center; gap: 6px; margin-bottom: 8px; }
     .side-title { font-size: 12px; color: var(--muted); letter-spacing: .05em; }
     .tree-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; font-size: 13.5px; cursor: pointer; }
@@ -849,7 +855,11 @@
                 <component v-for="c in slotComps.welcome" :is="c" :key="c.name"></component>
               </template>
             </div>
-            <div class="resize-handle" v-if="nav.activeView === 'files' && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="nav.sidebarWidth > 40 ? '拖拽调宽 · 双击折叠' : '双击展开'"></div>
+            <div class="resize-handle" v-if="nav.activeView === 'files' && nav.sidebarWidth > 40 && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="'拖拽调宽 · 双击折叠'"></div>
+            <!-- 侧边栏已收起时：左侧固定小按钮展开 -->
+            <button
+              v-if="nav.activeView === 'files' && nav.sidebarWidth <= 40 && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)"
+              class="side-expand" title="展开侧边栏" @click="nav.toggleSidebar">☰</button>
 
             <!-- 中间（⑤ 视图化：单一 activeView 状态源，功能面板 = main 全宽视图） -->
             <div class="main">

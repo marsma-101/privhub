@@ -201,7 +201,11 @@ const MdEditor = {
       if (this.open && this.path === rel && this.mode === 'inline') {
         if (this.isMd) {
           const rr = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
-          if (rr.ok) { this.doc = rr.doc; this.baseMtime = rr.mtime; this.savedMtime = rr.mtime; this.status = '已刷新（Ctrl+S 保存）' }
+          if (rr.ok) {
+            this.doc = rr.doc; this.baseMtime = rr.mtime; this.savedMtime = rr.mtime
+            // 自己保存引发的重载不覆盖「✅ 已保存」提示
+            if (!/^✅/.test(this.status)) this.status = '已刷新（Ctrl+S 保存）'
+          }
         }
         return
       }
@@ -226,7 +230,7 @@ const MdEditor = {
       this.baseMtime = this.isMd ? r.mtime : 0
       this.savedMtime = this.baseMtime
       this.dirty = false
-      this.status = this.mode === 'inline' ? '就绪（Ctrl+S 保存）' : '已打开 · ' + this.fmtTime(Date.now())
+      this.status = this.mode === 'inline' ? '' : '已打开 · ' + this.fmtTime(Date.now())
       this.open = true
       if (this.mode === 'inline') {
         // 隐藏原只读预览，编辑后恢复
@@ -423,12 +427,10 @@ const MdEditor = {
     <!-- ===== 内嵌编辑模式（VS Code/Trae 式，宿主为内容区） ===== -->
     <teleport v-if="open && mode === 'inline'" to=".v3-content">
       <div class="md-inline-root" style="flex:1;display:flex;flex-direction:column;min-height:0;background:var(--bg)">
-        <!-- 编辑器标题栏：路径 + 保存状态 + 操作 -->
-        <div style="display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;font-size:12.5px">
-          <span>📝</span>
-          <strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:30%">{{ name }}</strong>
-          <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ project }}/{{ path }}</span>
-          <span :style="{ color: dirty ? 'var(--warn)' : 'var(--accent)', fontSize: '12px' }">{{ dirty ? '● 未保存修改' : (saving ? '保存中…' : '✅ 已保存') }}</span>
+        <!-- 编辑器工具条：状态 + 操作（文件名/路径在外层头部，路径见右侧详情） -->
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;font-size:12.5px">
+          <span :style="{ color: dirty ? 'var(--warn)' : 'var(--accent)', fontSize: '12px' }">{{ dirty ? '● 未保存修改' : (saving ? '保存中…' : '') }}</span>
+          <span :style="{ color: /失败|错误|取消/.test(status) ? 'var(--danger)' : 'var(--muted)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '45%' }">{{ status }}</span>
           <span style="flex:1"></span>
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
           <button class="icon-btn" @click="togglePreview()" :title="previewOpen ? '隐藏预览' : '显示预览'">{{ previewOpen ? '👁 预览开' : '👁 预览关' }}</button>

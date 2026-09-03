@@ -7,7 +7,8 @@
  *   2. 单击文件 → 在中央主区打开为标签页（tabs），标签不关闭就一直在，
  *      内容渲染在中间（不再使用右侧 340px 预览条）
  *   3. 编辑能力复用既有插件：md/txt 等文本 → bus 'entry:open'（edit-md 内嵌），
- *      office → bus 'office:edit'（office-ui 浮层）；仅从「✏️ 编辑」触发
+ *      office → bus 'office:edit'（office-ui 浮层）；.doc 先自动转 .docx 并回收原文件；
+ *      均从「✏️ 编辑」触发（内容区头部精简为 字号 + 详情开关，编辑入口在详情面板/⋯ 菜单）
  *
  * 与 V2 差异：本插件自带树缓存（含文件）与文件标签栏，不依赖
  * privhub-files-explorer / privhub-files-preview / privhub-shell-tabs。
@@ -61,6 +62,14 @@ styleEl.textContent = `
 .v3-content-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line); }
 .v3-content-title { font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
 .v3-content-title .v3-path { font-weight:400; font-size:11.5px; color:var(--muted); }
+/* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏 */
+.v3-content:has(.md-inline-root) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.v3-content:has(.md-inline-root) .v3-content-head { flex-shrink:0; margin:0; padding:7px 14px; background:var(--panel); }
+.v3-content:has(.md-inline-root) .v3-content-title { max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 编辑期间隐藏只读预览（CSS 级，重渲染后依然生效） */
+.v3-content:has(.md-inline-root) .v3-md, .v3-content:has(.md-inline-root) .v3-text { display:none; }
+.v3-content:has(.md-inline-root) .md-inline-root { flex:1 1 auto; min-height:0; }
+.v3-content:has(.md-inline-root) .md-inline-root .md-src { font-size:var(--v3-preview-font, 13.5px) !important; }
 .v3-op-btn { font-size:12px; padding:4px 10px; border-radius:6px; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; }
 .v3-op-btn:hover { color:var(--accent); border-color:var(--accent); }
 .v3-md { font-size:var(--v3-preview-font, 13.5px); line-height:1.75; color:var(--text); max-width:900px; }
@@ -538,6 +547,39 @@ async function doDownload() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000)
   } catch { window.PrivHub.toast('下载失败', 'error') }
 }
+/* .doc（旧二进制 Word）→ 转换 .docx 并回收原 .doc，然后打开新文件（office2 原生预览/编辑） */
+async function convertDocToDocx(m) {
+  const project = m.project
+  const rel = m.path !== undefined && m.path !== null
+    ? m.path
+    : relPath(m.project, m.dirPath || '', m.entry ? m.entry.name : '')
+  if (!rel) return
+  const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
+  const oldName = rel.split('/').pop()
+  if (!/\.doc$/i.test(oldName)) return
+  if (!confirm('「' + oldName + '」是老版 Word 格式，无法直接在线编辑。\n将自动转换为同名 .docx（保留文字内容）并删除原 .doc，继续？')) return
+  const r = await api('/privhub/api/office/convert-doc', { method: 'POST', body: JSON.stringify({ project, path: rel }) })
+  if (!r.ok) { window.PrivHub.toast(r.error || '转换失败', 'error'); return }
+  const newRel = r.newPath || rel.replace(/\.doc$/i, '.docx')
+  const newName = newRel.split('/').pop()
+  const dl = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project, path: rel }) })
+  if (!dl.ok) window.PrivHub.toast('已生成 .docx，但原 .doc 删除失败（可稍后在回收站外手动删除）', 'warn')
+  // 关闭旧 .doc 标签（若已打开）
+  const oldKey = tabKey(project, rel)
+  const oi = store.tabs.findIndex((t) => t.key === oldKey)
+  if (oi >= 0) {
+    const wasActive = store.activeKey === oldKey
+    store.tabs.splice(oi, 1)
+    if (wasActive) { store.content = null; store.activeKey = '' }
+    persistTabs()
+  }
+  // 打开新 .docx（office2 原生预览 / 单人编辑）
+  openTab({ name: newName, isDir: false, type: 'DOCX', sizeText: '' }, project, dir)
+  // 刷新目录列表与侧栏树
+  if (nav.project === project) void nav.openDir(project, dir)
+  setTimeout(() => bus.emit('files:refresh'), 400)
+  window.PrivHub.toast('✅ 已转为 .docx（原 .doc 已删除）')
+}
 function doEdit() {
   const m = store.ctxMenu
   closeMenu()
@@ -545,6 +587,7 @@ function doEdit() {
   const rel = relPath(m.project, m.dirPath, m.entry.name)
   const ext = (m.entry.name.split('.').pop() || '').toLowerCase()
   if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pdf'].includes(ext)) {
+    if (ext === 'doc') { void convertDocToDocx({ entry: m.entry, project: m.project, dirPath: m.dirPath || '' }); return }
     bus.emit('office:edit', { entry: m.entry, project: m.project, path: rel })
     return
   }
@@ -724,6 +767,7 @@ const TreeV3 = {
       const entry = { name: nav.project, isDir: true, type: 'folder', sizeText: '', mtime: '' }
       openMenuFor(entry, '', ev.clientX, ev.clientY + 6)
     },
+    onCollapseSide() { nav.toggleSidebar() },
   },
   mounted() {
     if (nav.project !== null && !treeOf(nav.project, '')) void loadTree(nav.project, '')
@@ -733,6 +777,7 @@ const TreeV3 = {
       <div class="side-head" style="position:relative">
         <button class="icon-btn" style="padding:3px;font-size:16px;font-weight:700;line-height:1" title="新建 / 上传" @click="store.newMenu = !store.newMenu">＋</button>
         <button v-if="isAdmin && nav.path === ''" class="icon-btn" style="padding:3px;font-size:14px;color:var(--danger)" :title="'删除项目：' + nav.project" @click="onDelProject">🗑</button>
+        <button class="icon-btn" style="padding:3px 5px;font-size:13px;margin-left:auto;flex-shrink:0" title="收起侧边栏（腾出中间栏空间）" @click="onCollapseSide">⏴</button>
         <!-- + 下拉：新建文档/数据表/页面 / 上传 -->
         <div v-if="store.newMenu" class="ctx-mask" @click="store.newMenu = false"></div>
         <div v-if="store.newMenu" style="position:absolute;top:36px;left:0;z-index:1100;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 0;box-shadow:0 10px 30px rgba(0,0,0,.25);min-width:180px">
@@ -804,6 +849,10 @@ const PanelV3 = {
       return t ? t.kind === 'text' && isEditableText(t.name) : false
     },
     isEditFile() { return this.isOfficeFile || this.isMdFile || this.isTextEditFile },
+    /* 详情开关状态：右侧面板打开且正显示当前激活文件 */
+    detailOpen() {
+      return !!(nav.rightOpen && nav.selected && !nav.selected.isDir && this.activeTab && nav.selected.name === this.activeTab.name)
+    },
     isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
     isRootMenu() {
       const m = store.ctxMenu
@@ -831,7 +880,13 @@ const PanelV3 = {
     editActive() {
       const t = this.activeTab
       if (!t) return
-      if (t.kind === 'office') bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
+      if (t.kind === 'office') {
+        if (/\.doc$/i.test(t.name)) {
+          void convertDocToDocx({ entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
+          return
+        }
+        bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
+      }
       else if (t.kind === 'md' || isEditableText(t.name)) bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
     },
     async downloadActive() {
@@ -856,6 +911,14 @@ const PanelV3 = {
       const t = this.activeTab
       if (!t) return
       // 内容区「ℹ️ 详情」：右侧详情面板显示该文件
+      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
+      nav.rightOpen = true
+    },
+    /* 内容区头部详情开关：开/关右侧详细信息面板 */
+    detailToggle() {
+      const t = this.activeTab
+      if (!t) return
+      if (this.detailOpen) { nav.rightOpen = false; return }
       nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
       nav.rightOpen = true
     },
@@ -1085,20 +1148,16 @@ const PanelV3 = {
       <template v-if="activeTab && content && content.key === activeTab.key">
         <div class="v3-content">
           <div class="v3-content-head">
-            <span class="v3-content-title">
+            <span class="v3-content-title" :title="activeTab.project + ' / ' + activeTab.path">
               <span>{{ fileIcon(activeTab.type) }}</span>{{ activeTab.name }}
-              <span class="v3-path">{{ activeTab.project }} / {{ activeTab.path }}</span>
             </span>
             <span class="spacer"></span>
-            <button v-if="isEditFile" class="v3-op-btn" @click="editActive">✏️ 编辑</button>
-            <button class="v3-op-btn" @click="reloadActive">🔄 刷新</button>
-            <button class="v3-op-btn" @click="downloadActive">⬇ 下载</button>
-            <button class="v3-op-btn" @click="detailActive">ℹ️ 详情</button>
-            <span style="display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:1px 4px;font-size:12px;color:var(--muted)" title="预览内容字体大小（独立于页面字体）">
+            <span style="display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:1px 4px;font-size:12px;color:var(--muted)" title="内容/编辑字号">
               <span style="cursor:pointer;padding:0 5px" @click="previewFontDec">A−</span>
               <span style="cursor:pointer;padding:0 5px;min-width:32px;text-align:center" @click="previewFontReset">{{ previewFont }}px</span>
               <span style="cursor:pointer;padding:0 5px" @click="previewFontInc">A+</span>
             </span>
+            <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 收起详情' : 'ℹ️ 详情' }}</button>
           </div>
           <div v-if="content.state === 'loading'" class="v3-loading">正在加载…</div>
           <div v-else-if="content.state === 'error'" class="v3-loading">{{ content.error }}</div>
@@ -1455,6 +1514,11 @@ const RightDetail = {
       const t = this.target
       if (!t) return
       if (this.isOffice) {
+        if (/\.doc$/i.test(t.name)) {
+          const dir2 = t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : ''
+          void convertDocToDocx({ entry: { name: t.name, isDir: false }, project: t.project, dirPath: dir2 })
+          return
+        }
         bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
         return
       }
