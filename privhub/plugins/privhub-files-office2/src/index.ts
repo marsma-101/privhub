@@ -156,7 +156,13 @@ export function apply(ctx: Context): void {
         const w = await office.write(project, path, rows)
         if (!w.ok) return json(res, 500, { ok: false, error: w.error || '写入失败' })
       } else {
+        // 服务端兜底：剔除渲染库注入的样式/脚本/注释，防止被 html-to-docx 当正文写入文档开头
         const html = String(body.content ?? '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<link[^>]*>/gi, '')
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<meta[^>]*>/gi, '')
+          .replace(/<!--[\s\S]*?-->/g, '')
         const buf = await HTMLtoDOCX(html, null, {
           table: { row: { cantSplit: true }, cell: { margins: { top: 80, bottom: 80, left: 100, right: 100 } } },
           font: 'Microsoft YaHei',

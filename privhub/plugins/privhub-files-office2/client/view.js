@@ -122,8 +122,26 @@
   }
 
   /* ---------- 保存 ---------- */
+  /* 收集可保存的正文 HTML：docx-preview 会在容器里注入 <style> 与页面骨架（页眉/页脚/分页容器），
+   * 直接 innerHTML 会把样式文本当正文写进文档开头。这里克隆后只保留真正的正文内容结构。 */
+  function collectDocHtml() {
+    const clone = $('docx').cloneNode(true)
+    clone.querySelectorAll('style,link,script,meta,title').forEach((n) => n.remove())
+    // 页面装饰：页眉 / 页脚 / 页码（docx-preview 每页一个 section>footer 等）
+    clone.querySelectorAll('.docx-wrapper>section.docx>footer,.docx-wrapper>section.docx>header,section.docx>footer,section.docx>header,.docx-page-footer,.docx-page-header,.docx-footnotes,.docx-endnotes').forEach((n) => n.remove())
+    // 展平外层骨架（wrapper/section/article 只留内部内容，避免空壳被转为空段）
+    const unwrap = (sel) => clone.querySelectorAll(sel).forEach((n) => { while (n.firstChild) n.parentNode.insertBefore(n.firstChild, n); n.remove() })
+    unwrap('.docx-wrapper')
+    unwrap('section.docx')
+    unwrap('article')
+    // 清掉纯空白/空壳块（保留含图片/表格/分隔线的节点）
+    clone.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li').forEach((n) => {
+      if (!n.textContent.trim() && !n.querySelector('img,table,hr')) n.remove()
+    })
+    return clone.innerHTML
+  }
   async function saveDocx() {
-    const html = $('docx').innerHTML
+    const html = collectDocHtml()
     const r = await api('/privhub/api/office2/save', { method: 'POST', body: JSON.stringify({ project, path, kind: 'docx', content: html }) })
     if (r.status === 200) {
       toast('✅ 已保存')
