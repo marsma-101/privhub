@@ -354,10 +354,16 @@ function officeToMd(kind, content) {
 }
 
 /* ================= 菜单操作（⋯ / 右键 / 长按共用） ================= */
+/* 整体缩放（页面字体 A±）：fixed 弹层会随 html zoom 一起缩放，事件坐标（clientX / rect）同为
+ * 缩放后的视觉坐标 → 落位前除以 zoom 转回 css 布局坐标；钳制边界同样按 zoom 折算 */
+function uiZoom() {
+  return parseFloat(getComputedStyle(document.documentElement).zoom) || 1
+}
 function openMenuFor(entry, dirPath, x, y) {
+  const z = uiZoom()
   store.ctxMenu = {
-    x: Math.min(x, window.innerWidth - 180),
-    y: Math.min(y, Math.max(0, window.innerHeight - 320)),
+    x: Math.min(x / z, window.innerWidth / z - 180),
+    y: Math.min(y / z, Math.max(0, window.innerHeight / z - 340)),
     entry, dirPath,
     project: nav.project,
   }
@@ -1602,6 +1608,7 @@ const FontZoom = {
   methods: {
     apply() {
       document.documentElement.style.zoom = String(this.scale)
+      document.documentElement.style.setProperty('--ui-zoom', String(this.scale))
       try { localStorage.setItem('privhub_ui_font_scale', String(this.scale)) } catch { /* 忽略 */ }
     },
     inc() { this.scale = Math.min(1.4, Math.round((this.scale + 0.1) * 10) / 10); this.apply() },

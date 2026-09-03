@@ -149,7 +149,9 @@ const CommentsCtrl = {
       if (range.collapsed) { this.btnPos = null; return }
       const rect = range.getBoundingClientRect()
       if (!rect || rect.width === 0) { this.btnPos = null; return }
-      this.btnPos = { left: rect.left + rect.width / 2 - 45, top: Math.max(8, rect.top - 42) }
+      // 整体缩放（html zoom）下 fixed 弹层会随缩放：视觉坐标需转回 css 布局坐标
+      const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1
+      this.btnPos = { left: (rect.left + rect.width / 2 - 45) / z, top: Math.max(8, rect.top - 42) / z }
     },
     openCommentInput() {
       const el = this.mdEl

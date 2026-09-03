@@ -20,9 +20,11 @@
       --text: #d7dde8; --muted: #8a94a6; --accent: #5d8de0; --danger: #e07171; --warn: #e0a34a;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --ui-zoom: 1; }
+    html, body { height: 100%; }
     body {
       font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-      background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+      background: var(--bg); color: var(--text); height: 100%; overflow: hidden;
       transition: background .25s, color .25s;
     }
 
@@ -51,7 +53,12 @@
     .auth-switch a { color: var(--accent); cursor: pointer; }
 
     /* ============ 主界面 ============ */
-    .app { display: flex; flex-direction: column; height: 100vh; }
+    /* 整体缩放（页面字体 A−/A+）：html zoom 下 vh 不随缩放收缩，这里按比例补偿高度，避免整页纵向滚动/底部截断 */
+    .app {
+      display: flex; flex-direction: column;
+      height: calc(100vh / var(--ui-zoom, 1));
+      min-height: 0;
+    }
     .topbar {
       display: flex; align-items: center; gap: 12px; padding: 10px 16px;
       background: var(--panel2); border-bottom: 1px solid var(--line);
@@ -751,7 +758,8 @@
         startResize(e) {
           e.preventDefault()
           const move = (ev) => {
-            const w = Math.min(420, Math.max(0, ev.clientX - 52))
+            const z = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-zoom')) || 1
+            const w = Math.min(420, Math.max(0, (ev.clientX - 52) / z))
             this.nav.sidebarWidth = w
           }
           const up = () => {
