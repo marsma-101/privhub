@@ -6,7 +6,7 @@
  *      （详情 / 权限 / 收藏 / 下载 / 编辑 / 重命名 / 新建子文件夹 / 删除）
  *   2. 单击文件 → 在中央主区打开为标签页（tabs），标签不关闭就一直在，
  *      内容渲染在中间（不再使用右侧 340px 预览条）
- *   3. 编辑能力复用既有插件：md → bus 'entry:open'（edit-md 浮层），
+ *   3. 编辑能力复用既有插件：md/txt 等文本 → bus 'entry:open'（edit-md 内嵌），
  *      office → bus 'office:edit'（office-ui 浮层）；仅从「✏️ 编辑」触发
  *
  * 与 V2 差异：本插件自带树缓存（含文件）与文件标签栏，不依赖
@@ -93,6 +93,11 @@ function kindOf(name) {
   if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'office'
   return 'text'
 }
+/* 可内嵌编辑的文本扩展名（与 privhub-files-edit-md 的 EDITABLE_TEXT_EXTS 保持一致） */
+const TEXT_EDIT_EXTS = ['txt', 'json', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql', 'xml', 'js', 'ts', 'css']
+function isEditableText(name) {
+  return TEXT_EDIT_EXTS.includes((name.split('.').pop() || '').toLowerCase())
+}
 function rawUrl(project, path) {
   return '/privhub/api/preview-raw?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
 }
@@ -172,6 +177,8 @@ function openTab(entry, project, dirPath) {
     key, project, path, name: entry.name, kind: kindOf(entry.name),
     sizeText: entry.sizeText || '', type: entry.type || '',
   }
+  // 切换打开其他文件前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
+  if (store.activeKey && store.activeKey !== key) bus.emit('md:interrupt', {})
   const idx = store.tabs.findIndex(t => t.key === key)
   if (idx >= 0) store.tabs.splice(idx, 1)
   store.tabs.push(tab)
@@ -186,6 +193,8 @@ function openTab(entry, project, dirPath) {
 }
 function activateTab(key) {
   const tab = store.tabs.find(t => t.key === key)
+  // 切换激活前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
+  if (store.activeKey && store.activeKey !== key) bus.emit('md:interrupt', {})
   // 幂等：即使已是激活标签也恢复选中/右侧面板（Esc/切视图后 rightOpen 被骨架清零）
   if (tab) {
     nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
@@ -200,6 +209,7 @@ function closeTab(key) {
   const idx = store.tabs.findIndex(t => t.key === key)
   if (idx < 0) return
   const wasActive = store.activeKey === key
+  if (wasActive) bus.emit('md:interrupt', {}) // 关闭激活标签前静默保存
   store.tabs.splice(idx, 1)
   persistTabs()
   if (wasActive) {
@@ -239,8 +249,13 @@ async function loadContent(key) {
     const r = await api('/privhub/api/preview?project=' + encodeURIComponent(tab.project) + '&path=' + encodeURIComponent(tab.path))
     if (r.ok) {
       if (r.type === 'text') {
-        if (tab.kind === 'md') store.content = { key, state: 'ready', markdown: r.data || '' }
-        else store.content = { key, state: 'ready', text: r.data || '' }
+        if (tab.kind === 'md') {
+          store.content = { key, state: 'ready', markdown: r.data || '' }
+        } else {
+          store.content = { key, state: 'ready', text: r.data || '' }
+        }
+        // md / txt 等文本文件：打开即进入内嵌编辑（edit-md 监听，VS Code/Trae 式）
+        bus.emit('md:auto-edit', { entry: { name: tab.name, isDir: false }, project: tab.project, path: tab.path.includes('/') ? tab.path.slice(0, tab.path.lastIndexOf('/')) : '' })
       } else if (r.type === 'image') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
       else if (r.type === 'pdf') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
       else store.content = { key, state: 'error', error: '该文件类型不支持在线查看' }
@@ -529,11 +544,17 @@ function doEdit() {
   if (!m || m.entry.isDir) return
   const rel = relPath(m.project, m.dirPath, m.entry.name)
   const ext = (m.entry.name.split('.').pop() || '').toLowerCase()
-  if (['doc', 'docx', 'xlsx', 'pptx', 'pdf'].includes(ext)) {
+  if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pdf'].includes(ext)) {
     bus.emit('office:edit', { entry: m.entry, project: m.project, path: rel })
-  } else if (ext === 'md') {
-    bus.emit('entry:open', { entry: m.entry, project: m.project, path: m.dirPath || '' })
+    return
   }
+  if (ext !== 'md' && !isEditableText(m.entry.name)) return
+  // 文本类（md/txt 等）：先作为标签打开进入内容区（edit-md 随后自动进入内嵌编辑）。
+  // 显式 entry:open（force）清除「✕ 只读」标记：无标签时由后续 auto-edit 接管，有标签时立即进入
+  const tab = store.tabs.find(x => x.project === m.project && x.path === rel)
+  if (tab) activateTab(tab.key)
+  else openTab(m.entry, m.project, m.dirPath || '')
+  bus.emit('entry:open', { entry: m.entry, project: m.project, path: m.dirPath || '' })
 }
 function doMkdirHere() {
   const m = store.ctxMenu
@@ -777,6 +798,12 @@ const PanelV3 = {
       return t ? ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(t.kind === 'office' ? (t.name.split('.').pop() || '').toLowerCase() : '') : false
     },
     isMdFile() { const t = this.activeTab; return t ? t.kind === 'md' : false },
+    /* 纯文本（txt/json/…）：edit-md 内嵌编辑，kind 为 text 且扩展名在可编辑清单 */
+    isTextEditFile() {
+      const t = this.activeTab
+      return t ? t.kind === 'text' && isEditableText(t.name) : false
+    },
+    isEditFile() { return this.isOfficeFile || this.isMdFile || this.isTextEditFile },
     isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
     isRootMenu() {
       const m = store.ctxMenu
@@ -790,7 +817,7 @@ const PanelV3 = {
     },
     // 同项目内导航目录 → 回到目录浏览（标签保留，VS Code 语义：点标签再回内容）
     'nav.path'() {
-      if (nav.project !== null) { store.activeKey = ''; store.content = null }
+      if (nav.project !== null) { store.activeKey = ''; store.content = null; bus.emit('md:interrupt', {}) }
     },
   },
   methods: {
@@ -805,7 +832,7 @@ const PanelV3 = {
       const t = this.activeTab
       if (!t) return
       if (t.kind === 'office') bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
-      else if (t.kind === 'md') bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
+      else if (t.kind === 'md' || isEditableText(t.name)) bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
     },
     async downloadActive() {
       const t = this.activeTab
@@ -1009,15 +1036,31 @@ const PanelV3 = {
     this.maybeHint()
     this._offMd = bus.on('md:changed', () => {
       const t = store.tabs.find(x => x.key === store.activeKey)
-      if (t && t.kind === 'md') void loadContent(t.key)
+      if (t && (t.kind === 'md' || (t.kind === 'text' && isEditableText(t.name)))) void loadContent(t.key)
       if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() }
+      // openDir 会清零选中/右侧详情；标签仍激活 → 重新选中当前文件，详情面板保持打开
+      const tab = store.tabs.find(x => x.key === store.activeKey)
+      if (tab && nav.project === tab.project) {
+        nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
+        nav.rightOpen = true
+      }
     })
     this._offTrash = bus.on('trash:changed', () => { if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() } })
+    // 跨插件刷新（新建文档向导等创建文件后通知，刷新目录树缓存；列表由调用方 openDir 刷新）
+    this._offRef = bus.on('files:refresh', () => { if (nav.project !== null) void refreshTree() })
+    // 脏标记：md 编辑器未保存 → 标签标题 ●
+    this._offDirty = bus.on('md:dirty', (p) => {
+      if (!p || !p.project || !p.path) return
+      const t = store.tabs.find(x => x.project === p.project && x.path === p.path)
+      if (t && !!t.dirty !== !!p.dirty) { t.dirty = !!p.dirty; persistTabs() }
+    })
     this._offTabOpened = bus.on('v3:tab-opened', () => {}) // 占位：未来跨组件联动
   },
   beforeUnmount() {
     if (this._offMd) this._offMd()
     if (this._offTrash) this._offTrash()
+    if (this._offRef) this._offRef()
+    if (this._offDirty) this._offDirty()
     if (this._offTabOpened) this._offTabOpened()
   },
   template: `
@@ -1031,7 +1074,7 @@ const PanelV3 = {
           :title="t.project + ' / ' + t.path"
         >
           <span>{{ fileIcon(t.type) }}</span>
-          <span class="v3-tab-name">{{ t.name }}</span>
+          <span class="v3-tab-name">{{ t.dirty ? '● ' : '' }}{{ t.name }}</span>
           <span class="v3-tab-x" title="关闭" @click.stop="close(t.key)">✕</span>
         </div>
         <div style="flex:1"></div>
@@ -1047,7 +1090,7 @@ const PanelV3 = {
               <span class="v3-path">{{ activeTab.project }} / {{ activeTab.path }}</span>
             </span>
             <span class="spacer"></span>
-            <button v-if="isOfficeFile || isMdFile" class="v3-op-btn" @click="editActive">✏️ 编辑</button>
+            <button v-if="isEditFile" class="v3-op-btn" @click="editActive">✏️ 编辑</button>
             <button class="v3-op-btn" @click="reloadActive">🔄 刷新</button>
             <button class="v3-op-btn" @click="downloadActive">⬇ 下载</button>
             <button class="v3-op-btn" @click="detailActive">ℹ️ 详情</button>
@@ -1158,7 +1201,7 @@ const PanelV3 = {
         <div v-if="!store.ctxMenu.entry.isDir" class="ctx-item" @click="doDownload">⬇ 下载</div>
         <div v-if="!store.ctxMenu.entry.isDir" class="ctx-item" @click="doCopyHere">📄 复制副本</div>
         <div class="ctx-item" @click="doMoveOpen">📦 移动</div>
-        <div v-if="!store.ctxMenu.entry.isDir && (isOfficeMenu || isMdMenu)" class="ctx-item" @click="doEdit">✏️ 编辑</div>
+        <div v-if="!store.ctxMenu.entry.isDir && (isOfficeMenu || isMdMenu || isTextMenu)" class="ctx-item" @click="doEdit">✏️ 编辑</div>
         <div class="ctx-item" @click="doRename">✏️ 重命名</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doMkdirHere">＋ 新建子文件夹</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadHere">📁 上传到该文件夹</div>
@@ -1250,7 +1293,7 @@ const PanelV3 = {
   `,
 }
 
-/* 菜单项动态显示（office/md 才显示编辑）——用计算属性替代模板内函数 */
+/* 菜单项动态显示（office/md/文本 才显示编辑）——用计算属性替代模板内函数 */
 PanelV3.computed.isOfficeMenu = function () {
   const m = store.ctxMenu
   if (!m || m.entry.isDir) return false
@@ -1260,6 +1303,11 @@ PanelV3.computed.isMdMenu = function () {
   const m = store.ctxMenu
   if (!m || m.entry.isDir) return false
   return /\.md$/i.test(m.entry.name)
+}
+PanelV3.computed.isTextMenu = function () {
+  const m = store.ctxMenu
+  if (!m || m.entry.isDir) return false
+  return isEditableText(m.entry.name)
 }
 
 TreeV3.components = { 'v3-tree-node': TreeNodeV3 }
@@ -1332,6 +1380,12 @@ const RightDetail = {
       const t = this.target
       return t ? /\.(txt|md|json|js|ts|css|html|xml|csv|log|yaml|yml|ini|py|sh|bat|sql)$/i.test(t.name) : false
     },
+    /* 可编辑：Office 文档 + md/文本文件（走 edit-md 内嵌编辑） */
+    isEdit() {
+      const t = this.target
+      if (!t) return false
+      return this.isOffice || /\.md$/i.test(t.name) || isEditableText(t.name)
+    },
   },
   watch: {
     target(n, o) {
@@ -1400,8 +1454,17 @@ const RightDetail = {
     edit() {
       const t = this.target
       if (!t) return
-      if (this.isOffice) bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
-      else if (this.isMd) bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '' })
+      if (this.isOffice) {
+        bus.emit('office:edit', { entry: { name: t.name, isDir: false }, project: t.project, path: t.path })
+        return
+      }
+      if (!this.isMd && !isEditableText(t.name)) return
+      // 文本类（md/txt 等）：确保作为标签打开进入内容区，再进入内嵌编辑
+      const dir = t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : ''
+      const tab = store.tabs.find(x => x.project === t.project && x.path === t.path)
+      if (!tab) openTab({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }, t.project, dir)
+      else activateTab(tab.key)
+      bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: dir })
     },
     perm() { const t = this.target; if (t) void openPermFor({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, mtime: t.mtime }, t.project, t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : '') },
     /* 批注评论 / 生成页面 / 发布 / 版本历史（跨插件 bus 触发） */
@@ -1450,7 +1513,7 @@ const RightDetail = {
             <div class="v3-detail-act" title="收藏到星标列表" @click="fav"><span class="v3-detail-act-ico">⭐</span>收藏</div>
             <div class="v3-detail-act" title="复制完整路径" @click="copyPath"><span class="v3-detail-act-ico">📋</span>复制路径</div>
             <div class="v3-detail-act" title="下载文件" @click="download"><span class="v3-detail-act-ico">⬇️</span>下载</div>
-            <div class="v3-detail-act" :title="isOffice || isMd ? '在编辑器中打开' : '仅支持 md / Office 文档'" :class="{ dev: !(isOffice || isMd) }" @click="isOffice || isMd ? edit() : null"><span class="v3-detail-act-ico">✏️</span>编辑</div>
+            <div class="v3-detail-act" :title="isEdit ? '在编辑器中打开' : '仅支持 md / Office / 文本文件'" :class="{ dev: !isEdit }" @click="isEdit ? edit() : null"><span class="v3-detail-act-ico">✏️</span>编辑</div>
             <div class="v3-detail-act" title="查看/管理权限规则" @click="perm"><span class="v3-detail-act-ico">🔐</span>权限</div>
             <div class="v3-detail-act" :title="isMd ? '选中正文添加评论 / 查看评论线程' : '仅支持 md 文档'" :class="{ dev: !isMd }" @click="isMd ? comments() : null"><span class="v3-detail-act-ico">💬</span>批注评论</div>
             <div class="v3-detail-act" :title="isMd ? '一键生成 HTML 展示页' : '仅支持 md 文档'" :class="{ dev: !isMd }" @click="isMd ? genpage() : null"><span class="v3-detail-act-ico">🌐</span>生成页面</div>

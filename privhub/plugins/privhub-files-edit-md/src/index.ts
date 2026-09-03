@@ -135,6 +135,36 @@ export function apply(ctx: Context): void {
     }
   }, 'doc-readwrite')
 
+  /* ---- 通用文本保存（txt/json 等非 md 文本；无版本存档） ---- */
+  svc.route('/privhub/api/text/save', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const project = String(body.project ?? '')
+    const path = String(body.path ?? '')
+    const text = String(body.text ?? '')
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+    const target = await svc.resolveReal(project, path)
+    if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
+    if (!existsSync(target)) {
+      // 允许新建文本（父目录须存在；父目录同样 realpath 校验防 junction 目录写穿越）
+      const parent = dirname(target)
+      const rootReal = await svc.resolveReal(project, '')
+      if (rootReal === null || (parent !== rootReal && !existsSync(parent))) return json(res, 400, { ok: false, error: '目标目录不存在' })
+      await mkdir(parent, { recursive: true })
+    }
+    try {
+      await ctx.storage.writeText(target, text)
+      ctx.emit('file:saved', { project, path, doc: text })
+      void audit(u, 'text-save', project + '/' + path, 'bytes=' + Buffer.byteLength(text, 'utf8'))
+      json(res, 200, { ok: true })
+    } catch (e) {
+      json(res, 500, { ok: false, error: e instanceof Error ? e.message : '保存失败' })
+    }
+  }, 'text-save')
+
   /* ---- 版本列表 ---- */
   svc.route('/privhub/api/doc/versions', async (req, res) => {
     const u = svc.requireUser(req, res)
