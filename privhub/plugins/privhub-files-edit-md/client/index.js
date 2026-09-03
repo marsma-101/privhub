@@ -106,6 +106,14 @@ function buildFrontmatter(meta) {
   return '---\n' + Object.entries(meta).map(([k, v]) => k + ': ' + v).join('\n') + '\n---\n\n'
 }
 
+/* 可内嵌编辑的文本扩展名（md 走 doc 接口 + 版本；其余走 text-save 接口） */
+const EDITABLE_TEXT_EXTS = ['md', 'txt', 'json', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql', 'xml', 'js', 'ts', 'css']
+function isEditableText(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase()
+  return EDITABLE_TEXT_EXTS.includes(ext)
+}
+function isMdName(name) { return /\.md$/i.test(name) }
+
 /* ============ 编辑器组件 ============ */
 const MdEditor = {
   name: 'md-editor',
@@ -113,6 +121,7 @@ const MdEditor = {
     return {
       open: false,
       mode: 'float',   // 'float' 全屏浮层（旧）| 'inline' 内容区内嵌（VS Code/Trae 式）
+      isMd: false,     // 是否 Markdown（md 走 doc 接口/版本/导出；其余文本走 text-save）
       project: '',
       path: '',      // 项目内相对路径（含文件名）
       name: '',
@@ -181,37 +190,43 @@ const MdEditor = {
     /* payload 兼容：{ entry, project, path }（path = 所在目录）；裸 entry 时回退 nav 上下文 */
     async openEditor(payload, force = false) {
       const e = payload && payload.entry ? payload.entry : payload
-      if (!e || e.isDir || !/\.md$/i.test(e.name)) return
+      if (!e || e.isDir || !isEditableText(e.name)) return
       const dir = (payload && payload.path !== undefined && payload.path !== null) ? payload.path : nav.path
       const rel = dir ? dir + '/' + e.name : e.name
       // 显式编辑（force）清除手动只读标记
       if (force) this._manualReadonly = false
       // 同一文件已在编辑中（有未保存修改）→ 不打扰（防 V3 md:changed 重载覆盖输入）
       if (this.open && this.path === rel && this.dirty) return
-      // 同一文件已打开且无未保存 → 静默刷新内容（保存后重载场景）
+      // 同一文件已打开且无未保存 → 静默刷新内容（保存后重载场景；md 走 doc 接口，文本无需刷新）
       if (this.open && this.path === rel && this.mode === 'inline') {
-        const rr = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
-        if (rr.ok) { this.doc = rr.doc; this.baseMtime = rr.mtime; this.savedMtime = rr.mtime; this.status = '已刷新（Ctrl+S 保存）' }
+        if (this.isMd) {
+          const rr = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
+          if (rr.ok) { this.doc = rr.doc; this.baseMtime = rr.mtime; this.savedMtime = rr.mtime; this.status = '已刷新（Ctrl+S 保存）' }
+        }
         return
       }
       this.project = (payload && payload.project) || nav.project || ''
       this.dir = dir || ''
       this.path = rel
       this.name = e.name
+      this.isMd = isMdName(e.name)
       this.showVersions = false
-      this.previewOpen = true
-      // 内容区存在 → 内嵌编辑（VS Code/Trae 式）；否则全屏浮层兜底
+      this.previewOpen = this.isMd // txt 等纯文本默认单栏编辑（无 md 预览）
+      // 内容区存在 → 内嵌编辑（VS Code/Trae 式）；txt 等文本仅内嵌；md 无内容区时浮层兜底
       const host = document.querySelector('.v3-content')
-      this.mode = host ? 'inline' : 'float'
-      const r = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
+      this.mode = host ? 'inline' : (this.isMd ? 'float' : 'skip')
+      const r = await api(this.isMd
+        ? '/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel)
+        : '/privhub/api/preview?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
       if (!r.ok) { this.status = r.error || '读取失败'; return }
-      const fm = parseFrontmatter(r.doc)
+      const rawDoc = this.isMd ? r.doc : r.data
+      const fm = parseFrontmatter(rawDoc)
       this.meta = fm.meta
-      this.doc = r.doc
-      this.baseMtime = r.mtime
-      this.savedMtime = r.mtime
+      this.doc = rawDoc
+      this.baseMtime = this.isMd ? r.mtime : 0
+      this.savedMtime = this.baseMtime
       this.dirty = false
-      this.status = this.mode === 'inline' ? '就绪（Ctrl+S 保存）' : '已打开 · ' + this.fmtTime(r.mtime)
+      this.status = this.mode === 'inline' ? '就绪（Ctrl+S 保存）' : '已打开 · ' + this.fmtTime(Date.now())
       this.open = true
       if (this.mode === 'inline') {
         // 隐藏原只读预览，编辑后恢复
@@ -274,6 +289,17 @@ const MdEditor = {
       try {
         // G2：从 EasyMDE 取当前内容
         if (this.mde) this.doc = this.mde.value()
+        // 非 md 文本：走 text-save 接口（无 frontmatter/版本）
+        if (!this.isMd) {
+          const tr = await api('/privhub/api/text/save', { method: 'POST', body: JSON.stringify({ project: this.project, path: this.path, text: this.doc }) })
+          if (tr.ok) {
+            this.dirty = false
+            this.status = '✅ 已保存 ' + this.fmtTime(Date.now())
+            bus.emit('md:changed', { project: this.project, path: this.path })
+            bus.emit('file:saved', { project: this.project, path: this.path, name: this.name })
+          } else this.status = tr.error || '保存失败'
+          return
+        }
         // 保存前补齐 frontmatter created（4.4）
         let doc = this.doc
         const fm = parseFrontmatter(doc)
@@ -406,11 +432,13 @@ const MdEditor = {
           <span style="flex:1"></span>
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
           <button class="icon-btn" @click="togglePreview()" :title="previewOpen ? '隐藏预览' : '显示预览'">{{ previewOpen ? '👁 预览开' : '👁 预览关' }}</button>
-          <button class="icon-btn" @click="loadVersions()">🕘 版本</button>
+          <button v-if="isMd" class="icon-btn" @click="loadVersions()">🕘 版本</button>
           <button class="icon-btn" title="Git 备份（立即提交当前版本）" @click="gitBackup()">⏺ 备份</button>
-          <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
-          <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
-          <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
+          <template v-if="isMd">
+            <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
+            <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
+            <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
+          </template>
           <button class="icon-btn" title="退出编辑（只读预览）" @click="exitInline()">✕ 只读</button>
         </div>
         <!-- 版本抽屉 -->
@@ -431,7 +459,7 @@ const MdEditor = {
         <div style="flex:1;display:flex;min-height:0">
           <div style="flex:1;display:flex;flex-direction:column;min-width:0">
             <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0;display:flex;align-items:center;gap:8px">
-              <span>Markdown 源码</span><span style="color:var(--warn)" v-if="dirty">●</span>
+              <span>{{ isMd ? 'Markdown 源码' : '文本源码' }}</span><span style="color:var(--warn)" v-if="dirty">●</span>
               <span style="flex:1"></span><span>Ctrl+S 保存</span>
             </div>
             <textarea
