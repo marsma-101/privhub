@@ -14,6 +14,16 @@ const { bus } = window.PrivHub
 
 const REPLACE_EXTS = ['.docx', '.xlsx']
 
+/* Office 原生预览占满内容区：内容区改纵向布局，iframe 随窗口伸缩（不设下限 480px） */
+const styleEl = document.createElement('style')
+styleEl.textContent = `
+.v3-content:has(iframe.office2-frame) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.v3-content:has(iframe.office2-frame) .v3-content-head { flex-shrink:0; margin:0; padding:7px 14px; background:var(--panel); }
+.v3-content:has(iframe.office2-frame) iframe.office2-frame { flex:1 1 auto; min-height:0; }
+iframe.office2-frame { display:block; width:100%; height:100%; border:none; background:#fff; }
+`
+document.head.appendChild(styleEl)
+
 const Office2Replace = {
   name: 'office2-replace',
   methods: {
@@ -42,7 +52,7 @@ const Office2Replace = {
       frame = document.createElement('iframe')
       frame.className = 'office2-frame'
       frame.src = this.frameUrl(payload)
-      frame.style.cssText = 'width:100%;flex:1;min-height:480px;border:none;border-radius:8px;background:#fff'
+      frame.style.cssText = 'width:100%;height:100%;flex:1 1 auto;min-height:0;border:none;background:#fff'
       const body = content.querySelector('.v3-content-head')
       if (body) body.after(frame)
       else content.appendChild(frame)

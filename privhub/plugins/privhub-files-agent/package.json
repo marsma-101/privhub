@@ -1,0 +1,7 @@
+{
+  "name": "privhub-files-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub Agent API 网关（C22 企业级）：X-Agent-Key 绑定用户 + 项目 scope，项目只读 + 专属空间全能力"
+}
