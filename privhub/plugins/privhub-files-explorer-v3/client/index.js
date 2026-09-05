@@ -182,6 +182,9 @@ function openTab(entry, project, dirPath) {
   if (!entry || entry.isDir) return
   const path = relPath(project, dirPath, entry.name)
   const key = tabKey(project, path)
+  // 已打开过：直接切到该标签（不重新加载、不改变标签顺序），避免重复打开
+  const existing = store.tabs.find(t => t.key === key)
+  if (existing) { activateTab(key); return }
   const tab = {
     key, project, path, name: entry.name, kind: kindOf(entry.name),
     sizeText: entry.sizeText || '', type: entry.type || '',
@@ -701,6 +704,10 @@ const TreeNodeV3 = {
       else openTab(this.entry, this.project, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '')
     },
     onDots(ev) { ev.stopPropagation(); openMenuFor(this.entry, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '', ev.clientX, ev.clientY + 6) },
+    /* 文件夹双击：展开 / 再双击收起（树形目录惯例） */
+    onDblClick() {
+      if (this.entry.isDir) void toggleTree(this.project, this.path)
+    },
     openFileInDir() {
       // 树里文件点击 = 打开标签（路径即文件完整相对路径）
       openTab(this.entry, this.project, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '')
@@ -725,7 +732,7 @@ const TreeNodeV3 = {
           />
         </template>
         <template v-else>
-          <span @click="entry.isDir ? onClick() : openFileInDir()" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
+          <span @click="entry.isDir ? onClick() : openFileInDir()" @dblclick.stop="onDblClick" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
             <span>{{ entry.isDir ? (expanded ? '📂' : '📁') : fileIcon(entry.type) }}</span>
             <span class="v3-name" :title="entry.name">{{ label }}</span>
           </span>
@@ -800,7 +807,7 @@ const TreeV3 = {
       </div>
       <div class="v3-tn" :class="{ active: nav.path === '' }" :style="{ paddingLeft: '8px' }">
         <span class="tree-arrow" style="width:14px;display:inline-block;text-align:center;font-size:10px;color:var(--muted);cursor:pointer;flex-shrink:0" @click.stop="onRootToggle">{{ rootExpanded ? '▾' : '▸' }}</span>
-        <span @click="onRootOpen" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
+        <span @click="onRootOpen" @dblclick.stop="onRootToggle" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
           <span>🏠</span><span class="v3-name">{{ nav.project }}</span>
         </span>
         <span class="v3-dots" title="操作" @click.stop="onRootDots($event)">⋯</span>

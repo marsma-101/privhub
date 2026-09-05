@@ -77,7 +77,13 @@ export function apply(ctx: Context): void {
     const rest = list.filter((e) => !(e.project === project && e.path === path))
     const next = [{ project, path, name, isDir, at: Date.now() }, ...rest].slice(0, MAX_RECENT)
     all[u.username] = next
-    await saveAll(ctx.storage, all)
+    // 尽力而为：多实例共享数据目录时 rename 偶发竞争，重试一次；仍失败不阻塞（最近列表非关键数据）
+    try {
+      await saveAll(ctx.storage, all)
+    } catch {
+      await new Promise((r) => setTimeout(r, 80))
+      await saveAll(ctx.storage, all).catch(() => { /* 忽略 */ })
+    }
     json(res, 200, { ok: true, recent: next })
   }, 'recent')
 }
