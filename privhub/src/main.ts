@@ -13,7 +13,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { readdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { WebServerService } from './web-server.js'
 
@@ -92,8 +92,48 @@ function argPort(): number {
   return 3180
 }
 
+/**
+ * O3：生产诊断日志。
+ *
+ * 此前所有输出都是裸 console，只能靠外部重定向留存，窗口一关就没了，
+ * 出现「昨天下午谁的操作导致报错」时无从回溯。
+ * 这里按天追加写入 <root>/data/logs/privhub-YYYY-MM-DD.log，
+ * 并保留最近 N 天（默认 14）；写入失败绝不阻断主流程。
+ *
+ * 注意：业务操作审计仍走 audit.jsonl（不可替代），这里补的是【系统错误与启动信息】。
+ */
+function installFileLogger(root: string): void {
+  try {
+    const logsDir = join(root, 'data', 'logs')
+    mkdirSync(logsDir, { recursive: true })
+    const day = new Date().toISOString().slice(0, 10)
+    const file = join(logsDir, `privhub-${day}.log`)
+    const write = (level: string, args: unknown[]): void => {
+      const line = `[${new Date().toISOString()}] [${level}] `
+        + args.map((a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+        + '\n'
+      try { appendFileSync(file, line, 'utf8') } catch { /* 磁盘满/权限问题：不影响运行 */ }
+    }
+    for (const level of ['log', 'info', 'warn', 'error'] as const) {
+      const orig = console[level].bind(console)
+      console[level] = (...args: unknown[]) => { orig(...args); write(level.toUpperCase(), args) }
+    }
+    // 清理过期日志
+    try {
+      const keepMs = 14 * 24 * 3600 * 1000
+      const now = Date.now()
+      for (const f of readdirSync(logsDir)) {
+        if (!f.startsWith('privhub-') || !f.endsWith('.log')) continue
+        const full = join(logsDir, f)
+        try { if (now - statSync(full).mtimeMs > keepMs) unlinkSync(full) } catch { /* 单个失败忽略 */ }
+      }
+    } catch { /* 清理失败不影响运行 */ }
+  } catch { /* 无法建日志目录（如只读磁盘）：退化为纯控制台输出 */ }
+}
+
 async function main(): Promise<void> {
   const port = argPort()
+  installFileLogger(rootDir)
   const ctx = new Context()
 
   /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */
@@ -142,7 +182,12 @@ async function main(): Promise<void> {
     }
   }
 
-  /* 5. 启动 HTTP 服务 */
+  /* 5. D4：等待核心数据（账号 / 会话）载入完成后再开始监听。
+   *    否则存在竞态：服务已接受请求但用户表尚为空，表现为启动后首次登录
+   *    偶发「用户名或密码错误」；账号文件损坏时也应在此明确失败而非带病启动。 */
+  await ctx.privhub.ready
+
+  /* 6. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)
 
   console.log('============================================')

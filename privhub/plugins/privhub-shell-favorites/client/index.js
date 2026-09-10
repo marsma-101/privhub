@@ -10,18 +10,21 @@
 
 const { api, nav, bus } = window.PrivHub
 
-/* 模块级监听：F07 长按菜单 emit 的收藏事件（视图未打开时也生效） */
+/* 模块级监听（唯一）：F07 长按菜单 emit 的收藏事件。
+ * 注意：组件内【不再】重复监听同一事件——原实现两处都监听，
+ * 导致收藏夹视图打开时一次收藏发出两次 POST（服务端有去重，但仍是浪费）。
+ * 组件挂载时通过 'favorites:changed' 刷新列表，与写入路径解耦。 */
 bus.on('fav:add', async (payload) => {
   try {
     const r = await api('/privhub/api/favorites', { method: 'POST', body: JSON.stringify(payload) })
     if (r.ok) bus.emit('favorites:changed', { name: payload.name })
-  } catch { /* 静默 */ }
+  } catch { /* 静默：失败不影响主流程 */ }
 })
 
 const FavView = {
   name: 'fav-view',
   data() {
-    return { nav, list: [], all: [] }
+    return { nav, all: [] }
   },
   computed: {
     // 项目上下文：只显示当前项目内的收藏
@@ -34,13 +37,9 @@ const FavView = {
     async load() {
       try {
         const r = await api('/privhub/api/favorites')
-        if (r.ok) { this.all = r.favorites; this.list = this.shown }
-      } catch { this.all = []; this.list = [] }
-    },
-    async add(payload) {
-      const r = await api('/privhub/api/favorites', { method: 'POST', body: JSON.stringify(payload) })
-      if (r.ok) bus.emit('favorites:changed', { name: payload.name })
-      await this.load()
+        // shown 为 computed（依赖 all 与 nav.project），此处只需赋值 all
+        if (r.ok) this.all = r.favorites
+      } catch { this.all = [] }
     },
     async remove(e) {
       const r = await api('/privhub/api/favorites', { method: 'DELETE', body: JSON.stringify({ project: e.project, path: e.path }) })
@@ -59,7 +58,8 @@ const FavView = {
   },
   async mounted() {
     await this.load()
-    this._off = bus.on('fav:add', (payload) => { this.add(payload) })
+    // 只订阅「已变更」通知，不再直接监听写入事件（避免二次 POST）
+    this._off = bus.on('favorites:changed', () => { void this.load() })
   },
   beforeUnmount() { if (this._off) this._off() },
   template: `

@@ -118,4 +118,21 @@ export function apply(ctx: Context): void {
     if (!adminOnly(req, res)) return
     json(res, 200, { ok: true, entries: [...ring].reverse() })
   }, 'audit-recent')
+
+  /* 完整性诊断：GET /privhub/api/audit/stats（adminOnly）
+   * 让「审计数据是否损坏」变成管理员可见的事实，而不是只能靠条目变少来猜。 */
+  svc.route('/privhub/api/audit/stats', async (req, res) => {
+    if (!adminOnly(req, res)) return
+    try {
+      const s = await audit.stats()
+      json(res, 200, {
+        ok: true,
+        ...s,
+        hint: s.healthy ? undefined
+          : '审计文件存在损坏块。损坏内容无法自动恢复，但文件不会被自动覆盖；请先备份再联系维护者。',
+      })
+    } catch (e) {
+      json(res, 500, { ok: false, error: e instanceof Error ? e.message : '统计失败' })
+    }
+  }, 'audit-stats')
 }

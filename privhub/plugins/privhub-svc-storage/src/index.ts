@@ -25,7 +25,7 @@
  */
 
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, rename, readdir, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename, readdir, stat, rm } from 'node:fs/promises'
 import { createReadStream as fsCreateReadStream, createWriteStream as fsCreateWriteStream, existsSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { Transform } from 'node:stream'
@@ -62,6 +62,8 @@ const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export class StorageService extends Service {
   private key: Buffer | null = null
+  /** 密钥加载单飞 Promise（并发首触发只执行一次，避免并发写同一密钥文件）。 */
+  private keyPromise: Promise<Buffer> | null = null
   private readonly enabled: boolean
   private readonly keyFile: string
   private readonly auditMagic: Buffer
@@ -77,21 +79,60 @@ export class StorageService extends Service {
   /** 是否启用加密（读路径不受影响：自动识别密文头）。 */
   get active(): boolean { return this.enabled }
 
-  /** 加载/生成密钥。env PRIVHUB_SECRET 优先；否则 secret.key 文件。 */
+  /**
+   * 加载/生成密钥。env PRIVHUB_SECRET 优先；否则 secret.key 文件。
+   *
+   * 并发安全（首次部署的关键路径）：
+   * 启动时多个插件会同时触发 storage 操作（core 载入 users、audit 落盘、
+   * agent 载入配额……），它们并发调用本方法。原先的实现是
+   * 「existsSync 不存在 → writeFile → readFile」三步，虽然 Node 是单线程，
+   * 但每个 await 都是让出点：A 与 B 可能都判定"文件不存在"，随后【并发写同一文件】，
+   * 一方的 writeFile 会 truncate 掉另一方正在写入的内容，导致读到不足 32 字节
+   * 而抛「密钥文件长度必须为 32 字节」→ **全新部署偶发启动失败**（实测可复现）。
+   *
+   * 三重防护：
+   *  1. 单飞 Promise —— 进程内并发只执行一次生成/读取；
+   *  2. `flag: 'wx'`（O_CREAT|O_EXCL）—— 跨进程也只有一方能创建成功，
+   *     失败方视为"别人已创建"，转而读取；
+   *  3. 长度校验 + 短暂重试 —— 容忍其它进程写入尚未落完的瞬时状态。
+   */
   async ensureKey(): Promise<Buffer> {
     if (this.key) return this.key
+    if (!this.keyPromise) {
+      this.keyPromise = this.doEnsureKey().catch((e) => {
+        this.keyPromise = null // 失败后可重试，不留下永久失败的缓存
+        throw e
+      })
+    }
+    return this.keyPromise
+  }
+
+  private async doEnsureKey(): Promise<Buffer> {
     const env = process.env.PRIVHUB_SECRET
     if (env && env.trim() !== '') {
       this.key = createHash('sha256').update(env.trim(), 'utf8').digest()
       return this.key
     }
-    if (!existsSync(this.keyFile)) {
-      await mkdir(dirname(this.keyFile), { recursive: true })
-      await writeFile(this.keyFile, randomBytes(32), { mode: 0o600 })
+    await mkdir(dirname(this.keyFile), { recursive: true })
+    try {
+      // 原子创建：仅当文件不存在时成功，避免并发写互相截断
+      await writeFile(this.keyFile, randomBytes(32), { mode: 0o600, flag: 'wx' })
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e
+      // 已存在（可能是并发方刚创建）：继续走读取
     }
-    this.key = await readFile(this.keyFile)
-    if (this.key.length !== 32) throw new Error('密钥文件长度必须为 32 字节（hex 64 位字符串请转二进制）')
-    return this.key
+    let lastLen = -1
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const buf = await readFile(this.keyFile)
+      if (buf.length === 32) { this.key = buf; return buf }
+      lastLen = buf.length
+      // 极短退避：等待创建方写完（正常情况下一轮即成功）
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)))
+    }
+    throw new Error(
+      `密钥文件长度必须为 32 字节（当前 ${lastLen}）。文件：${this.keyFile}。`
+      + '若该文件来自备份或迁移，请确认未被截断；hex 形式的 64 位密钥请先转为二进制。',
+    )
   }
 
   /** 加密 Buffer → 带头的密文 Buffer。 */
@@ -150,9 +191,22 @@ export class StorageService extends Service {
   async writeBuffer(file: string, data: Buffer): Promise<void> {
     const out = this.enabled ? await this.encryptBuffer(data) : data
     await mkdir(dirname(file), { recursive: true })
-    const tmp = file + '.tmp'
+    // D7：临时名必须唯一（pid + 随机后缀）。此前固定为 file+'.tmp'，
+    // 两个并发写同一目标会共用临时文件 → 内容错乱或 rename 竞争失败。
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
     await writeFile(tmp, out)
-    await rename(tmp, file)
+    let lastErr: unknown = null
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rename(tmp, file)
+        return
+      } catch (e) {
+        lastErr = e
+        await new Promise((r) => setTimeout(r, 20 * (attempt + 1)))
+      }
+    }
+    await rm(tmp, { force: true }).catch(() => { /* 清理失败不掩盖原错误 */ })
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
   }
 
   /* ---------- 流式（上传大文件 / 下载 / 预览原流） ---------- */
@@ -242,18 +296,39 @@ export class StorageService extends Service {
     return Buffer.concat([head, iv, body, tag])
   }
 
-  /** 解析审计加密块文件 → 明文行数组（损坏块跳过；兼容旧明文 JSONL）。
-   *  块格式：magic(8) + len(4, iv+body+tag 长) + iv(12) + body + tag(16)。 */
-  async auditDecryptAll(file: string): Promise<string[]> {
+  /**
+   * 解析审计加密块文件，返回明文行 + 【完整性统计】。
+   *
+   * 块格式：magic(8) + len(4, = iv+body+tag 长) + iv(12) + body + tag(16)。
+   *
+   * 为什么返回统计而非仅行数组：2026-09-05 的 446MB 事故期间，损坏是
+   * 「不可见」的——坏块被静默跳过，查询只是少返回几条，管理员毫无察觉，
+   * 直到文件膨胀到几百 MB 才被发现。因此这里必须把「有多少块坏了」
+   * 一路传递到调用方，让损坏可以被看见、被告警。
+   */
+  async auditScan(file: string): Promise<{
+    lines: string[]
+    totalBlocks: number
+    okBlocks: number
+    badBlocks: number
+    /** 解析提前终止时的剩余字节数（>0 说明结构断裂，后面还有数据但读不了） */
+    trailingBytes: number
+    /** 文件是否为加密块格式（false = 旧明文 JSONL） */
+    encrypted: boolean
+  }> {
     const data = await readFile(file).catch(() => null)
-    if (!data) return []
+    if (!data) {
+      return { lines: [], totalBlocks: 0, okBlocks: 0, badBlocks: 0, trailingBytes: 0, encrypted: false }
+    }
     // 兼容旧明文 JSONL
     if (!(data.length >= 8 && data.subarray(0, 8).equals(this.auditMagic))) {
-      return data.toString('utf8').split('\n').filter((l) => l.trim() !== '')
+      const lines = data.toString('utf8').split('\n').filter((l) => l.trim() !== '')
+      return { lines, totalBlocks: lines.length, okBlocks: lines.length, badBlocks: 0, trailingBytes: 0, encrypted: false }
     }
     const key = await this.ensureKey()
-    const out: string[] = []
+    const lines: string[] = []
     let off = 0
+    let bad = 0
     while (off + 12 <= data.length) {
       const magicOk = data.subarray(off, off + 8).equals(this.auditMagic)
       if (!magicOk) break
@@ -267,11 +342,24 @@ export class StorageService extends Service {
       try {
         const decipher = createDecipheriv('aes-256-gcm', key, iv)
         decipher.setAuthTag(tag)
-        out.push(Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8'))
-      } catch { /* 损坏块跳过 */ }
+        lines.push(Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8'))
+      } catch { bad++ } // 解密失败：计为坏块，不再静默
       off = payloadEnd
     }
-    return out
+    const total = lines.length + bad
+    return {
+      lines,
+      totalBlocks: total,
+      okBlocks: lines.length,
+      badBlocks: bad,
+      trailingBytes: data.length - off,
+      encrypted: true,
+    }
+  }
+
+  /** 解析审计加密块文件 → 明文行数组（兼容旧签名；需要统计信息请用 auditScan）。 */
+  async auditDecryptAll(file: string): Promise<string[]> {
+    return (await this.auditScan(file)).lines
   }
 
   /* ---------- 迁移（明文 → 密文） ---------- */

@@ -13,6 +13,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
@@ -32,18 +33,30 @@ interface Pub {
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const FILE = join(rootDir, 'data', 'publish.json')
 
-async function load(): Promise<Pub[]> {
+/* D10：发布码是免登录读取凭据，必须加密落盘（此前为明文）。 */
+type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }
+
+async function load(storage: StorageLike): Promise<Pub[]> {
   if (!existsSync(FILE)) return []
-  try { return JSON.parse(await readFile(FILE, 'utf8')) as Pub[] } catch { return [] }
+  try { return JSON.parse(await storage.readText(FILE)) as Pub[] } catch { return [] }
 }
-async function save(list: Pub[]): Promise<void> {
-  await mkdir(dirname(FILE), { recursive: true })
-  await writeFile(FILE, JSON.stringify(list, null, 2), 'utf8')
+async function save(storage: StorageLike, list: Pub[]): Promise<void> {
+  await storage.writeText(FILE, JSON.stringify(list, null, 2))
 }
-function genCode(): string {
+/**
+ * S7 安全修复：发布码等同于「免登录读取凭据」，必须用密码学随机源。
+ * 原实现用 Math.random()（非 CSPRNG），12 位 ≈ 60 bit（原 8 位 ≈ 39.6 bit）。
+ */
+function genCode(len = 12): string {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789'
   let s = ''
-  for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)]
+  while (s.length < len) {
+    for (const b of randomBytes(len * 2)) {
+      if (b >= 256 - (256 % chars.length)) continue // 拒绝采样，保证均匀
+      s += chars[b % chars.length]
+      if (s.length >= len) break
+    }
+  }
   return s
 }
 
@@ -62,7 +75,7 @@ export function apply(ctx: Context): void {
     if (req.method === 'DELETE') {
       const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
       const code = url.searchParams.get('code') ?? ''
-      const list = await load()
+      const list = await load(ctx.storage)
       const hit = list.find(p => p.code === code)
       if (!hit) return json(res, 404, { ok: false, error: '发布不存在' })
       if (hit.createdBy !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅创建者或管理员可撤销' })
@@ -79,7 +92,7 @@ export function apply(ctx: Context): void {
     if (extname(path).toLowerCase() !== '.html') return json(res, 400, { ok: false, error: '仅支持 .html 页面发布' })
     const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文件不存在' })
-    const list = await load()
+    const list = await load(ctx.storage)
     // 同一文件重复发布 → 复用旧链接
     const existing = list.find(p => p.project === project && p.path === path)
     if (existing) return json(res, 200, { ok: true, code: existing.code, url: '/pub?code=' + existing.code, reused: true })
@@ -93,7 +106,7 @@ export function apply(ctx: Context): void {
       createdAt: Date.now(),
       expiresAt: expiresHours > 0 ? Date.now() + expiresHours * 3600 * 1000 : null,
     })
-    await save(list)
+    await save(ctx.storage, list)
     json(res, 200, { ok: true, code, url: '/pub?code=' + code, reused: false })
   }, 'publish')
 
@@ -101,7 +114,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/publish/list', async (_req, res) => {
     const u = svc.requireUser(_req, res)
     if (!u) return
-    const list = await load()
+    const list = await load(ctx.storage)
     const mine = u.role === 'admin' ? list : list.filter(p => p.createdBy === u.username)
     json(res, 200, { ok: true, publishes: mine.map(p => ({ ...p, url: '/pub?code=' + p.code })) })
   }, 'publish-list')
@@ -113,7 +126,7 @@ export function apply(ctx: Context): void {
   svc.route('/pub', async (req, res) => {
     const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
     const code = url.searchParams.get('code') ?? ''
-    const list = await load()
+    const list = await load(ctx.storage)
     const pub = list.find(p => p.code === code)
     if (!pub) return json(res, 404, { ok: false, error: '链接不存在或已撤销' })
     if (pub.expiresAt !== null && Date.now() > pub.expiresAt) return json(res, 410, { ok: false, error: '链接已过期' })
@@ -122,7 +135,17 @@ export function apply(ctx: Context): void {
     const html = await ctx.storage.readText(target).catch(() => '')
     const name = pub.path.split('/').pop() || 'page'
     const body = Buffer.from(html, 'utf8')
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'content-length': body.length, 'x-pub-name': encodeURIComponent(name) })
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      // S2 安全修复：发布页是【免登录 + 同源】页面，若不沙箱化，页面内脚本可读取
+      // 同源 localStorage 中的会话 token（privhub_token）→ 任意访客可接管管理员账号。
+      // 因此禁用脚本、禁止同源访问，仅放行图片与内联样式（md→HTML 页面所需）。
+      'content-security-policy': "default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline' 'self'; font-src 'self' data:; sandbox",
+      'content-length': body.length,
+      'x-pub-name': encodeURIComponent(name),
+    })
     res.end(body)
   }, 'pub-view')
 }

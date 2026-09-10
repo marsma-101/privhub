@@ -22,14 +22,38 @@ function json(res: { writeHead: (n: number, h: Record<string, string>) => void; 
   res.end(payload)
 }
 
-/** 读取请求体（内联：规避 tsx CJS 混编无法解析 core 相对导入）。 */
-async function readBody(req: any): Promise<string> {
+/** 请求体上限（与 office 写入契约一致：20MB 足够覆盖文本/表格内容）。 */
+const MAX_BODY = 20 * 1024 * 1024
+
+/**
+ * 读取请求体（内联：规避 tsx CJS 混编无法解析 core 相对导入）。
+ *
+ * S1：必须带上限。web-server 的 content-length 预检对 chunked 请求无效
+ * （拿不到长度），此处是唯一兜底；无上限时已认证用户可发 chunked 大包打爆内存。
+ */
+async function readBody(req: any, max: number = MAX_BODY): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > max) {
+        const err: any = new Error('请求体过大（上限 ' + Math.floor(max / 1024 / 1024) + 'MB）')
+        err.statusCode = 413
+        req.destroy()
+        reject(err)
+        return
+      }
+      chunks.push(c)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
+}
+
+/** 请求体错误 → 恰当的 HTTP 状态（413 体积超限 / 400 格式错误）。 */
+function bodyStatus(e: unknown): number {
+  return (e as { statusCode?: number } | null)?.statusCode === 413 ? 413 : 400
 }
 
 export function apply(ctx: Context): void {
@@ -66,7 +90,7 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(req, res)
     if (!u) return
     let body: any
-    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    try { body = JSON.parse(await readBody(req)) } catch (e) { return json(res, bodyStatus(e), { ok: false, error: bodyStatus(e) === 413 ? 'request too large' : 'invalid json' }) }
     const project = String(body.project ?? '')
     const path = String(body.path ?? '')
     const content = body.content
@@ -87,7 +111,7 @@ export function apply(ctx: Context): void {
     if (!u) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     let body: any
-    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    try { body = JSON.parse(await readBody(req)) } catch (e) { return json(res, bodyStatus(e), { ok: false, error: bodyStatus(e) === 413 ? 'request too large' : 'invalid json' }) }
     const project = String(body.project ?? '')
     const path = String(body.path ?? '')
     if (project === '' || path === '') return json(res, 400, { ok: false, error: '参数不完整' })

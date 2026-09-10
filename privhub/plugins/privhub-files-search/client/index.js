@@ -11,13 +11,25 @@
 
 const { api, nav, fileIcon } = window.PrivHub
 
+/* S3 安全修复：片段来自项目内文件原文（用户可控），进入 v-html 前必须转义，
+ * 否则上传含 <img onerror=...> 的文本文件 → 任何人全文搜索命中即执行脚本。
+ * 做法：先按原文定位关键词（保证高亮位置正确），再对三段分别转义。 */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
 function hl(snippet, q) {
   if (!snippet) return ''
+  const raw = String(snippet)
   const terms = (q || '').trim().toLowerCase()
-  if (!terms) return snippet
-  const i = snippet.toLowerCase().indexOf(terms)
-  if (i < 0) return snippet
-  return snippet.slice(0, i) + '<mark style="background:rgba(230,180,60,.35);border-radius:3px;padding:0 2px">' + snippet.slice(i, i + terms.length) + '</mark>' + snippet.slice(i + terms.length)
+  const i = terms ? raw.toLowerCase().indexOf(terms) : -1
+  if (i < 0) return esc(raw)
+  return esc(raw.slice(0, i))
+    + '<mark style="background:rgba(230,180,60,.35);border-radius:3px;padding:0 2px">'
+    + esc(raw.slice(i, i + terms.length)) + '</mark>'
+    + esc(raw.slice(i + terms.length))
 }
 
 const SearchView = {

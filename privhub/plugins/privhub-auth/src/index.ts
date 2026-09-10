@@ -8,11 +8,36 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, tokenOf, hashPassword, verifyPassword } from '../../privhub-core/src/index'
 
+const rootDirForSettings = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
+/**
+ * S11：读取「是否允许自助注册」开关。
+ *
+ * 必须经 ctx.storage 读取（透明解密 + 兼容明文）——settings.json 由
+ * shell-settings 加密落盘（PHENC1），裸 readFile 会解析失败。
+ * 读取失败按【关闭】处理（fail-closed），并通过 logger 显式告警，
+ * 避免「开关打不开」这种静默失败难以定位。
+ */
+async function selfRegisterAllowed(ctx: Context): Promise<boolean> {
+  const file = join(rootDirForSettings, 'data', 'settings.json')
+  if (!existsSync(file)) return false
+  try {
+    const raw = await ctx.storage.readText(file)
+    const parsed = JSON.parse(raw) as { allowSelfRegister?: boolean }
+    return parsed.allowSelfRegister === true
+  } catch (e) {
+    ctx.logger?.warn?.('[auth] 读取 settings.json 失败，自助注册按关闭处理：' + (e instanceof Error ? e.message : String(e)))
+    return false
+  }
+}
+
 export const name = 'privhub-auth'
-export const inject = ['privhub', 'audit', 'eventBus']
+export const inject = ['privhub', 'audit', 'eventBus', 'storage']
 
 export function apply(ctx: Context): void {
   /* E1 事件声明 */
@@ -53,9 +78,12 @@ export function apply(ctx: Context): void {
     void audit(username, 'login', '')
   }, 'login')
 
-  /* 注册 → 直接建为普通用户 */
+  /* 注册 → 直接建为普通用户（S11：受 allowSelfRegister 开关控制，默认关闭） */
   svc.route('/privhub/api/register', async (req, res) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    if (!await selfRegisterAllowed(ctx)) {
+      return json(res, 403, { ok: false, error: '本系统已关闭自助注册，请联系管理员开通账号或使用邀请码加入项目' })
+    }
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const username = String(body.username ?? '').trim()

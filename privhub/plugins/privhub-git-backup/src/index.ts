@@ -26,7 +26,7 @@ import { json, readBody } from '../../privhub-core/src/index'
 const execFileP = promisify(execFile)
 
 export const name = 'privhub-git-backup'
-export const inject = ['storage', 'privhub']
+export const inject = ['storage', 'privhub', 'acl']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const DATA_FILES = join(rootDir, 'data-files')
@@ -37,6 +37,23 @@ const POLL_MS = 60 * 1000
 async function git(cwd: string, args: string[]): Promise<string> {
   const r = await execFileP('git', args, { cwd, timeout: 20000 })
   return r.stdout
+}
+
+/**
+ * D11：显式探测 git 是否可用。
+ * 原实现强依赖外部 git 二进制，缺失时每 60s 静默失败（只写 logger.error），
+ * 管理员会误以为「备份在正常工作」。这里探测结果供启动告警与前端状态展示。
+ */
+let gitAvailable: boolean | null = null
+async function probeGit(): Promise<boolean> {
+  if (gitAvailable !== null) return gitAvailable
+  try {
+    await execFileP('git', ['--version'], { timeout: 5000 })
+    gitAvailable = true
+  } catch {
+    gitAvailable = false
+  }
+  return gitAvailable
 }
 
 /** 初始化仓库 + 首次全量镜像 */
@@ -67,6 +84,20 @@ async function walkFiles(dir: string): Promise<string[]> {
   return out
 }
 
+/**
+ * D11：系统数据（账号 / 权限 / 标签 / 版本 / 审计等）此前完全不在备份范围内——
+ * 用户文件能回滚，但误删账号或 ACL 规则就只能重建。
+ * 这些文件本就经 svc-storage 加密，直接按字节镜像即可，仍然不会被宿主机读明文。
+ * 注意：secret.key 单独排除（密钥不应进备份仓库，应离线另行保管）。
+ */
+const DATA_DIR = join(rootDir, 'data')
+const SYSTEM_BACKUP_FILES = [
+  'users.json', 'acl.json', 'meta.json', 'templates.json', 'trash.json',
+  'versions.json', 'favorites.json', 'recent.json', 'settings.json',
+  'comments.json', 'invites.json', 'publish.json', 'office-api.json',
+  'rag-curation.json', 'rag-vectorize.json', 'model.json',
+]
+
 /** 镜像同步：data-files → mirror（增量 copy），返回变更数 */
 async function syncMirror(): Promise<number> {
   let changed = 0
@@ -88,6 +119,20 @@ async function syncMirror(): Promise<number> {
       }
     }
   }
+  // 系统数据（D11）
+  const sysDstRoot = join(MIRROR, '_system')
+  for (const name of SYSTEM_BACKUP_FILES) {
+    const src = join(DATA_DIR, name)
+    if (!existsSync(src)) continue
+    const dst = join(sysDstRoot, name)
+    const [ss, ds] = await Promise.all([stat(src), existsSync(dst) ? stat(dst) : Promise.resolve(null)])
+    if (!ds || ss.mtimeMs !== ds.mtimeMs || ss.size !== ds.size) {
+      await mkdir(sysDstRoot, { recursive: true })
+      await copyFile(src, dst)
+      changed++
+    }
+  }
+  // 注意：不复刻删除（保留历史版本由 git 提交承担），但显式提示不做源删除同步。
   return changed
 }
 
@@ -118,14 +163,27 @@ export function apply(ctx: Context): void {
     resolveReal: (project: string, relPath: string) => Promise<string | null>
   }
 
-  /* 启动即确保仓库存在 */
-  void ensureRepo().catch((e) => ctx.logger.error('[gitbackup] 仓库初始化失败: ' + (e instanceof Error ? e.message : String(e))))
-
-  /* 自动备份轮询：每 60s 若有变更则提交 */
-  const timer = setInterval(() => {
-    void commitAll('auto: 文件变更备份').catch((e) => ctx.logger.error('[gitbackup] 自动备份失败: ' + (e instanceof Error ? e.message : String(e))))
-  }, POLL_MS)
-  ctx.on('dispose', () => clearInterval(timer))
+  /* D11：启动探测 git。缺失时【显著告警并关闭定时器】，
+   * 而不是每 60 秒静默失败——"以为有备份、实际没有"比没有备份更危险。 */
+  let timer: ReturnType<typeof setInterval> | null = null
+  void (async () => {
+    const has = await probeGit()
+    if (!has) {
+      const msg = '[gitbackup] 未检测到 git，自动备份已【停用】。'
+        + '请安装 git 并确保其在 PATH 中，或改用其它备份方式。'
+      try { ctx.logger?.error?.(msg) } catch { /* logger 不可用 */ }
+      console.error(msg)
+      return
+    }
+    try { await ensureRepo() } catch (e) {
+      ctx.logger?.error?.('[gitbackup] 仓库初始化失败: ' + (e instanceof Error ? e.message : String(e)))
+    }
+    timer = setInterval(() => {
+      void commitAll('auto: 文件变更备份').catch((e) => ctx.logger?.error?.('[gitbackup] 自动备份失败: ' + (e instanceof Error ? e.message : String(e))))
+    }, POLL_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+  })()
+  ctx.on('dispose', () => { if (timer) clearInterval(timer) })
 
   /* 手动/即时备份 */
   svc.route('/privhub/api/gitbackup/commit', async (req, res) => {
@@ -142,6 +200,20 @@ export function apply(ctx: Context): void {
       json(res, 500, { ok: false, error: e instanceof Error ? e.message : '备份失败' })
     }
   }, 'gitbackup-commit')
+
+  /* D11：备份可用性状态（前端/运维可见，避免"以为在备份"） */
+  svc.route('/privhub/api/gitbackup/status', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    const has = await probeGit()
+    json(res, 200, {
+      ok: true,
+      gitAvailable: has,
+      autoBackup: has && timer !== null,
+      scope: { files: 'data-files/', system: SYSTEM_BACKUP_FILES },
+      note: has ? undefined : '未检测到 git，自动备份未运行',
+    })
+  }, 'gitbackup-status')
 
   /* 历史 */
   svc.route('/privhub/api/gitbackup/history', async (req, res) => {
@@ -175,7 +247,13 @@ export function apply(ctx: Context): void {
     const project = String(body.project ?? '')
     const path = String(body.path ?? '')
     const commit = String(body.commit ?? '')
+    // S10 修复：commit 会作为参数传给 git，必须校验格式（防选项注入 / 异常输入）。
+    // 注：用的是 execFile 无 shell，故非命令注入；但以 '--' 开头的值仍会被 git 当选项解析。
+    if (!/^[0-9a-fA-F]{7,40}$/.test(commit)) return json(res, 400, { ok: false, error: 'commit 格式无效' })
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+    // S10 修复：回滚 = 覆盖写文件，必须与其它写路径一致地经过文件级 ACL 裁决。
+    const aclD = ctx.acl?.can(u, 'edit', project, path)
+    if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
     const target = await svc.resolveReal(project, path)
     if (target === null) return json(res, 404, { ok: false, error: '文件不存在' })
     try {

@@ -45,7 +45,11 @@ const S = {
 }
 
 const fmtDate = (n) => (n ? new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—')
-const badge = (text, color) => `<span style="${S.badge}background:${color}22;color:${color};border:1px solid ${color}55">${text}</span>`
+/* S4 安全修复：badge 经 v-html 渲染，text 可能来自文件 frontmatter（用户可控），必须转义。 */
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+))
+const badge = (text, color) => `<span style="${S.badge}background:${color}22;color:${color};border:1px solid ${color}55">${esc(text)}</span>`
 
 /* ================= 帮助体系（ⓘ 引导） ================= */
 

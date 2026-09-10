@@ -26,7 +26,7 @@ import { join, extname, basename, dirname } from 'node:path'
 import { readdir, stat, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
-import { VectorStore } from './vec'
+import { VectorStore, docKeyOf } from './vec'
 
 export const name = 'privhub-svc-rag'
 export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'model', 'office', 'search', 'acl']
@@ -154,8 +154,20 @@ function versionFamily(name: string): string {
 }
 
 /** 结构感知分块：md 按标题族优先；其余按段落聚合；块间重叠尾窗 */
+/**
+ * D9：从向量表的 chunk_id（形如 `<docKey>#cN`）反查真实 docId。
+ * 旧格式（`project::path#cN`）在升级后无法反查，返回 null 由调用方丢弃。
+ */
+function docIdOfChunk(chunkId: string, keyToDocId: Map<string, string>): string | null {
+  const idx = chunkId.lastIndexOf('#')
+  if (idx <= 0) return null
+  return keyToDocId.get(chunkId.slice(0, idx)) ?? null
+}
+
 function chunkText(text: string, docId: string, project: string, path: string, type: string, author: string, updated: number): ChunkRec[] {
   const meta = { project, path, type, author, updated }
+  // D9：chunkId 进向量表（明文 SQLite），因此只放 docId 的摘要，不放路径
+  const docKey = docKeyOf(docId)
   const blocks: string[] = []
   if (type === 'markdown' || /\.md$/i.test(path)) {
     // 按 ##/### 标题切分；保留标题行在块首
@@ -180,14 +192,14 @@ function chunkText(text: string, docId: string, project: string, path: string, t
   const out: ChunkRec[] = []
   let seq = 0
   for (let b of blocks) {
-    if (b.length <= CHUNK_MAX) { out.push({ docId, chunkId: docId + '#c' + out.length, seq: seq++, text: b, meta }); continue }
+    if (b.length <= CHUNK_MAX) { out.push({ docId, chunkId: docKey + '#c' + out.length, seq: seq++, text: b, meta }); continue }
     let pos = 0
     while (pos < b.length) {
       let end = pos + CHUNK_MAX
       // 尽量在换行处断开
       if (end < b.length) { const nl = b.lastIndexOf('\n', end); if (nl > pos + CHUNK_MAX / 2) end = nl }
       const part = b.slice(pos, Math.min(end, b.length)).trim()
-      if (part) out.push({ docId, chunkId: docId + '#c' + out.length, seq: seq++, text: part, meta })
+      if (part) out.push({ docId, chunkId: docKey + '#c' + out.length, seq: seq++, text: part, meta })
       const next = Math.max(pos + 1, end - CHUNK_OVERLAP)
       if (next <= pos) break
       pos = next
@@ -276,7 +288,10 @@ async function parseToText(ctx: Context, project: string, relPath: string, absPa
     try { raw = ok.decode(buf) } catch { raw = new TextDecoder('gbk').decode(buf) }
     const { meta, body } = parseFrontmatter(raw)
     if (meta.rag === 'false') return null // 文档自声明不进语料
-    const type = ext === 'md' || ext === 'markdown' ? 'markdown' : (meta.type || 'text')
+    // S4 安全修复：meta.type 来自文件 frontmatter（用户可控）且会经前端 v-html 渲染，
+    // 必须归一化到安全字符集，异常值降级为 text。
+    const rawType = ext === 'md' || ext === 'markdown' ? 'markdown' : (meta.type || 'text')
+    const type = /^[A-Za-z0-9_-]{1,16}$/.test(rawType) ? rawType : 'text'
     return { text: cleanText(meta.title ? `# ${meta.title}\n\n` : '') + cleanText(body), type, scanOnly: false }
   }
   if (OFFICE_EXTS.has(ext)) {
@@ -374,6 +389,9 @@ async function removeDoc(ctx: Context, project: string, path: string, manifestRe
   }
   const f = chunkFileOf(docId)
   if (existsSync(f)) await ctx.storage.writeText(f, '').catch(() => {})
+  // 同时清理向量表中的块。仅在向量库已存在时操作，
+  // 避免为从不使用向量检索的部署凭空创建 db 文件。
+  try { if (vecStore) vecStore.removeDoc(docId) } catch { /* 向量库不可用时忽略 */ }
 }
 
 /** 全量重建：扫描 dataRoot 所有项目（跳过隐藏）；幂等；移除已消失文档的语料 */
@@ -794,13 +812,22 @@ async function ragSearch(ctx: Context, user: { username: string; role: string },
     const hits = await ctx.search.searchFulltext(q, collection && collection !== 'all' ? { project: collection } : {}, visible)
     for (const h of hits) if (!h.isDir) bmHits.push(h)
   } catch { /* BM25 不可用不影响向量通道 */ }
-  // 源2：向量（全库 topK×5 → 按 scope 前缀过滤）
+  // 源2：向量（全库 topK×6 → 按 scope 过滤）
+  // D9：向量表内的 chunk_id 是 docId 的摘要，需经 manifest 反查回真实 docId。
+  const keyToDocId = new Map<string, string>()
+  for (const d of Object.values(manifest)) keyToDocId.set(docKeyOf(d.docId), d.docId)
+  const scopeDocs = new Set(
+    Object.values(manifest).filter((d) => scope.includes(d.project)).map((d) => d.docId),
+  )
   let vecHits: Array<{ chunkId: string; distance: number }> = []
   const store = storeOf()
   if (store.dims()) {
     const emb = await ctx.model.embed(ctx, [q]).catch(() => null)
     if (emb && emb[0] && emb[0].length === store.dims()) {
-      vecHits = store.search(Float32Array.from(emb[0]), topK * 6).filter((h) => scope.some((p) => h.chunkId.startsWith(p + '::')))
+      vecHits = store.search(Float32Array.from(emb[0]), topK * 6).filter((h) => {
+        const docId = docIdOfChunk(h.chunkId, keyToDocId)
+        return docId !== null && scopeDocs.has(docId)
+      })
     }
   }
   // 文档级 RRF 融合
@@ -813,8 +840,8 @@ async function ragSearch(ctx: Context, user: { username: string; role: string },
   bmHits.forEach((h, i) => push(h.project + '::' + h.path, i + 1))
   const vecByDoc = new Map<string, Array<{ chunkId: string; distance: number }>>()
   vecHits.forEach((h, i) => {
-    const idx = h.chunkId.lastIndexOf('#')
-    const docId = idx > 0 ? h.chunkId.slice(0, idx) : h.chunkId
+    const docId = docIdOfChunk(h.chunkId, keyToDocId)
+    if (docId === null) return // 摘要无法反查（旧格式残留）→ 丢弃该命中
     push(docId, i + 1)
     const list = vecByDoc.get(docId) ?? []
     list.push(h)

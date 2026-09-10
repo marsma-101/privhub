@@ -333,7 +333,10 @@ const TemplateDoc = {
             <div v-if="editTpl" style="margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:12px">
               <div class="field"><label>名称</label><input v-model="editTpl.name" style="width:100%;padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)" /></div>
               <div class="field"><label>描述</label><input v-model="editTpl.description" style="width:100%;padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)" /></div>
-              <div class="field"><label>内容（{{date}} 会被替换为当天日期）</label><textarea v-model="editTpl.content" rows="8" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-family:Consolas,monospace;font-size:13px"></textarea></div>
+              <!-- 显示 bug 修复：此处意在【字面展示】占位符 {{date}}，但 Vue 会把它当插值编译，
+                   而该组件并无 date 变量 → 渲染成空白，用户看不到「模板里要写 {{date}}」这条关键提示。
+                   用 v-pre 让该 label 跳过编译。 -->
+              <div class="field"><label v-pre>内容（{{date}} 会被替换为当天日期）</label><textarea v-model="editTpl.content" rows="8" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-family:Consolas,monospace;font-size:13px"></textarea></div>
               <div style="display:flex;gap:8px">
                 <button class="btn btn-primary" style="width:auto" @click="saveTpl">保存模板</button>
                 <button class="btn btn-ghost" @click="cancelEdit">取消</button>

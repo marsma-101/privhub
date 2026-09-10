@@ -38,13 +38,15 @@ type Store = Record<string, Comment[]>
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const FILE = join(rootDir, 'data', 'comments.json')
 
-async function load(): Promise<Store> {
+/* D10：批注内容属业务数据，必须加密落盘（此前为明文）。 */
+type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }
+
+async function load(storage: StorageLike): Promise<Store> {
   if (!existsSync(FILE)) return {}
-  try { return JSON.parse(await readFile(FILE, 'utf8')) as Store } catch { return {} }
+  try { return JSON.parse(await storage.readText(FILE)) as Store } catch { return {} }
 }
-async function save(store: Store): Promise<void> {
-  await mkdir(dirname(FILE), { recursive: true })
-  await writeFile(FILE, JSON.stringify(store, null, 2), 'utf8')
+async function save(storage: StorageLike, store: Store): Promise<void> {
+  await storage.writeText(FILE, JSON.stringify(store, null, 2))
 }
 
 export function apply(ctx: Context): void {
@@ -60,7 +62,7 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(req, res)
     if (!u) return
     const url = parseQuery(req)
-    const store = await load()
+    const store = await load(ctx.storage)
     if (req.method === 'GET') {
       const project = url.searchParams.get('project') ?? ''
       const path = url.searchParams.get('path') ?? ''
@@ -79,7 +81,7 @@ export function apply(ctx: Context): void {
       if (!hit) return json(res, 404, { ok: false, error: '评论不存在' })
       if (hit.author !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅作者或管理员可删除' })
       store[key] = arr.filter(c => c.id !== id)
-      await save(store)
+      await save(ctx.storage, store)
       json(res, 200, { ok: true })
       return
     }
@@ -107,7 +109,7 @@ export function apply(ctx: Context): void {
       }
       arr.push(c)
       store[key] = arr
-      await save(store)
+      await save(ctx.storage, store)
       json(res, 200, { ok: true, comment: c })
       return
     }
@@ -124,12 +126,12 @@ export function apply(ctx: Context): void {
     const text = String(body.text ?? '').trim()
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     if (!text) return json(res, 400, { ok: false, error: '回复内容不能为空' })
-    const store = await load()
+    const store = await load(ctx.storage)
     const arr = store[project + '|' + path] || []
     const c = arr.find(x => x.id === String(body.id ?? ''))
     if (!c) return json(res, 404, { ok: false, error: '评论不存在' })
     c.replies.push({ author: u.username, at: Date.now(), text })
-    await save(store)
+    await save(ctx.storage, store)
     json(res, 200, { ok: true })
   }, 'comments-reply')
 
@@ -143,12 +145,12 @@ export function apply(ctx: Context): void {
     const status = String(body.status ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     if (!['待处理', '处理中', '已解决'].includes(status)) return json(res, 400, { ok: false, error: 'status 无效' })
-    const store = await load()
+    const store = await load(ctx.storage)
     const arr = store[project + '|' + path] || []
     const c = arr.find(x => x.id === String(body.id ?? ''))
     if (!c) return json(res, 404, { ok: false, error: '评论不存在' })
     c.status = status
-    await save(store)
+    await save(ctx.storage, store)
     json(res, 200, { ok: true })
   }, 'comments-status')
 }

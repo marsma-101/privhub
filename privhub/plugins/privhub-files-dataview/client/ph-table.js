@@ -7,11 +7,37 @@ class PhTable extends HTMLElement {
   }
   get _project() { return this.getAttribute('project') || '' }
   get _src() { return this.getAttribute('src') || '' }
+
+  /**
+   * 统一请求封装。
+   * 本组件以独立 <script> 加载，取不到骨架的 window.PrivHub.api，
+   * 因此在此复刻其关键行为：401 时明确提示「登录已过期」并引导重新登录，
+   * 而不是只显示一句「加载失败」让用户无从下手。
+   */
+  async _req(path, opts = {}) {
+    const tok = localStorage.getItem('privhub_token') || ''
+    const r = await fetch(path, {
+      ...opts,
+      headers: { authorization: 'Bearer ' + tok, ...(opts.headers || {}) },
+    })
+    if (r.status === 401) {
+      this.showStatus('⚠ 登录已过期，请重新登录后刷新页面', true)
+      this._expired = true
+      return null
+    }
+    if (r.status === 403) {
+      const j = await r.json().catch(() => ({}))
+      this.showStatus('🚫 ' + (j.error || '无权限访问该文件'), true)
+      return null
+    }
+    return r
+  }
+
   async load() {
     if (!this._src) { this.innerHTML = '<p style="color:#c00">缺少 src 属性</p>'; return }
-    const tok = localStorage.getItem('privhub_token') || ''
     try {
-      const r = await fetch('/privhub/api/office/read?project=' + encodeURIComponent(this._project) + '&path=' + encodeURIComponent(this._src), { headers: { authorization: 'Bearer ' + tok } })
+      const r = await this._req('/privhub/api/office/read?project=' + encodeURIComponent(this._project) + '&path=' + encodeURIComponent(this._src))
+      if (!r) return
       const j = await r.json()
       if (j.ok && j.content && j.content.sheets && j.content.sheets[0]) {
         this._rows = j.content.sheets[0].rows || []
@@ -51,13 +77,13 @@ class PhTable extends HTMLElement {
     for (const tr of tbl.querySelectorAll('tr')) {
       rows.push([...tr.querySelectorAll('th,td')].map((c) => c.innerText))
     }
-    const tok = localStorage.getItem('privhub_token') || ''
     try {
-      const r = await fetch('/privhub/api/office/write', {
+      const r = await this._req('/privhub/api/office/write', {
         method: 'POST',
-        headers: { authorization: 'Bearer ' + tok, 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ project: this._project, path: this._src, content: rows }),
       })
+      if (!r) return
       const j = await r.json()
       if (j.ok) this.showStatus('✅ 已保存 ' + new Date().toLocaleTimeString())
       else this.showStatus('❌ ' + (j.error || '保存失败'), true)

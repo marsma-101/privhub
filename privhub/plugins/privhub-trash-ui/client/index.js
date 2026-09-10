@@ -3,16 +3,14 @@
  *
  * 消费骨架桥 nav（trashList/trashView/fmtTime）与 bus：
  *   - listen trash:changed → 刷新列表与角标
- *   - 角标计数 = 待恢复条目数（通过 manifest barItems.badge 回传不行，
- *     改为监听 trash:changed 后更新 window.PrivHub.trashBadge，骨架轮询渲染）
+ *   - 角标计数：写入骨架的反应式 window.PrivHub.badges.trash
+ *     （由 shell 的 app-iconbar 组件读取渲染；此前曾写 window.PrivHub.trashBadge
+ *      这个无任何读取方的死变量，导致角标看起来「始终为 0」）
  *
  * @module privhub-trash-ui/client
  */
 
-const { api, nav, bus } = window.PrivHub
-
-/* 角标：骨架图标栏渲染 barItems.badge 为响应式值（见骨架 openBarItem/模板） */
-window.PrivHub.trashBadge = 0
+const { nav, bus } = window.PrivHub
 
 const TrashView = {
   name: 'trash-view',
@@ -29,9 +27,21 @@ const TrashView = {
     async restore(t) { await nav.restoreTrash(t) },
     async purge(t) { await nav.purgeTrash(t) },
     async clean() { await nav.cleanExpiredTrash() },
+    /* 角标口径与骨架 loadTrash 保持一致：
+     * 已选项目 → 该项目条目数（含整项目删除的条目）；未选项目 → 全部可见条目数。
+     * 两处必须用同一规则，否则切换项目时角标会互相覆盖。 */
     updateBadge() {
-      window.PrivHub.badges.trash = this.nav.trashList.length
+      if (!window.PrivHub.badges) return
+      const cur = this.nav.project
+      const list = this.nav.trashList || []
+      window.PrivHub.badges.trash = cur
+        ? list.filter((t) => t.project === cur || t.relPath === '').length
+        : list.length
     },
+  },
+  watch: {
+    // 切换项目时角标口径随之变化
+    'nav.project'() { this.updateBadge() },
   },
   mounted() {
     this._off = bus.on('trash:changed', () => { this.updateBadge() })

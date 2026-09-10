@@ -15,7 +15,7 @@
  * @module privhub-core
  */
 
-import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rmdir, realpath } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rm, realpath } from 'node:fs/promises'
 import { join, resolve, extname, sep, dirname, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
@@ -95,13 +95,63 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-export function readBody(req: IncomingMessage): Promise<string> {
+/** S1：JSON/表单请求体默认上限 16MB（chunked 无 content-length 时由本函数兜底）。 */
+export const MAX_BODY_BYTES = 16 * 1024 * 1024
+
+/** 请求体超限错误（调用方据此回 413 而非 400）。 */
+export class BodyTooLargeError extends Error {
+  readonly statusCode = 413
+  constructor(limit: number) {
+    super(`请求体过大（上限 ${Math.floor(limit / 1024 / 1024)}MB）`)
+    this.name = 'BodyTooLargeError'
+  }
+}
+
+/** 判断错误是否为请求体超限。 */
+export function isBodyTooLarge(e: unknown): boolean {
+  return e instanceof BodyTooLargeError || (typeof e === 'object' && e !== null && (e as { statusCode?: number }).statusCode === 413)
+}
+
+/**
+ * 读取文本请求体（有上限）。
+ * S1：默认 16MB，超限即以 413 语义 reject 并断开，避免无界累积打爆进程内存。
+ * 需要更大体积的路由显式传入 max。
+ */
+export function readBody(req: IncomingMessage, max: number = MAX_BODY_BYTES): Promise<string> {
   return new Promise((ok, reject) => {
+    const limit = max > 0 ? max : MAX_BODY_BYTES
     const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > limit) {
+        req.destroy()
+        reject(new BodyTooLargeError(limit))
+        return
+      }
+      chunks.push(c)
+    })
     req.on('end', () => ok(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
+}
+
+/**
+ * S1：读取并解析 JSON 请求体，失败时**已代为响应**（413 体积超限 / 400 JSON 非法）。
+ * 返回 null 表示已响应，调用方直接 `return`。
+ */
+export async function readJsonBody<T = unknown>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  max?: number,
+): Promise<T | null> {
+  try {
+    return JSON.parse(await readBody(req, max)) as T
+  } catch (e) {
+    if (isBodyTooLarge(e)) { json(res, 413, { ok: false, error: '请求体过大' }); return null }
+    json(res, 400, { ok: false, error: 'invalid json' })
+    return null
+  }
 }
 
 /** 读取原始字节请求体（文件上传用），超限则拒绝并断开。 */
@@ -180,6 +230,8 @@ export class PrivHubStore extends Service {
   readonly trashDir: string
   /** 会话 TTL 毫秒（auth 登录写入、me 滑动续期共用） */
   readonly sessionTtlMs: number
+  /** D4：初始化完成信号——由 apply 赋值，main.ts 在 listen 前 await，避免「空用户表」竞态。 */
+  ready: Promise<void> = Promise.resolve()
 
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'privhub')
@@ -204,6 +256,34 @@ export class PrivHubStore extends Service {
     return u
   }
 
+  /* ---------- 并发控制 ---------- */
+
+  /**
+   * D6：按 key（通常取文件路径）串行化的写队列。
+   *
+   * 背景：单次写盘是原子的（svc-storage 走 tmp+rename），但「读 → 改 → 写」
+   * 这个【序列】不是。两个并发的删除操作会各自读到同一份旧列表、各自写回，
+   * 后者覆盖前者 —— 实体文件已移入 .trash，记录却丢了，
+   * 表现为「文件从界面上彻底消失，既恢复不了也清理不掉」。
+   *
+   * 用法：把整段读改写包进来，不要只锁最后一步的写。
+   *   await svc.withFileLock(file, async () => { const l = await load(); l.push(x); await save(l) })
+   */
+  private readonly fileLocks = new Map<string, Promise<unknown>>()
+
+  async withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.fileLocks.get(key) ?? Promise.resolve()
+    // 无论前一个成功或失败，都继续执行（错误不传染，但顺序不破坏）
+    const run = prev.then(fn, fn)
+    const tail = run.then(() => undefined, () => undefined)
+    this.fileLocks.set(key, tail)
+    void tail.finally(() => {
+      // 仅当自己仍是队尾时清理，避免无界增长
+      if (this.fileLocks.get(key) === tail) this.fileLocks.delete(key)
+    })
+    return run
+  }
+
   /* ---------- 持久化 ---------- */
   async ensureDirs(): Promise<void> {
     await mkdir(this.dataRoot, { recursive: true })
@@ -222,10 +302,22 @@ export class PrivHubStore extends Service {
       await this.ctx.storage.writeText(this.usersFile, JSON.stringify(initial, null, 2))
     }
     const raw = await this.ctx.storage.readText(this.usersFile)
-    const parsed = JSON.parse(raw) as { users: UserRecord[] }
+    let parsed: { users: UserRecord[] }
+    try {
+      parsed = JSON.parse(raw) as { users: UserRecord[] }
+      if (!parsed || !Array.isArray(parsed.users)) throw new Error('users 字段缺失或非数组')
+    } catch (e) {
+      // D5：账号库损坏必须【显著失败】而非静默降级为空。
+      // 若降级为空，所有人都登不上且看不出原因；若继续写入还会覆盖掉可恢复的数据。
+      // 这里原样保留损坏文件，交由运维处理（备份/修复后重启）。
+      throw new Error(
+        `账号文件解析失败（${this.usersFile}）：${e instanceof Error ? e.message : String(e)}。` +
+        '该文件已保持原样未改动，请先备份并人工修复后再启动。',
+      )
+    }
     this.users = new Map()
     for (const u of parsed.users) {
-      this.users.set(u.username, { ...u, projects: u.projects ?? [] })
+      if (u && typeof u.username === 'string') this.users.set(u.username, { ...u, projects: u.projects ?? [] })
     }
   }
 
@@ -457,81 +549,94 @@ export class PrivHubStore extends Service {
     await this.atomicWrite(this.trashFile, JSON.stringify(list, null, 2))
   }
 
-  /** 软删除：把项目内条目移入 .trash，并记一条回收站记录。 */
+  /** 软删除：把项目内条目移入 .trash，并记一条回收站记录。
+   *  D6：整段「读列表 → 追加 → 写回」持锁，否则并发删除会互相覆盖记录。 */
   async moveToTrash(project: string, relPath: string, operator: string): Promise<boolean> {
     const base = resolve(this.dataRoot, project)
     const target = resolve(base, relPath)
     if (target === base || !target.startsWith(base + sep) || !existsSync(target)) return false
-    const s = await stat(target)
-    const isDir = s.isDirectory()
-    const name = basename(target)
-    const id = `${Date.now()}_${randomBytes(4).toString('hex')}`
-    const dest = join(this.trashDir, id + '_' + name)
-    await mkdir(this.trashDir, { recursive: true })
-    await rename(target, dest)
-    const list = await this.loadTrash()
-    list.push({
-      id, project, relPath, name, isDir,
-      deletedBy: operator, deletedAt: Date.now(),
+    return this.withFileLock(this.trashFile, async () => {
+      // 实体移动与记录写入必须同锁内完成，保证两者一致
+      if (!existsSync(target)) return false
+      const s = await stat(target)
+      const isDir = s.isDirectory()
+      const name = basename(target)
+      const id = `${Date.now()}_${randomBytes(4).toString('hex')}`
+      const dest = join(this.trashDir, id + '_' + name)
+      await mkdir(this.trashDir, { recursive: true })
+      await rename(target, dest)
+      const list = await this.loadTrash()
+      list.push({
+        id, project, relPath, name, isDir,
+        deletedBy: operator, deletedAt: Date.now(),
+      })
+      await this.saveTrash(list)
+      return true
     })
-    await this.saveTrash(list)
-    return true
   }
 
-  /** 恢复：从回收站移回原位置。 */
+  /** 恢复：从回收站移回原位置。D6：整段读改写持锁。 */
   async restoreTrash(id: string): Promise<boolean> {
-    const list = await this.loadTrash()
-    const rec = list.find((r) => r.id === id)
-    if (!rec) return false
-    const src = join(this.trashDir, id + '_' + rec.name)
-    if (!existsSync(src)) return false
-    const dest = resolve(this.dataRoot, rec.project, rec.relPath)
-    // 若原位置已有同名，恢复失败（避免覆盖）
-    if (existsSync(dest)) return false
-    if (rec.relPath !== '') {
-      // 普通条目：确保项目目录与上级目录存在；整项目恢复时不能先建空目录（会挡住 rename）
-      await mkdir(resolve(this.dataRoot, rec.project), { recursive: true })
-      await mkdir(dirname(dest), { recursive: true })
-    }
-    await rename(src, dest)
-    await this.saveTrash(list.filter((r) => r.id !== id))
-    return true
-  }
-
-  /** 彻底删除回收站中的一条（物理删除）。 */
-  async purgeTrash(id: string): Promise<boolean> {
-    const list = await this.loadTrash()
-    const rec = list.find((r) => r.id === id)
-    if (!rec) return false
-    const src = join(this.trashDir, id + '_' + rec.name)
-    if (existsSync(src)) {
-      const s = await stat(src)
-      if (s.isDirectory()) await rmdir(src, { recursive: true })
-      else await unlink(src)
-    }
-    await this.saveTrash(list.filter((r) => r.id !== id))
-    return true
-  }
-
-  /** 清理超过 30 天的回收站条目（物理删除）。 */
-  async purgeExpiredTrash(ttlMs: number): Promise<number> {
-    const list = await this.loadTrash()
-    const now = Date.now()
-    const expired = list.filter((r) => now - r.deletedAt > ttlMs)
-    for (const rec of expired) {
-      const src = join(this.trashDir, rec.id + '_' + rec.name)
-      if (existsSync(src)) {
-        try {
-          const s = await stat(src)
-          if (s.isDirectory()) await rmdir(src, { recursive: true })
-          else await unlink(src)
-        } catch { /* 忽略单条失败 */ }
+    return this.withFileLock(this.trashFile, async () => {
+      const list = await this.loadTrash()
+      const rec = list.find((r) => r.id === id)
+      if (!rec) return false
+      const src = join(this.trashDir, id + '_' + rec.name)
+      if (!existsSync(src)) return false
+      const dest = resolve(this.dataRoot, rec.project, rec.relPath)
+      // 若原位置已有同名，恢复失败（避免覆盖）
+      if (existsSync(dest)) return false
+      if (rec.relPath !== '') {
+        // 普通条目：确保项目目录与上级目录存在；整项目恢复时不能先建空目录（会挡住 rename）
+        await mkdir(resolve(this.dataRoot, rec.project), { recursive: true })
+        await mkdir(dirname(dest), { recursive: true })
       }
-    }
-    if (expired.length > 0) {
-      await this.saveTrash(list.filter((r) => now - r.deletedAt <= ttlMs))
-    }
-    return expired.length
+      await rename(src, dest)
+      await this.saveTrash(list.filter((r) => r.id !== id))
+      return true
+    })
+  }
+
+  /** 彻底删除回收站中的一条（物理删除）。D6：整段读改写持锁。 */
+  async purgeTrash(id: string): Promise<boolean> {
+    return this.withFileLock(this.trashFile, async () => {
+      const list = await this.loadTrash()
+      const rec = list.find((r) => r.id === id)
+      if (!rec) return false
+      const src = join(this.trashDir, id + '_' + rec.name)
+      if (existsSync(src)) {
+        const s = await stat(src)
+        // D14：fs.rmdir(recursive) 已弃用（DEP0147），改用 fs.rm
+        if (s.isDirectory()) await rm(src, { recursive: true, force: true })
+        else await unlink(src)
+      }
+      await this.saveTrash(list.filter((r) => r.id !== id))
+      return true
+    })
+  }
+
+  /** 清理超过 30 天的回收站条目（物理删除）。D6：整段读改写持锁。 */
+  async purgeExpiredTrash(ttlMs: number): Promise<number> {
+    return this.withFileLock(this.trashFile, async () => {
+      const list = await this.loadTrash()
+      const now = Date.now()
+      const expired = list.filter((r) => now - r.deletedAt > ttlMs)
+      for (const rec of expired) {
+        const src = join(this.trashDir, rec.id + '_' + rec.name)
+        if (existsSync(src)) {
+          try {
+            const s = await stat(src)
+            // D14：同上，弃用 fs.rmdir(recursive)
+            if (s.isDirectory()) await rm(src, { recursive: true, force: true })
+            else await unlink(src)
+          } catch { /* 忽略单条失败 */ }
+        }
+      }
+      if (expired.length > 0) {
+        await this.saveTrash(list.filter((r) => now - r.deletedAt <= ttlMs))
+      }
+      return expired.length
+    })
   }
 }
 
@@ -539,8 +644,46 @@ export class PrivHubStore extends Service {
 
 export function apply(ctx: Context, config: Config): void {
   const store = new PrivHubStore(ctx, config)
+
+  /* O2：健康检查（免登录）。只暴露「是否可用」所需的最小信息，
+   * 不泄露路径、账号数、插件清单等敏感内容。 */
+  const started = Date.now()
+  let version = 'unknown'
   void (async () => {
+    try {
+      const raw = await readFile(join(rootDir, 'package.json'), 'utf8')
+      version = (JSON.parse(raw) as { version?: string }).version ?? 'unknown'
+    } catch { /* 取不到就用 unknown */ }
+  })()
+  store.route('/privhub/api/health', async (_req, res) => {
+    json(res, 200, {
+      ok: true,
+      service: 'privhub',
+      version,
+      uptimeSeconds: Math.floor((Date.now() - started) / 1000),
+    })
+  }, 'health')
+
+  /* D8：定时清理过期会话。原实现仅在「同一 token 再次被使用」时才删除，
+   * 实测会话表累积到 3121 条、其中 93% 已过期（且每次续期都全量重写该文件）。 */
+  const sessionSweep = setInterval(() => {
+    const now = Date.now()
+    let removed = 0
+    for (const [token, entry] of store.sessions) {
+      if (entry.expiresAt <= now) { store.sessions.delete(token); removed++ }
+    }
+    if (removed > 0) void store.saveSessions().catch(() => { /* 静默：不影响主流程 */ })
+  }, 30 * 60 * 1000)
+  if (typeof sessionSweep.unref === 'function') sessionSweep.unref()
+  ctx.effect(() => () => clearInterval(sessionSweep))
+
+  // D4：初始化必须可等待——main.ts 在 listen 之前 await ctx.privhub.ready。
+  // 此前是 fire-and-forget，服务可能在账号/会话尚未载入时就开始接受请求，
+  // 表现为「刚启动时登录偶发 用户名或密码错误」（实际是用户表还是空的）。
+  store.ready = (async () => {
     await store.loadUsers()
     await store.loadSessions()
-  })().catch((e) => ctx.logger?.warn('privhub-core 初始化失败: ' + String(e)))
+  })()
+  // 避免 ready 在无人 await 时成为 unhandled rejection（main.ts 会 await 它）
+  store.ready.catch(() => { /* 由 main.ts 统一处理 */ })
 }

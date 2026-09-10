@@ -96,6 +96,12 @@ export function apply(ctx: Context, config: Config): void {
     if (!rec) return json(res, 404, { ok: false, error: '条目不存在' })
     // P1-1：条目归属校验（管理员可操作全部，普通用户仅自己删除的）
     if (u.role !== 'admin' && rec.deletedBy !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
+    // S9 安全修复：彻底删除是【不可逆】的物理删除，必须与 restore 对称地
+    // 校验项目权限与文件级 ACL。此前只校验了归属，导致「已被移出项目的用户
+    // 仍能永久删除该项目回收站里的文件」。
+    if (!svc.canAccess(u, rec.project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
+    const aclD = ctx.acl.can(u, 'delete', rec.project, rec.relPath ?? '')
+    if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
     const ok = await svc.purgeTrash(id)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '彻底删除失败' })
     if (ok) void audit(u, 'purge', rec.project + (rec.relPath ? '/' + rec.relPath : '') + (rec.name ? '/' + rec.name : ''))

@@ -282,7 +282,9 @@
     .md-preview .md-wikilink { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); cursor: pointer; }
     .md-preview ul,.md-preview ol { padding-left: 22px; margin: 8px 0; }
     .watermark-overlay {
-      position: fixed; right: 12px; bottom: 10px; pointer-events: none; z-index: 999;
+      /* 显示 bug 修复：原 z-index:999 会被上传队列抽屉（z-index:1200，同在右下角）
+         完全盖住，导致上传期间「防截屏水印」失效。水印是安全功能，必须始终在最上层。 */
+      position: fixed; right: 12px; bottom: 10px; pointer-events: none; z-index: 2000;
       color: rgba(90,130,200,.55); font-size: 12px; opacity: .18;
     }
 
@@ -603,7 +605,16 @@
       },
       async loadTrash() {
         const r = await api('/privhub/api/trash-list')
-        if (r.ok) nav.trashList = r.trash
+        if (r.ok) {
+          nav.trashList = r.trash
+          // 角标需在列表刷新后同步（回收站视图未挂载时也要更新，例如登录后首次加载）
+          if (window.PrivHub.badges) {
+            const cur = nav.project
+            window.PrivHub.badges.trash = cur
+              ? r.trash.filter((t) => t.project === cur || t.relPath === '').length
+              : r.trash.length
+          }
+        }
       },
       async restoreTrash(t) {
         const r = await api('/privhub/api/trash-restore', { method: 'POST', body: JSON.stringify({ id: t.id }) })
@@ -726,6 +737,13 @@
           nav,
           badges: window.PrivHub.badges,
           inputValue: '',   // P2-3：内联输入模态值
+          // 本次拿到的 manifest 是否只是「登录所需的最小集合」（未登录时服务端分级返回）
+          manifestsPartial: false,
+          // 首屏超时兜底：8 秒内没渲染出登录界面/工作区，就给出可见错误与重试入口
+          bootTimedOut: false,
+          // 插件加载失败清单与 manifest 错误：让「界面空白」有可见原因，而不是只留在 console
+          failedPlugins: [],
+          manifestError: '',
         }
       },
       computed: {
@@ -755,6 +773,55 @@
           if (fn) void fn(this.inputValue.trim())
         },
         cancelNavInput() { this.nav.inputState = null },
+        /* 插件加载失败 / 首屏超时后的重试入口（清空错误状态后重新拉取 manifest 并 import） */
+        async retryLoadPlugins() {
+          this.failedPlugins = []
+          this.manifestError = ''
+          this.bootTimedOut = false
+          await this.loadManifests()
+          if (this.failedPlugins.length === 0 && !this.manifestError) window.PrivHub.toast('界面已重新加载')
+        },
+        /* manifest 拉取（可重复调用）。
+         *
+         * 服务端按登录态分级返回：未登录只给「登录界面所需的最小集合」(partial)，
+         * 已登录给完整清单。因此：
+         *   - 挂载时必须【无条件】调用一次：未登录也要拿到 auth 插件，
+         *     否则登录框渲染不出来 → 永久停在「加载中…」→ 无从登录（死锁）；
+         *   - 登录成功后再调用一次拿完整清单。
+         * import() 有模块缓存，slot 组件按引用去重，重复调用安全。 */
+        async loadManifests() {
+          try {
+            const m = await api('/privhub/api/shell/manifest')
+            if (!m.ok) { console.warn('[shell] manifest 未就绪（未登录或接口异常）'); return }
+            window.PrivHub.manifests = m.manifests
+            // 记录本次拿到的是否只是「登录所需的最小集合」，登录后据此判断需不需要重拉
+            this.manifestsPartial = m.partial === true
+            for (const p of m.manifests) {
+              if (!p.entry) continue
+              try {
+                const mod = await import(p.entry)
+                const slots = (mod.default && mod.default.slots) || {}
+                for (const [slot, comp] of Object.entries(slots)) {
+                  const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
+                  if (!arr.includes(comp)) arr.push(comp)
+                }
+                console.log('[shell] 已加载插件 client:', p.id, Object.keys(slots))
+              } catch (e) {
+                // 单插件失败不应影响其余插件，但【必须让用户看得见】——
+                // 否则界面会永久停在「加载中…」，而错误只存在于 console。
+                console.error('[shell] 插件加载失败:', p.id, e)
+                this.failedPlugins.push({ id: p.id, title: p.title || p.id, error: String((e && e.message) || e) })
+              }
+            }
+            if (this.failedPlugins.length) {
+              window.PrivHub.toast(this.failedPlugins.length + ' 个插件加载失败，部分功能不可用', 'error')
+            }
+            window.PrivHub.loadBarItems()
+          } catch (e) {
+            console.error('[shell] manifest 拉取失败:', e)
+            this.manifestError = String((e && e.message) || e)
+          }
+        },
         /* A2：左面板拖拽调宽（52 = 图标栏宽度；clamp 0~420；mouseup 持久化） */
         startResize(e) {
           e.preventDefault()
@@ -776,30 +843,30 @@
         applyTheme()
         /* 插件 client 加载：manifest → import() → 按 slot 注册（同 slot 可多组件，数组累积） */
         window.PrivHub.manifests = []
-        try {
-          const m = await api('/privhub/api/shell/manifest')
-          if (m.ok) {
-            window.PrivHub.manifests = m.manifests
-            for (const p of m.manifests) {
-              if (!p.entry) continue
-              try {
-                const mod = await import(p.entry)
-                const slots = (mod.default && mod.default.slots) || {}
-                for (const [slot, comp] of Object.entries(slots)) {
-                  const arr = this.slotComps[slot] || (this.slotComps[slot] = [])
-                  if (!arr.includes(comp)) arr.push(comp)
-                }
-                console.log('[shell] 已加载插件 client:', p.id, Object.keys(slots))
-              } catch (e) { console.error('[shell] 插件加载失败:', p.id, e) }
-            }
-            window.PrivHub.loadBarItems()
-          }
-        } catch (e) { console.error('[shell] manifest 拉取失败:', e) }
         const self = this
+        /* 【必须无条件拉取一次】——包括未登录时。
+         * 登录框由插件提供（auth slot），而插件清单来自本接口；
+         * 若未登录就不拉，登录界面永远渲染不出来（死锁，已实测复现）。 */
+        await this.loadManifests()
+        // 首屏兜底：若 8 秒后仍未渲染出登录界面/工作区，把「静默卡死」变成可见可操作
+        this._bootTimer = setTimeout(() => {
+          const hasAuth = self.slotComps.auth && self.slotComps.auth.length
+          const hasPanel = self.slotComps.panel && self.slotComps.panel.length
+          if (!hasAuth && !hasPanel) self.bootTimedOut = true
+        }, 8000)
         // B2：watch 提前注册——reload 场景 me() 恢复用户导致的 loggedIn 变化必须被捕获
         this._unwatch = watch(() => self.loggedIn, (v) => {
           if (v) {
-            nav.loadProjects(); window.PrivHub.loadBarItems(); bus.emit('auth:login')
+            // 角标初始值：登录后主动拉一次回收站（否则图标栏角标恒为 0，
+            // 直到用户第一次打开回收站视图才更新）
+            const afterLogin = () => { nav.loadProjects(); void nav.loadTrash(); bus.emit('auth:login') }
+            // 登录前拿到的是「登录所需的最小集合」，必须重拉完整清单；
+            // 若已是完整清单（刷新场景）则只需刷新图标栏
+            if (self.manifestsPartial) {
+              void self.loadManifests().then(afterLogin)
+            } else {
+              window.PrivHub.loadBarItems(); afterLogin()
+            }
             // D25：应用后端设置的默认视图（仅登录时生效，用户手动切换后不受影响）
             api('/privhub/api/settings').then((r) => {
               if (r.ok && (r.settings.defaultView === 'grid' || r.settings.defaultView === 'list')) nav.viewMode = r.settings.defaultView
@@ -810,7 +877,7 @@
         if (AUTH.token) {
           const r = await api('/privhub/api/me')
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
-          if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); window.PrivHub.loadBarItems() } else { logout() }
+          if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); void nav.loadTrash(); window.PrivHub.loadBarItems() } else { logout() }
         }
         /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用） */
         window.PrivHub.openAdmin = () => nav.setActiveView('admin')
@@ -830,11 +897,24 @@
       beforeUnmount() {
         if (this._unwatch) this._unwatch()
         if (this._escClose) document.removeEventListener('keydown', this._escClose)
+        if (this._bootTimer) clearTimeout(this._bootTimer)
       },
       template: `
         <!-- 未登录：auth 插件组件 -->
         <component v-for="c in slotComps.auth" :is="c" :key="c.name" v-if="!loggedIn && slotComps.auth && slotComps.auth.length"></component>
-        <div v-if="!loggedIn && (!slotComps.auth || !slotComps.auth.length)" style="height:100vh;display:flex;align-items:center;justify-content:center;color:var(--muted)">加载中…</div>
+        <!-- 未登录兜底：正常应在数百毫秒内渲染出登录框；超时则给出可见原因与重试，
+             而不是无限「加载中…」（2026-09-11 曾因 manifest 需登录而卡死在此处） -->
+        <div v-if="!loggedIn && (!slotComps.auth || !slotComps.auth.length)" style="height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:12px">
+          <template v-if="bootTimedOut">
+            <div style="font-size:15px;color:var(--text)">登录界面加载失败</div>
+            <div style="font-size:12px;max-width:520px;text-align:center;line-height:1.7">
+              {{ manifestError ? ('插件清单拉取失败：' + manifestError) : ('已加载的界面组件：' + (slotComps.auth ? slotComps.auth.length : 0) + ' 个') }}<br>
+              常见原因：服务端刚重启、网络中断，或插件文件缺失。
+            </div>
+            <button class="btn btn-primary" style="width:auto" @click="retryLoadPlugins">重新加载界面</button>
+          </template>
+          <template v-else>加载中…</template>
+        </div>
 
         <!-- 已登录 -->
         <div v-if="loggedIn" class="app">
@@ -897,7 +977,17 @@
               </div>
               <!-- 文件面板（F07 files-explorer 提供） -->
               <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && slotComps.panel && slotComps.panel.length"></component>
-              <div v-else class="main-welcome"><div>文件面板加载中…</div></div>
+              <!-- 兜底：不再无限「加载中」。插件加载失败时给出可见原因与重试入口，
+                   否则用户只会看到一个永远转不完的加载提示。 -->
+              <div v-else class="main-welcome">
+                <template v-if="failedPlugins.length || manifestError">
+                  <div class="big">界面组件加载失败</div>
+                  <div style="margin-bottom:10px">{{ manifestError ? ('插件清单拉取失败：' + manifestError) : ('以下插件未能加载：' + failedPlugins.map(p => p.title).join('、')) }}</div>
+                  <div style="font-size:12px;color:var(--muted);margin-bottom:14px">常见原因：服务端刚重启、网络中断，或该插件文件缺失。可先重试，仍失败请查看服务端日志。</div>
+                  <button class="btn btn-primary" style="width:auto" @click="retryLoadPlugins">重新加载界面</button>
+                </template>
+                <template v-else><div>文件面板加载中…</div></template>
+              </div>
             </div>
 
             <!-- 右侧预览（F08 files-preview 提供；仅文件视图） -->
