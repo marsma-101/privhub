@@ -315,6 +315,21 @@ ok(wm && Number(wm[1]) > 1200,
 ok(/failedPlugins/.test(skeletonSrc) && /界面组件加载失败/.test(skeletonSrc),
   '插件加载失败时界面给出可见原因与重试入口（不再永久停在「加载中…」）')
 
+/* 查重面板的删除操作栏必须常驻（位于滚动容器【之外】）。
+ * 修复前它在列表末尾、随内容滚动，重复组一多就被推出屏幕，
+ * 用户反馈「查重之后找不到删除按钮」——按钮其实渲染了，只是看不见。 */
+const ragSrc = readFileSync(join(ROOT, 'plugins', 'privhub-svc-rag', 'client', 'index.js'), 'utf8')
+const iDupPanel = ragSrc.indexOf('🔁 项目查重')
+const iAction = ragSrc.indexOf('btnDangerPrimary', iDupPanel)
+const iElseEnd = ragSrc.indexOf('</template>', iDupPanel)
+const iHelp = ragSrc.indexOf('HelpTip v-if="helpKey"', iElseEnd)
+ok(iAction > 0, '查重面板保留删除按钮样式定义（btnDangerPrimary）')
+ok(iAction > iElseEnd && iAction > 0,
+  '删除操作栏位于滚动容器【之外】（在 </template> 之后）——否则会随列表滚动被推出屏幕')
+ok(iHelp > iAction && iAction > 0, '删除操作栏位于面板底部、HelpTip 之前')
+ok(/groupCount > 0/.test(ragSrc.slice(Math.max(0, iAction - 800), iAction)),
+  '操作栏只要扫描出重复就常驻（不依赖是否已勾选）')
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  前端模板回归：${pass} 通过 / ${fail} 失败`)
 console.log('='.repeat(56))

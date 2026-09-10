@@ -42,6 +42,8 @@ const S = {
   tabsBtnOn: 'padding:6px 14px;border-radius:8px 8px 0 0;border:1px solid var(--accent);border-bottom:none;background:var(--bg);color:var(--accent);cursor:pointer;font-size:13px;margin-right:4px;',
   section: 'margin-bottom:16px;',
   secTitle: 'font-size:14px;font-weight:600;margin:2px 0 10px;color:var(--text);',
+  /* 查重底部常驻操作栏的主按钮：比行内小按钮更大更醒目（强调这是"执行删除"的入口） */
+  btnDangerPrimary: 'display:inline-block;padding:6px 14px;border-radius:6px;border:1px solid #f85149;background:#3d1d1d;color:#ffa198;cursor:pointer;font-size:13px;',
 }
 
 const fmtDate = (n) => (n ? new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—')
@@ -548,12 +550,24 @@ const RagDupPanel = {
             </div>
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin-top:6px;">
-          <button class="rag-btn rag-danger" :style="S.btnDanger" :disabled="delCount === 0 || deleting" @click="doDelete">{{ deleting ? '处理中…' : '🗑 删除勾选的 ' + delCount + ' 个重复文件（移入回收站）' }}</button>
-          <span style="color:var(--muted);font-size:12px;">每组必须保留 1 个（默认第一个）；删除后可从回收站找回，语料自动同步</span>
-        </div>
       </template>
     </div>
+
+    <!-- 操作栏：常驻在滚动区【之外】，始终可见。
+         修复前该栏位于列表末尾、随内容滚动 —— 重复组一多就被推到屏幕外，
+         表现为「查重后找不到删除按钮」（按钮其实已渲染，只是看不见）。
+         现在只要扫描出重复就一直显示，并可随时看到已勾选数量。 -->
+    <div v-if="!loading && !error && groupCount > 0"
+         style="flex-shrink:0;padding:10px 18px;border-top:1px solid var(--line);background:var(--panel2);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <button class="rag-btn rag-danger" :style="S.btnDangerPrimary" :disabled="delCount === 0 || deleting" @click="doDelete">
+        {{ deleting ? '处理中…' : '🗑 删除勾选的 ' + delCount + ' 个重复文件（移入回收站）' }}
+      </button>
+      <span style="color:var(--muted);font-size:12px;">每组必须保留 1 个（默认第一个）；删除后可从回收站找回，语料自动同步</span>
+      <span style="flex:1"></span>
+      <span v-if="delCount === 0" style="color:var(--muted);font-size:12px;">← 先在上方勾选要删除的重复项</span>
+      <span v-else style="color:#f85149;font-size:12px;">已选 {{ delCount }} 项</span>
+    </div>
+
     <HelpTip v-if="helpKey" :help="HELP[helpKey]" @close="helpKey=''" />
   </div>`,
 }
