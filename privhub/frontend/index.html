@@ -710,7 +710,8 @@
       else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
       // ⑤ 功能面板 = 视图（llm_wiki 范式）：图标点击切换 activeView，再点回文件视图
       else if (view === 'admin' || view === 'settings' || view === 'acl' || view === 'audit' ||
-               view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki') {
+               view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki' ||
+               view === 'rag') {
         nav.setActiveView(view)
       }
     }
@@ -887,6 +888,7 @@
               <component v-for="c in slotComps.template" :is="c" :key="c.name" v-else-if="nav.activeView === 'template' && slotComps.template && slotComps.template.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-else-if="nav.activeView === 'kg' && slotComps.kg && slotComps.kg.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps['rag-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'rag' && slotComps['rag-view'] && slotComps['rag-view'].length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
               <!-- 欢迎页（未选项目：简单文案，选项目在左侧栏） -->
               <div v-else-if="nav.activeView === 'files' && nav.project === null" class="main-welcome">

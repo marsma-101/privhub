@@ -11,9 +11,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, hashPassword } from '../../privhub-core/src/index'
 
 export const name = 'privhub-admin'
-export const inject = ['privhub', 'audit']
+export const inject = ['privhub', 'audit', 'eventBus']
 
 export function apply(ctx: Context): void {
+  /* E1 事件声明 */
+  ctx.eventBus.declareEmit('audit:logged', 'privhub-admin', '写操作成功审计广播（S1 闭环）')
   const svc = ctx.privhub
 
   /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */

@@ -105,6 +105,8 @@ export class WebServerService extends Service {
       res.writeHead(200, {
         'content-type': MIME[ext] ?? 'application/octet-stream',
         'content-length': body.length,
+        // 开发期资源无缓存：前端/插件 JS 改了立即生效（浏览器不强缓存）
+        'cache-control': 'no-cache',
         // A13：安全响应头基线（HTML 附加宽松 CSP；Vue 运行时模板编译需 unsafe-eval，迁移到 SFC 预编译后可移除）
         // frame-ancestors 'self' / SAMEORIGIN：允许同源插件页（如 office2 预览页）被 iframe 嵌入，跨域仍拦截
         'x-content-type-options': 'nosniff',

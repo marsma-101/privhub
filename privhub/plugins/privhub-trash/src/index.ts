@@ -13,7 +13,7 @@ import z from '@deepseek-ai/schemastery'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-trash'
-export const inject = ['privhub', 'audit', 'acl']
+export const inject = ['privhub', 'audit', 'acl', 'eventBus']
 
 export interface Config {
   /** 回收站保留天数（到期自动物理清除），默认 30 */
@@ -31,6 +31,13 @@ export function apply(ctx: Context, config: Config): void {
   const svc = ctx.privhub
   const ttlDays = config.ttlDays > 0 ? config.ttlDays : 30
   const intervalMs = (config.intervalHours > 0 ? config.intervalHours : 6) * 3600 * 1000
+
+  /* E1 事件声明 */
+  ctx.eventBus.declareEmit('audit:logged', 'privhub-trash', '写操作成功审计广播（S1 闭环）')
+  ctx.eventBus.declareEmit('file:changed', 'privhub-trash', '回收站恢复/彻底删除/清空 → fulltext 索引维护')
+  const changed = (project: string, path: string, action: string): void => {
+    ctx.emit('file:changed', { project, path, action })
+  }
 
   /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
@@ -75,6 +82,7 @@ export function apply(ctx: Context, config: Config): void {
     const ok = await svc.restoreTrash(id)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '恢复失败（可能原位置已有同名文件）' })
     if (ok) void audit(u, 'restore', rec.project + (rec.relPath ? '/' + rec.relPath : '') + (rec.name ? '/' + rec.name : ''))
+    if (ok) changed(rec.project, rec.relPath ?? '', 'restored')
   }, 'trash-restore')
 
   /* 彻底删除回收站条目（P1-1：校验条目归属，防越权物理删除） */
@@ -91,6 +99,7 @@ export function apply(ctx: Context, config: Config): void {
     const ok = await svc.purgeTrash(id)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '彻底删除失败' })
     if (ok) void audit(u, 'purge', rec.project + (rec.relPath ? '/' + rec.relPath : '') + (rec.name ? '/' + rec.name : ''))
+    if (ok) changed(rec.project, rec.relPath ?? '', 'purged')
   }, 'trash-purge')
 
   /* 清空 N 天前的回收站（管理员手动触发，N 取配置 ttlDays） */
@@ -101,6 +110,7 @@ export function apply(ctx: Context, config: Config): void {
     const n = await svc.purgeExpiredTrash(ttlDays * 24 * 3600 * 1000)
     json(res, 200, { ok: true, purged: n })
     void audit(u, 'clean', '', 'purged=' + n)
+    if (n > 0) changed('', '', 'clean')
   }, 'trash-clean')
 
   /* 定时自动清理（Cordis effect 可逆：插件卸载时清除定时器，零残留） */

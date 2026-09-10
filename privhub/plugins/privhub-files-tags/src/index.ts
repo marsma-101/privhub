@@ -18,9 +18,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-tags'
-export const inject = ['privhub', 'meta']
+export const inject = ['privhub', 'meta', 'eventBus']
 
 export function apply(ctx: Context): void {
+  /* E1 事件声明 */
+  ctx.eventBus.declareEmit('meta:changed', 'privhub-files-tags', '标签增删变更广播')
   const svc = ctx.privhub
   const meta = ctx.meta
 

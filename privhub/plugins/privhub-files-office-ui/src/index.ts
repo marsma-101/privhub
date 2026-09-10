@@ -14,7 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 export const name = 'privhub-files-office-ui'
-export const inject = ['privhub', 'office', 'acl', 'audit']
+export const inject = ['privhub', 'office', 'acl', 'audit', 'eventBus']
 
 function json(res: { writeHead: (n: number, h: Record<string, string>) => void; end: (s: string) => void }, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
@@ -35,6 +35,11 @@ async function readBody(req: any): Promise<string> {
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
   const office = ctx.office
+
+  /* E1 事件声明 */
+  ctx.eventBus.declareEmit('audit:logged', 'privhub-files-office-ui', '写操作成功审计广播（S1 闭环）')
+  ctx.eventBus.declareEmit('file:saved', 'privhub-files-office-ui', '文档保存广播（带 doc 内容）')
+  ctx.eventBus.declareEmit('file:changed', 'privhub-files-office-ui', 'Office 编辑保存/转换 → fulltext 索引维护')
 
   /* 审计埋点（与 F13 契约一致） */
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
@@ -71,6 +76,7 @@ export function apply(ctx: Context): void {
     if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
     const r = await office.write(project, path, content)
     if (r.ok) void audit(u, 'office-edit', project + '/' + path)
+    if (r.ok) ctx.emit('file:changed', { project, path, action: 'saved' })
     json(res, r.ok ? 200 : 400, r)
   }, 'office-write')
 
@@ -100,6 +106,7 @@ export function apply(ctx: Context): void {
       if (!wr.ok) return json(res, 400, { ok: false, error: wr.error || '生成 .docx 失败' })
       void audit(u, 'doc-convert', project + '/' + path, '-> ' + newPath)
       ctx.emit('file:saved', { project, path: newPath, doc: String(text) })
+      ctx.emit('file:changed', { project, path: newPath, action: 'created' })
       json(res, 200, { ok: true, newPath })
       return
     } catch (e) {

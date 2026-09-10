@@ -187,6 +187,19 @@ export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component }
 
 ---
 
-## 6. 与知识图谱的对应关系
+## 7. 代码修改纪律（2026-09-05 事故教训固化）
+
+> 事故回放：批量注入中文声明时经系统 PowerShell 全文件读改写，6 个插件被双重编码损坏（UTF-8→ANSI 误读→乱码写出），agent 插件需完整重建。git 恢复了 5 个存量文件，损失可控。
+
+1. **批量改代码禁止经系统 PowerShell 读改写含中文文件**：本机 pwsh 以 ANSI(GBK) 解码管道，`Get-Content -Raw` + `WriteAllText` 组合会把整文件的中文双重编码损坏。
+   - 允许：*edit/write 工具*（可靠 UTF-8）；纯 ASCII 替换的 node 脚本（`readFileSync`/`writeFileSync` UTF-8）；git 恢复。
+   - 禁止：pwsh `Get-Content -Raw` + `[IO.File]::WriteAllText` 搬运含中文文件；pwsh 命令参数/替换串中夹带中文。
+2. **改前建基线**：批量操作前 `git status` 确认；**未跟踪新文件先 `git add`**（必要时提交），保证任何损坏可一键 `git checkout` 恢复。
+3. **改后即验**：批量改动后 `git diff --stat` 抽查 + node 校验（UTF-8 合法、无 U+FFFD、无乱码字特征）。
+4. **中文串注入**：任何带中文字符串的注入（声明/注释/文案）一律用 edit/write 工具，或 node 脚本写成 `\uXXXX` 转义（命令保持纯 ASCII）。
+
+---
+
+## 8. 与知识图谱的对应关系
 
 本文档逐条对应《PrivHub-知识图谱.html》中的 34 个叶子插件与 6 大枢纽：图谱管"有哪些、挂哪"，本文档管"怎么实现、怎么交互"。两者分类、编号、档位完全一致，后续新增功能时同步在图谱加节点、在本文档加一行即可。

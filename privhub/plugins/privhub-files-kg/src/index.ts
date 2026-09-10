@@ -22,7 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-kg'
-export const inject = ['privhub', 'storage', 'meta']
+export const inject = ['privhub', 'storage', 'meta', 'eventBus']
 
 export interface KgNode { id: string; name: string; path: string; tags: string[] }
 export interface KgEdge { source: string; target: string; type: 'link' | 'tag' }
@@ -61,6 +61,9 @@ export interface KgGraph {
 const LINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g
 
 export function apply(ctx: Context): void {
+  /* E1 事件声明（监听） */
+  ctx.eventBus.declareListen('file:saved', 'privhub-files-kg', '文档保存 → 图谱双链重建')
+  ctx.eventBus.declareListen('meta:changed', 'privhub-files-kg', '标签变更 → 图谱关联更新')
   const svc = ctx.privhub
   const meta = ctx.meta
 

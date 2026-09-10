@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-edit-md'
-export const inject = ['privhub', 'audit', 'storage']
+export const inject = ['privhub', 'audit', 'storage', 'eventBus']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const VERSIONS_DIR = join(rootDir, 'data', 'doc-versions')
@@ -51,6 +51,14 @@ function isMd(path: string): boolean {
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  /* E1 事件声明（注册表） */
+  ctx.eventBus.declareEmit('audit:logged', 'privhub-files-edit-md', '写操作成功审计广播（S1 闭环）')
+  ctx.eventBus.declareEmit('file:saved', 'privhub-files-edit-md', '文档保存广播（带 doc 内容，索引/图谱直用）')
+  ctx.eventBus.declareEmit('file:changed', 'privhub-files-edit-md', '文档保存/回滚 → fulltext 索引维护')
+  const changed = (project: string, path: string, action: string): void => {
+    ctx.emit('file:changed', { project, path, action })
+  }
 
   /* 审计埋点（F13 契约） */
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
@@ -128,6 +136,7 @@ export function apply(ctx: Context): void {
       await ctx.storage.writeText(target, doc)
       const s2 = await stat(target)
       ctx.emit('file:saved', { project, path, doc })
+      changed(project, path, 'saved')
       void audit(u, 'doc-save', project + '/' + path, 'bytes=' + Buffer.byteLength(doc, 'utf8'))
       json(res, 200, { ok: true, mtime: s2.mtimeMs })
     } catch (e) {
@@ -158,6 +167,7 @@ export function apply(ctx: Context): void {
     try {
       await ctx.storage.writeText(target, text)
       ctx.emit('file:saved', { project, path, doc: text })
+      changed(project, path, 'saved')
       void audit(u, 'text-save', project + '/' + path, 'bytes=' + Buffer.byteLength(text, 'utf8'))
       json(res, 200, { ok: true })
     } catch (e) {
@@ -205,6 +215,7 @@ export function apply(ctx: Context): void {
       await snapshot(project, path) // 回滚前先存档当前版（回滚可逆）
       await ctx.storage.writeBuffer(target, body2)
       ctx.emit('file:saved', { project, path, doc: body2.toString('utf8') })
+      changed(project, path, 'restored')
       void audit(u, 'doc-restore', project + '/' + path, 'version@' + new Date(at).toISOString())
       json(res, 200, { ok: true })
     } catch (e) {

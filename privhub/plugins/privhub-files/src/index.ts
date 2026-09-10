@@ -14,10 +14,19 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files'
-export const inject = ['privhub', 'audit', 'storage']
+export const inject = ['privhub', 'audit', 'storage', 'eventBus']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  /* E1 事件声明（注册表） */
+  ctx.eventBus.declareEmit('audit:logged', 'privhub-files', '写操作成功审计广播（S1 闭环）')
+  ctx.eventBus.declareEmit('file:changed', 'privhub-files', '文件系统变更专用事件（创建/删除/重命名/移动）→ fulltext 索引维护')
+
+  /* 文件变更广播（fulltext/kg 增量维护） */
+  const changed = (project: string, path: string, action: string, newPath?: string): void => {
+    ctx.emit('file:changed', { project, path, action, newPath })
+  }
 
   /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
@@ -132,6 +141,7 @@ export function apply(ctx: Context): void {
       await rename(tmp, target)
       json(res, 200, { ok: true, size })
       void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + size)
+      changed(project, (subPath ? subPath + '/' : '') + name, 'created')
     } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '上传失败' }) }
   }, 'upload')
 
@@ -147,6 +157,7 @@ export function apply(ctx: Context): void {
     const ok = await svc.createFolder(project, subPath, String(body.name ?? ''))
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '新建失败' })
     if (ok) void audit(u, 'mkdir', project + '/' + (subPath ? subPath + '/' : '') + String(body.name ?? ''))
+    if (ok) changed(project, (subPath ? subPath + '/' : '') + String(body.name ?? ''), 'created')
   }, 'mkdir')
 
   /* 删除文件/文件夹（软删除，进回收站） */
@@ -160,6 +171,7 @@ export function apply(ctx: Context): void {
     const ok = await svc.moveToTrash(project, String(body.path ?? ''), u.username)
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '删除失败' })
     if (ok) void audit(u, 'delete', project + '/' + String(body.path ?? ''))
+    if (ok) changed(project, String(body.path ?? ''), 'deleted')
   }, 'delete')
 
   /* 重命名 */
@@ -173,6 +185,12 @@ export function apply(ctx: Context): void {
     const ok = await svc.renameEntry(project, String(body.path ?? ''), String(body.newName ?? ''))
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '重命名失败' })
     if (ok) void audit(u, 'rename', project + '/' + String(body.path ?? ''), '-> ' + String(body.newName ?? ''))
+    if (ok) {
+      // newPath：同目录新名（目录内文件路径 → 替换最后一段）
+      const p = String(body.path ?? '').replace(/\\/g, '/')
+      const newPath = p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) + String(body.newName ?? '') : String(body.newName ?? '')
+      changed(project, p, 'renamed', newPath)
+    }
   }, 'rename')
 
   /* 移动：把项目内条目移动到另一目录（同卷 rename；目标必须已存在且无同名） */
@@ -197,6 +215,7 @@ export function apply(ctx: Context): void {
       await rename(src, dest)
       json(res, 200, { ok: true, to: toDir === '' ? '' : toDir + '/' + basename(src) })
       void audit(u, 'move', project + '/' + from, '-> ' + (toDir === '' ? '' : toDir + '/') + basename(src))
+      changed(project, from, 'moved', toDir === '' ? basename(src) : toDir + '/' + basename(src))
     } catch (e) {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '移动失败' })
     }

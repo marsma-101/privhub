@@ -1098,6 +1098,11 @@ const PanelV3 = {
     /* ---- 其他 ---- */
     doSubmitMkdir() { submitMkdirV3() },
     doAddFile() { nav.addFile() },
+    /* 合并查重入口：跳转 AI 工具 → 查重页签（RagView 消费 ragIntent 后自动选中 nav.project） */
+    openDup() {
+      if (window.PrivHub.openRagDup) window.PrivHub.openRagDup()
+      else window.PrivHub.toast('查重页面未就绪（AI 工具未加载）', 'error')
+    },
     renderMd() { return this.content && this.content.markdown !== undefined ? renderMarkdown(this.content.markdown) : '' },
     /* E3：长按功能发现性——首次进入面板提示一次 */
     maybeHint() {
@@ -1202,6 +1207,7 @@ const PanelV3 = {
           <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 个文件</span>
           <span v-if="checkedCount() > 0" class="crumb" style="margin-left:8px;color:var(--accent)">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
           <span class="spacer"></span>
+          <button v-if="nav.project" class="icon-btn" style="margin-left:4px" title="查重整个项目：同名同大小 + 内容一字不差（合并查重）" @click="openDup">🔁 查重</button>
           <template v-if="checkedCount() > 0">
             <button class="icon-btn" @click="selectAll">☑ 全选/取消</button>
             <button class="icon-btn" @click="clearChecked">取消选择</button>

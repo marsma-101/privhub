@@ -86,7 +86,8 @@ export class AuditService extends Service {
       try {
         const head = Buffer.alloc(8)
         const { bytesRead } = await fh.read(head, 0, 8, 0)
-        if (bytesRead === 8 && head.toString('utf8') === 'PHAUD1\0') { this.blockReady = true; return }
+        // 与 svc-storage 写入格式一致：'PHAUD1\0'.padEnd(8,'\0') = 8 字节（50 48 41 55 44 31 00 00）
+        if (bytesRead === 8 && head.toString('utf8') === 'PHAUD1\0\0') { this.blockReady = true; return }
       } finally { await fh.close() }
       // 明文 JSONL → 逐行加密块，覆写
       const raw = await readFile(this.file, 'utf8')

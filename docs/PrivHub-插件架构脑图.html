@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PrivHub 插件系统架构脑图</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #0d1117; color: #e6edf3; font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+  #wrap { position: fixed; inset: 0; cursor: grab; }
+  #wrap.panning { cursor: grabbing; }
+  #stage { transform-origin: 0 0; }
+  .node rect { rx: 10; ry: 10; stroke-width: 1.5; }
+  .node text { pointer-events: none; }
+  .node .ico { font-size: 20px; }
+  .node .lbl { font-size: 12px; font-weight: 600; }
+  .node .sub { font-size: 9px; fill: #8b949e; }
+  .node:hover rect { stroke: #58a6ff !important; stroke-width: 2.5 !important; filter: drop-shadow(0 0 6px rgba(88,166,255,.5)); }
+  .link { fill: none; stroke-width: 1.6; }
+  .link:hover { stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgba(255,255,255,.35)); }
+  .link .dot { fill: none; }
+  #tip { position: fixed; z-index: 99; max-width: 340px; background: rgba(13,17,23,.96); border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.55; pointer-events: none; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); white-space: pre-wrap; }
+  #tip b { color: #58a6ff; }
+  #tip .k { color: #8b949e; }
+  #legend { position: fixed; left: 12px; top: 12px; background: rgba(13,17,23,.9); border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; font-size: 11px; z-index: 50; }
+  #legend div { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  #legend span { width: 26px; height: 0; border-top: 2px solid; display: inline-block; }
+  #zoom { position: fixed; right: 14px; bottom: 14px; z-index: 50; display: flex; gap: 6px; }
+  #zoom button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; font-size: 16px; cursor: pointer; }
+  #zoom button:hover { background: #21262d; }
+  #hint { position: fixed; right: 14px; top: 12px; z-index: 50; font-size: 11px; color: #8b949e; background: rgba(13,17,23,.8); border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <svg id="svg" width="100%" height="100%">
+    <g id="stage"></g>
+  </svg>
+</div>
+<div id="tip"></div>
+<div id="legend">
+  <div><span style="border-color:#39c5cf"></span>事件总线 file:changed（文件系统变更：索引维护专用）</div>
+  <div><span style="border-color:#f778ba"></span>事件总线 audit:logged（审计广播）</div>
+  <div><span style="border-color:#56d364"></span>事件总线 file:saved（保存广播）</div>
+  <div><span style="border-color:#79c0ff"></span>事件总线 meta:changed（元数据变更）</div>
+  <div><span style="border-color:#d2a8ff"></span>ACL 守卫（包装 svc.route）</div>
+  <div><span style="border-color:#ffa657"></span>机制复用（.trash / versions.json）</div>
+  <div><span style="border-color:#8b949e"></span>装配顺序（main.ts 挂载链）</div>
+  <div style="margin-top:6px"><span style="border-color:#388bfd"></span>L1 底座/枢纽 · <span style="border-color:#3fb950"></span>L2 能力 Service · <span style="border-color:#a371f7"></span>守卫 · <span style="border-color:#f0883e">Agent 网关 · <span style="border-color:#58a6ff">L3 插件节点</span></div>
+  <div style="margin-top:4px;color:#8b949e">悬停节点/连线查看详细说明；拖拽平移，滚轮缩放</div>
+</div>
+<div id="hint">🖱 悬停查看详情 · 拖拽平移 · 滚轮缩放</div>
+<div id="zoom"><button id="zin">+</button><button id="zout">−</button><button id="zfit">⤢</button></div>
+<script>
+/* ================= 节点数据 =================
+   g: 分组 0=装配点 1=L2 2=L1 3=L3 4=前端 5=Agent */
+const NODES = [
+  // 装配链（顶部）
+  { id:'m-start', x:60,   y:26, w:150, h:30, ico:'🚀', lbl:'main.ts', g:0, tip:'启动入口：装配全部插件 → listen(3180)' },
+  { id:'m-ws',    x:240,  y:26, w:170, h:30, ico:'🏗', lbl:'webServer', g:0, tip:'1. 自研 HTTP 服务（node:http）先挂载——所有路由注册的宿主' },
+  { id:'m-l2',    x:440,  y:26, w:190, h:30, ico:'🧩', lbl:'L2 能力 Service ×8', g:0, tip:'2. 能力服务先于消费方注册（storage → audit → acl → watermark → search → meta → collab → office）' },
+  { id:'m-core',  x:660,  y:26, w:150, h:30, ico:'🧠', lbl:'core 六枢纽', g:0, tip:'3. L1：core → adminAcl(守卫) → auth/files/trash/admin → shell' },
+  { id:'m-l3',    x:840,  y:26, w:190, h:30, ico:'📦', lbl:'L3 自动发现', g:0, tip:'4. 扫描 plugins/ 目录（字母序）动态装配；装卸=增删目录' },
+  { id:'m-listen',x:1060, y:26, w:140, h:30, ico:'🔌', lbl:'listen(3180)', g:0, tip:'5. 启动 HTTP 监听，进入服务状态' },
+
+  // L2 能力 Service（左列）
+  { id:'storage', x:30,  y:110, w:250, h:56, ico:'🔐', lbl:'svc-storage (S7)', sub:'静态加密存储', g:1,
+    tip:'S7 AES-256-GCM 静态加密（写盘即密文，宿主机不可直读）\n- writeText/readBuffer/writeBuffer/createWriteStream(流式)\n- isEncrypted 自动识别密文/明文；审计块格式 PHAUD1\n- 密钥：data/secret.key（32B）或环境变量 PRIVHUB_SECRET\n依赖：无（最底层）\n被依赖：core / audit / acl / meta / office 及 22 个 L3' },
+  { id:'audit',  x:30,  y:186, w:250, h:56, ico:'📋', lbl:'svc-audit (S1)', sub:'审计日志', g:1,
+    tip:'审计日志服务（JSONL 加密块，逐条 GCM 加密）\n- log()：写操作入账（60 天保留 + 20 万条兜底）\n- query/exportCsv：按 user/action/时间过滤、CSV 导出\n- 2026-09-05 修复 magic 字节 bug（7 vs 8）\n依赖：storage\n被依赖：auth/admin/files/trash/edit-md/fulltext/office-ai/office-ui/agent' },
+  { id:'acl',    x:30,  y:262, w:250, h:56, ico:'🛡', lbl:'svc-acl (S2)', sub:'文件级 ACL', g:1,
+    tip:'细粒度权限规则（文件/目录级，继承/覆盖）\n- can(user,action,project,path)：路径最具体优先、同深度拒绝优先\n- 规则存 data/acl.json（S7 加密）\n- 动作：view/upload/download/edit/delete\n依赖：storage\n被依赖：admin-acl(守卫) / trash / office-ui / agent' },
+  { id:'watermark', x:30, y:338, w:250, h:56, ico:'💧', lbl:'svc-watermark (S3)', sub:'数字水印配置', g:1,
+    tip:'水印配置服务（text/opacity）\n- 配置供前端 auth-watermark 渲染叠加\n- 防截屏外泄：预览页叠加用户名+时间\n依赖：无\n被依赖：auth-watermark（前端）' },
+  { id:'search', x:30,  y:414, w:250, h:56, ico:'🔍', lbl:'svc-search (S4)', sub:'全文检索引擎', g:1,
+    tip:'全文搜索能力（BM25 + CJK bigram）\n- 注入 ctx.search：索引/查询/snippet 高亮\n- 被 fulltext（索引构建）与 files-search（查询）消费\n- 项目上下文限定（防跨项目泄露）\n依赖：无\n被依赖：fulltext / search' },
+  { id:'meta',   x:30,  y:490, w:250, h:56, ico:'🏷', lbl:'svc-meta (S5)', sub:'元数据（标签）', g:1,
+    tip:'文件元数据服务（标签/自定义字段）\n- 注入 ctx.meta：tags 读写\n- 标签变更 emit meta:changed（kg 监听重建关联）\n依赖：storage\n被依赖：tags / template / kg' },
+  { id:'collab', x:30, y:566, w:250, h:56, ico:'🤝', lbl:'svc-collab (S6)', sub:'协同骨架（待用）', g:1,
+    tip:'多人协同骨架（maxSessions/maxPatches 配置）\n- ⚠️ 当前无任何消费插件（僵尸服务）\n- 为将来 CRDT/协同编辑预留\n依赖：无\n被依赖：无' },
+  { id:'office', x:30, y:642, w:250, h:56, ico:'📑', lbl:'svc-office', sub:'Office 能力库', g:1,
+    tip:'Office 文档读写能力库\n- read：docx/xlsx/pptx/pdf → 结构化内容\n- write：docx(文本)/xlsx(rows 二维数组)；pptx/pdf 只读\n- 内部走 storage 加密读写\n依赖：privhub / storage\n被依赖：office2 / office-ui / office-ai / dataview' },
+
+  // L1 枢纽列
+  { id:'ws',     x:340, y:110, w:230, h:52, ico:'🏗', lbl:'webServer', sub:'自研 HTTP + 静态 + manifest', g:2,
+    tip:'自研 Web 服务器（替代 DSH 底座）\n- exact 路由注册表（svc.route 的宿主）\n- 前端静态 F:/privhub/frontend + /privhub-plugins/<插件>/<文件> 映射\n- 安全响应头基线（CSP/nosniff/SAMEORIGIN）\n依赖：无\n被依赖：core、shell、admin-acl（守卫包装 register）' },
+  { id:'core',   x:340, y:182, w:230, h:52, ico:'🧠', lbl:'core', sub:'PrivHubStore (ctx.privhub)', g:2,
+    tip:'唯一共享状态源（L1 枢纽核心）\n- users/sessions(7 天滑动续期)/loginFails/trash 持久化\n- data-files 文件根 + 项目=顶层文件夹\n- 权限判定：canAccess/visibleProjects/resolveInProject/resolveReal(防 junction)\n- listFiles/readFileForPreview/renameEntry/createFolder\n- svc.route()：全部业务插件的路由注册入口\n依赖：webServer / storage' },
+  { id:'adminAcl', x:340, y:254, w:230, h:52, ico:'🛡', lbl:'adminAcl (F14)', sub:'ACL 路由守卫（31 路由）', g:2,
+    tip:'细粒度 ACL 落地层（包装 svc.route，不污染基座）\n- 在 auth/files/trash/admin 注册路由【之前】挂载\n- 2026-09-05 扩展：per-method 裁决，覆盖 31 个路由\n  view→list/preview/preview-raw/download/doc(GET)/doc/versions/comments(GET)/office 读系/export/search/kg/tags(GET)/versions(GET)/publish-list\n  upload→upload/mkdir · delete→delete/trash-purge\n  edit→rename/move/doc(PUT)/doc/restore/text/save/versions-restore/trash-restore/office 写系/mdpage/dataview/publish/tags(POST)\n- body 类先读 JSON 判定再 PassThrough 重放；trash 按 id 经 resolver 定位原路径裁决\n- 卸载时逆序恢复原方法（effect 可逆）\n依赖：privhub / acl / webServer' },
+  { id:'auth',   x:340, y:326, w:230, h:52, ico:'🔑', lbl:'auth', sub:'登录/注册/会话', g:2,
+    tip:'认证编排（状态在 core）\n- login/register/me/logout 四个路由\n- Bearer token 会话（TTL 7 天，me 滑动续期）\n- 登录限流：用户名+IP 双维度防爆破\n- 成功写审计并广播 audit:logged\n依赖：privhub / audit' },
+  { id:'files',  x:340, y:398, w:230, h:52, ico:'🗂', lbl:'files', sub:'核心文件 API（10 端点）', g:2,
+    tip:'文件主能力（人类浏览器通道）\n- projects/list/preview/preview-raw/upload/mkdir/delete/rename/move/download\n- 全部路径过 canAccess + resolveReal 防穿越\n- 上传流式加密（.part → rename 原子）\n依赖：privhub / audit / storage\n⚠️ 被 adminAcl 守卫全覆盖（见守卫线）' },
+  { id:'trash',  x:340, y:470, w:230, h:52, ico:'🗑', lbl:'trash', sub:'回收站（30 天）', g:2,
+    tip:'回收站能力（记录在 core，实体 .trash/）\n- trash-list/restore/purge/clean\n- 30 天保留 + 周期清理\n- P1-1 修复：条目归属 + 项目权限 + ACL 三重校验\n- 被 files/agent 复用为软删除通道\n依赖：privhub / audit / acl' },
+  { id:'admin',  x:340, y:542, w:230, h:52, ico:'👑', lbl:'admin', sub:'用户与项目管理', g:2,
+    tip:'管理能力\n- 用户增删改查/角色/重置密码\n- 项目创建/删除（软删进回收站）\n- 全部走 audit:logged 广播\n依赖：privhub / audit' },
+  { id:'shell',  x:340, y:614, w:230, h:52, ico:'🖥', lbl:'shell', sub:'前端骨架 + manifest', g:2,
+    tip:'前端骨架（服务端侧）/shell/manifest\n- 聚合前端插件 manifest（slot 挂载）\n- 提供 index.html 入口与 nav 状态机契约\n- 前端：window.PrivHub 桥（api/AUTH/nav/bus/toast）\n依赖：webServer / privhub' },
+
+  // L3 文件域（第三列）
+  { id:'explorer', x:640, y:110, w:260, h:52, ico:'🌲', lbl:'files-explorer-v3', sub:'V3 布局 + duplicates', g:3,
+    tip:'V3 交互布局（唯一前端主视图容器）\n- 目录树含文件+⋯菜单；中央文件标签页；右侧详情面板\n- 查重接口 /api/duplicates（项目内重名分组）\n- 旧 v2 移入 _retired-v2（tag v2 可回退）\n依赖：storage / privhub' },
+  { id:'editmd', x:640, y:182, w:260, h:52, ico:'📝', lbl:'files-edit-md', sub:'MD/txt 在线编辑', g:3,
+    tip:'文档编辑能力\n- /api/doc（MD 读取，frontmatter+双链）、/api/text/save（新建+保存）\n- /api/doc/versions + restore（文档自身版本）\n- 保存成功 emit file:saved + audit:logged\n依赖：privhub / audit / storage' },
+  { id:'versions', x:640, y:254, w:260, h:52, ico:'🕘', lbl:'files-versions', sub:'版本历史（20 版）', g:3,
+    tip:'通用版本快照（文本类）\n- 每文件最近 20 版，存 data/versions.json（⚠️ 明文）\n- versions 列表 / snapshot / restore\n- Agent 网关复用同一数据格式做覆盖前快照\n依赖：storage / privhub' },
+  { id:'comments', x:640, y:326, w:260, h:52, ico:'💬', lbl:'files-comments', sub:'选区批注评论', g:3,
+    tip:'md 选区批注：锚点高亮/回复线程/状态流转\n- /api/comments + reply + status\n- 独立 data/comments.json\n依赖：storage / privhub' },
+  { id:'upload', x:640, y:398, w:260, h:52, ico:'⬆', lbl:'files-upload / upload-queue', sub:'拖拽/文件夹上传 + 队列', g:4,
+    tip:'纯前端插件（无后端路由）\n- 拖拽上传/整文件夹递归（子目录自动创建）\n- 进度条 + 失败重试队列（复用 /api/upload）\n- manifest 由 shell 聚合加载\n依赖（后端）：files 的 /api/upload' },
+  { id:'fulltext', x:640, y:470, w:260, h:52, ico:'📚', lbl:'files-fulltext', sub:'全文索引构建', g:4,
+    tip:'全文索引维护者（与服务端 search 配对）\n- 监听 file:saved / audit:logged 增量更新索引\n- /api/fulltext/search 查询 + snippet 高亮\n- 项目内检索（限定上下文防越权）\n依赖：privhub / storage / search / audit' },
+  { id:'search', x:640, y:542, w:260, h:52, ico:'🔎', lbl:'files-search', sub:'文件名搜索入口', g:3,
+    tip:'搜索前端入口（文件名 + 查重页签）\n- /api/search 后端查询\n- 项目上下文过滤（未选项目不做全局查询）\n依赖：privhub / search' },
+
+  // Office + 协作列（第四列）
+  { id:'office2', x:960, y:110, w:260, h:52, ico:'📊', lbl:'files-office2', sub:'富编辑器（锁/raw/save）', g:3,
+    tip:'富文本编辑会话（xlsx 双向编辑）\n- /api/office2/lock：会话锁\n- /api/office2/raw：原始读取\n- /api/office2/save：保存（复用 office 能力）\n依赖：storage / privhub / office' },
+  { id:'officeui', x:960, y:182, w:260, h:52, ico:'✏️', lbl:'files-office-ui', sub:'人工编辑入口', g:3,
+    tip:'Office 人工编辑（方案②）\n- /api/office/read|write（docx/xlsx）+ convert-doc\n- 编辑保存 emit file:saved + audit:logged\n- 写前过 acl 裁决（编辑通道）\n依赖：privhub / office / acl / audit' },
+  { id:'officeai', x:960, y:254, w:260, h:52, ico:'🤖', lbl:'files-office-ai', sub:'Office 智能体入口', g:3,
+    tip:'智能体 Office 通道（C22 基础版）\n- X-Office-Key 认证（data/office-api.json）\n- /api/ai/office/read|write|schema|keys\n- ⚠️ 缺陷：key 硬编码 admin 权限（已计划 M4 统一到 X-Agent-Key 并修复）\n依赖：privhub / office / storage / audit' },
+  { id:'office', x:960, y:326, w:260, h:52, ico:'🖼', lbl:'files-office', sub:'Office 预览转 MD', g:3,
+    tip:'Office 预览渲染（/api/office-preview）\n- docx/xlsx/pptx → Markdown 预览（统一能力库）\n依赖：privhub / storage' },
+  { id:'dataview', x:960, y:398, w:260, h:52, ico:'📈', lbl:'files-dataview', sub:'数据看板模板', g:3,
+    tip:'HTML+ph-table 组件双向编辑 xlsx\n- /api/dataview/new 创建看板页面\n- 复用 office 能力读写 xlsx\n依赖：storage / privhub / office' },
+  { id:'mdpage', x:960, y:470, w:260, h:52, ico:'📄', lbl:'files-mdpage', sub:'md → HTML 页面', g:3,
+    tip:'一键把 md 生成 HTML 页面（/api/mdpage/generate）\n- 供内网阅读/发布\n依赖：storage / privhub' },
+  { id:'publish', x:960, y:542, w:260, h:52, ico:'🌐', lbl:'files-publish', sub:'HTML 内网发布', g:3,
+    tip:'免登录只读发布链接\n- /api/publish + list：生成/撤销、有效期\n- 发布物为独立 HTML（不暴露文件系统）\n依赖：storage / privhub' },
+
+  // 知识域（第五列）
+  { id:'tags', x:1260, y:110, w:260, h:52, ico:'🏷', lbl:'files-tags', sub:'标签管理', g:3,
+    tip:'标签 CRUD 与筛选\n- /api/meta/tags(+all) / tagged\n- 打标变更 emit meta:changed（kg 监听）\n依赖：privhub / meta' },
+  { id:'kg', x:1260, y:182, w:260, h:52, ico:'🕸', lbl:'files-kg', sub:'知识图谱', g:3,
+    tip:'双链+标签关联图（/api/kg）\n- 社区发现（关联簇）、点击节点定位文件\n- 监听 file:saved / meta:changed 增量重建\n依赖：privhub / storage / meta' },
+  { id:'template', x:1260, y:254, w:260, h:52, ico:'🗃', lbl:'files-template', sub:'文档模板', g:3,
+    tip:'会议记录/需求等模板管理（/api/templates）\n依赖：privhub / meta' },
+  { id:'wiki', x:1260, y:326, w:260, h:52, ico:'📖', lbl:'files-wiki', sub:'知识库 Wiki 渲染', g:4,
+    tip:'纯前端：README.md/index.md 渲染为 Wiki 页\n- 双链可点击定位文件\n依赖（后端）：list/preview + kg 数据' },
+  { id:'export', x:1260, y:398, w:260, h:52, ico:'📤', lbl:'files-export', sub:'MD → PDF/Word/HTML', g:3,
+    tip:'导出能力（/api/export）\n依赖：privhub / storage' },
+  { id:'invite', x:1260, y:470, w:260, h:52, ico:'✉️', lbl:'files-invite', sub:'邀请码加入', g:3,
+    tip:'邀请链接：永久/限时邀请码、用码加入、撤销\n- /api/invite/create|list|join|info\n依赖：storage / privhub' },
+
+  // 系统域 + Agent（第六列）
+  { id:'fav', x:1560, y:110, w:250, h:52, ico:'⭐', lbl:'shell-favorites', sub:'收藏', g:3,
+    tip:'文件/文件夹星标（/api/favorites）\n- 项目上下文过滤 + 越权 403\n依赖：privhub / storage' },
+  { id:'recent', x:1560, y:182, w:250, h:52, ico:'🕐', lbl:'shell-recent', sub:'最近打开', g:3,
+    tip:'最近访问列表（/api/recent）\n- 按项目过滤\n依赖：privhub / storage' },
+  { id:'settings', x:1560, y:254, w:250, h:52, ico:'⚙️', lbl:'shell-settings', sub:'系统设置', g:3,
+    tip:'主题/默认视图/上传限制（/api/settings）\n依赖：privhub / storage' },
+  { id:'tabs', x:1560, y:326, w:250, h:52, ico:'🗔', lbl:'shell-tabs', sub:'多标签页', g:4,
+    tip:'纯前端：文件级标签栏（VS Code 式）\n- 上限 10、刷新恢复、按用户隔离（防串项目）' },
+  { id:'adminaudit', x:1560, y:398, w:250, h:52, ico:'📜', lbl:'admin-audit', sub:'审计查询/导出', g:3,
+    tip:'审计查询与面板数据源\n- /api/audit：user/action/时间/项目四维筛选\n- /api/audit/export（CSV）/ recent\n- 监听 audit:logged 实时刷新\n依赖：privhub / audit' },
+  { id:'auditpanel', x:1560, y:470, w:250, h:52, ico:'🖥', lbl:'admin-audit-panel', sub:'审计可视化', g:4,
+    tip:'纯前端：审计面板（表格 + 筛选 + CSV 导出）\n依赖（后端）：admin-audit 的 /api/audit' },
+  { id:'watermarkfs', x:1560, y:542, w:250, h:52, ico:'💧', lbl:'auth-watermark', sub:'前端水印叠加', g:3,
+    tip:'预览页叠加用户名+时间水印（读 watermark 配置）\n依赖：privhub / watermark' },
+  { id:'gitbackup', x:1560, y:614, w:250, h:52, ico:'🗜', lbl:'git-backup', sub:'git 版本备份', g:3,
+    tip:'定期 git 快照（data 目录版本备份）\n- /api/gitbackup/commit|history|restore\n依赖：storage / privhub' },
+
+  // Agent 网关（最下，独立高亮）
+  { id:'agent', x:640,  y:800, w:1170, h:66, ico:'🤖', lbl:'privhub-files-agent（M1+M2 已交付）', sub:'企业级 Agent API 网关 · X-Agent-Key · 专属空间 · 配额/限流/幂等/快照', g:5,
+    tip:'企业级智能体网关（C22 完整版，方案 v3.1）\n- 认证：X-Agent-Key sha256 哈希存储、自然月周期、状态机、IP 白名单\n- 授权：scope 矩阵（project/directory/all）+ 项目只读硬隔离\n- 专属空间：.agents/<用户>/<项目>/ 读写删改全能力（S7 加密）\n- M2：幂等键/If-Match/per-path 锁/写并发排队(8/100/30s)/配额 1GB/持久化限流/版本快照\n- 端点：schema/me/projects/list/read/write/fork/rename/delete/versions(+restore)/keys/my-keys/trash\n依赖：privhub / storage / audit / acl\n⚠️ 与 files-office-ai 并存两套 key——M4 统一' },
+  { id:'agnote', x:1560, y:800, w:250, h:66, ico:'🧾', lbl:'Agent 数据文件', sub:'keys(哈希)/quota/ratelimit/idem', g:5,
+    tip:'Agent 网关专属数据（全部 S7 加密落盘）\n- data/agent-keys.json：key 哈希 + 状态机 + 月度周期\n- data/agent-quota.json：1GB/用户配额账本（周期 flush）\n- data/agent-ratelimit.json：限流桶（重启恢复）\n- data/agent-idem/：幂等记录（TTL 24h）\n- 复用：data/versions.json（快照）、.trash（回收站）' },
+];
+
+/* ================= 连线 =================
+   t: 0=装配 1=audit:logged 2=file:saved 3=meta:changed 4=ACL守卫 5=复用 6=服务依赖 */
+const LINKS = [
+  // 装配链
+  { a:'m-start', b:'m-ws', t:0 }, { a:'m-ws', b:'m-l2', t:0 }, { a:'m-l2', b:'m-core', t:0 }, { a:'m-core', b:'m-l3', t:0 }, { a:'m-l3', b:'m-listen', t:0 },
+
+  // audit:logged 事件总线（粉）
+  { a:'audit',  b:'adminaudit', t:1, tip:'audit:logged → admin-audit\n写操作审计广播：auth(login/register)/admin/files/trash/edit-md/office-ui/office-ai/agent 成功写审计后 emit；\nadmin-audit 监听并实时刷新审计面板；fulltext 也监听（重建索引线索）' },
+  { a:'files',  b:'audit', t:1, tip:'files 成功操作（upload/delete/rename/move/mkdir）→ audit.log + emit audit:logged' },
+  { a:'editmd', b:'audit', t:1, tip:'文档保存 → 审计 + emit audit:logged' },
+  { a:'agent',  b:'audit', t:1, tip:'Agent 网关全部读写动作 → S1 审计（user=ai:<label>）' },
+
+  // file:saved 事件总线（绿）
+  { a:'editmd', b:'fulltext', t:2, tip:'file:saved（MD/txt 保存）→ fulltext 增量重建全文索引' },
+  { a:'editmd', b:'kg', t:2, tip:'file:saved → kg 更新双链关联' },
+  { a:'officeui', b:'fulltext', t:2, tip:'file:saved（Office 编辑保存）→ fulltext 索引' },
+  { a:'officeui', b:'kg', t:2, tip:'file:saved（Office 编辑保存）→ kg 关联图' },
+
+  // file:changed 事件总线（青，2026-09-05 语义拆分）
+  { a:'files',  b:'fulltext', t:7, tip:'file:changed（upload/mkdir/delete/rename/move）→ fulltext 增量索引' },
+  { a:'trash',  b:'fulltext', t:7, tip:'file:changed（restore/purge/clean）→ fulltext 索引维护' },
+  { a:'editmd', b:'fulltext', t:7, tip:'file:changed（保存/回滚）→ fulltext 索引（file:saved 之外的变更通道）' },
+  { a:'officeui', b:'fulltext', t:7, tip:'file:changed（Office 编辑保存/转换）→ fulltext 索引' },
+
+  // meta:changed 事件总线（蓝）
+  { a:'tags', b:'kg', t:3, tip:'meta:changed（标签增删）→ kg 重建标签关联' },
+
+  // ACL 守卫（紫）
+  { a:'adminAcl', b:'files', t:4, tip:'F14 ACL 守卫：包装 svc.route，files 的 9 个核心路由全部先过 acl.can 裁决\nview→list/preview/preview-raw/download · upload→upload/mkdir · delete→delete · edit→rename/move\n未命中规则时放行到 core 项目白名单（双层权限）' },
+
+  // 机制复用（橙）
+  { a:'agent', b:'trash', t:5, tip:'Agent 专属空间删除复用 .trash 回收站\nTrashRecord.project=".agents/<user>"（项目过滤下天然隐藏），admin 经 /agent/v1/trash 恢复/彻底删除' },
+  { a:'agent', b:'versions', t:5, tip:'Agent 覆盖前快照复用 versions.json 同一数据格式（20 版滚动）\nkey = ".agents/<user>|<scope>/<path>"；/agent/v1/versions + restore 提供专属空间闭环' },
+  { a:'agent', b:'files', t:6, tip:'Agent 读取项目走 files 同款权限链：canAccess + ACL view + resolveReal（只读）；\n写/删/改项目一律 403（AGENT-4032 硬隔离）' },
+
+  // 服务依赖代表（灰）
+  { a:'ws', b:'core', t:6, tip:'core inject webServer：svc.route() 注册到自研 HTTP 服务器' },
+  { a:'office', b:'office2', t:6, tip:'office2 消费 svc-office（xlsx 读写）' },
+  { a:'office', b:'officeui', t:6, tip:'office-ui 消费 svc-office（docx/xlsx 编辑）' },
+  { a:'office', b:'officeai', t:6, tip:'office-ai 消费 svc-office（智能体 Office 通道）' },
+  { a:'office', b:'dataview', t:6, tip:'dataview 消费 svc-office（看板 xlsx 双向编辑）' },
+  { a:'acl', b:'agent', t:6, tip:'agent 逐请求过 ctx.acl.can(view) 裁决项目读取' },
+  { a:'acl', b:'trash', t:6, tip:'trash 恢复/撤销走 ACL edit 裁决（P1-1 修复）' },
+  { a:'storage', b:'agent', t:6, tip:'Agent 数据文件与专属空间全部 S7 加密落盘' },
+];
+
+/* ================= 渲染 ================= */
+const tip = document.getElementById('tip');
+const stage = document.getElementById('stage');
+const LINE_INFO = {
+  0: { c:'#8b949e', dash:null,  desc:'装配链' },
+  1: { c:'#f778ba', dash:'7 4', desc:'audit:logged' },
+  2: { c:'#56d364', dash:'7 4', desc:'file:saved' },
+  7: { c:'#39c5cf', dash:'7 4', desc:'file:changed' },
+  3: { c:'#79c0ff', dash:'7 4', desc:'meta:changed' },
+  4: { c:'#d2a8ff', dash:null,  desc:'ACL 守卫' },
+  5: { c:'#ffa657', dash:'5 4', desc:'机制复用' },
+  6: { c:'#8b949e', dash:null,  desc:'服务依赖' },
+};
+const GROUP_FILL = {
+  0: '#161b22', 1: '#0f2a1a', 2: '#10233d', 3: '#161b22', 4: '#241b3d', 5: '#3d2410',
+};
+const GROUP_STROKE = {
+  0: '#30363d', 1: '#3fb950', 2: '#388bfd', 3: '#30363d', 4: '#a371f7', 5: '#f0883e',
+};
+
+const byId = Object.fromEntries(NODES.map((n) => [n.id, n]));
+function edge(a, b) {
+  const na = byId[a], nb = byId[b];
+  const x1 = na.x + na.w / 2, y1 = na.y + na.h / 2;
+  const x2 = nb.x + nb.w / 2, y2 = nb.y + nb.h / 2;
+  let mx1 = x1, my1 = y1, mx2 = x2, my2 = y2;
+  // 端点贴边：水平连线（装配/事件较多）用简单中点
+  const d = Math.abs(x2 - x1);
+  if (d > 120) { mx1 = x1 + (x2 > x1 ? 1 : -1) * Math.min(na.w / 2, d / 3); mx2 = x2 + (x1 > x2 ? 1 : -1) * Math.min(nb.w / 2, d / 3); }
+  else { my1 = y1 + (y2 > y1 ? 1 : -1) * Math.min(na.h / 2, 40); my2 = y2 + (y1 > y2 ? 1 : -1) * Math.min(nb.h / 2, 40); }
+  return { x1, y1, x2, y2, mx1, my1, mx2, my2 };
+}
+function showTip(html, ev) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  const pad = 14, tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + tw > innerWidth - 8) x = ev.clientX - tw - 14;
+  if (y + th > innerHeight - 8) y = ev.clientY - th - 14;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+function nodeTip(n) {
+  const g = { 1: 'L2 能力 Service', 2: 'L1 枢纽/守卫', 3: 'L3 功能插件（后端）', 4: '纯前端插件（manifest）', 5: 'Agent 网关' }[n.g] || '';
+  return '<b>' + n.lbl + '</b> <span class="k">(' + g + ')</span>\n' + (n.sub ? '<span class="k">' + n.sub + '</span>\n' : '') + '\n' + (n.tip || '');
+}
+let k = 0;
+for (const n of NODES) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.setAttribute('class', 'node'); g.setAttribute('transform', `translate(${n.x},${n.y})`);
+  g.innerHTML = `<rect width="${n.w}" height="${n.h}" fill="${GROUP_FILL[n.g]}" stroke="${GROUP_STROKE[n.g]}"></rect>
+    <text class="ico" x="14" y="${n.h / 2 + 7}">${n.ico}</text>
+    <text class="lbl" x="42" y="${n.h / 2 - 4}" fill="#e6edf3">${n.lbl}</text>
+    <text class="sub" x="42" y="${n.h / 2 + 13}">${n.sub || ''}</text>`;
+  g.addEventListener('mouseenter', (ev) => showTip(nodeTip(n), ev));
+  g.addEventListener('mousemove', (ev) => showTip(nodeTip(n), ev));
+  g.addEventListener('mouseleave', hideTip);
+  stage.appendChild(g);
+  k++;
+}
+for (const l of LINKS) {
+  const { x1, y1, x2, y2, mx1, my1, mx2, my2 } = edge(l.a, l.b);
+  const info = LINE_INFO[l.t];
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  const dash = info.dash ? `stroke-dasharray="${info.dash}"` : '';
+  path.setAttribute('d', `M ${x1} ${y1} C ${mx1} ${my1}, ${mx2} ${my2}, ${x2} ${y2}`);
+  path.setAttribute('class', 'link');
+  path.setAttribute('stroke', info.c);
+  path.setAttribute('stroke-dasharray', info.dash || '');
+  path.addEventListener('mouseenter', (ev) => showTip('<b>' + (l.tip || info.desc) + '</b>', ev));
+  path.addEventListener('mousemove', (ev) => showTip('<b>' + (l.tip || info.desc) + '</b>', ev));
+  path.addEventListener('mouseleave', hideTip);
+  stage.appendChild(path);
+  // 箭头
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  const hl = Math.min(10, Math.hypot(x2 - x1, y2 - y1) / 4);
+  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  arrow.setAttribute('d', `M ${x2} ${y2} L ${x2 - hl * Math.cos(ang - 0.45)} ${y2 - hl * Math.sin(ang - 0.45)} L ${x2 - hl * Math.cos(ang + 0.45)} ${y2 - hl * Math.sin(ang + 0.45)} Z`);
+  arrow.setAttribute('fill', info.c);
+  stage.appendChild(arrow);
+}
+
+/* ================= 平移缩放 ================= */
+const wrap = document.getElementById('wrap');
+let scale = 1, tx = 0, ty = 0, pan = null;
+function apply() { stage.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`); }
+function fit() {
+  const W = 1900, H = 1000;
+  scale = Math.min(innerWidth / W, innerHeight / H) * 0.96;
+  tx = (innerWidth - W * scale) / 2; ty = (innerHeight - H * scale) / 2 + 10;
+  apply();
+}
+wrap.addEventListener('mousedown', (e) => { pan = { x: e.clientX, y: e.clientY, tx, ty }; wrap.classList.add('panning'); });
+window.addEventListener('mousemove', (e) => {
+  if (pan) { tx = pan.tx + (e.clientX - pan.x); ty = pan.ty + (e.clientY - pan.y); apply(); }
+});
+window.addEventListener('mouseup', () => { pan = null; wrap.classList.remove('panning'); });
+wrap.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 0.89;
+  scale = Math.min(3, Math.max(0.2, scale * f));
+  tx = e.clientX - (e.clientX - tx) * (f > 1 ? f : 1 / f);
+  ty = e.clientY - (e.clientY - ty) * (f > 1 ? f : 1 / f);
+  apply();
+}, { passive: false });
+document.getElementById('zin').onclick = () => { scale = Math.min(3, scale * 1.25); apply(); };
+document.getElementById('zout').onclick = () => { scale = Math.max(0.2, scale / 1.25); apply(); };
+document.getElementById('zfit').onclick = fit;
+setTimeout(fit, 30);
+</script>
+</body>
+</html>

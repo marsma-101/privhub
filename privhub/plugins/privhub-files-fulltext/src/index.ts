@@ -26,7 +26,7 @@ import { json } from '../../privhub-core/src/index'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-files-fulltext'
-export const inject = ['privhub', 'storage', 'search', 'audit']
+export const inject = ['privhub', 'storage', 'search', 'audit', 'eventBus']
 
 /** 参与全文索引的文本扩展名（与 core 预览文本集一致，另加常见文档类）。 */
 const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql', 'markdown'])
@@ -36,6 +36,10 @@ const MAX_BYTES = 512 * 1024
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
   const search = ctx.search
+
+  /* E1 事件声明（监听） */
+  ctx.eventBus.declareListen('file:saved', 'privhub-files-fulltext', '文档保存 → 直接索引 doc 内容')
+  ctx.eventBus.declareListen('file:changed', 'privhub-files-fulltext', '文件系统变更 → 增量维护全文索引')
 
   const docId = (project: string, path: string): string => project + '::' + path
 
@@ -77,30 +81,27 @@ export function apply(ctx: Context): void {
       if (!payload?.project || !payload.path || typeof payload.doc !== 'string') return
       void search.index({ id: docId(payload.project, payload.path), text: payload.doc })
     })
-    const offAudit = ctx.on('audit:logged', (entry: AuditEntry) => {
-      if (!entry?.target) return
-      const slash = entry.target.indexOf('/')
-      const project = slash < 0 ? entry.target : entry.target.slice(0, slash)
-      const path = slash < 0 ? '' : entry.target.slice(slash + 1)
-      switch (entry.action) {
-        case 'upload':
-        case 'restore':
+    // E1 语义拆分：文件系统变更走专用事件 file:changed（audit:logged 回归纯审计语义，不再兼任索引线索）
+    const offChanged = ctx.on('file:changed', (payload: { project?: string; path?: string; action?: string; newPath?: string }) => {
+      if (!payload?.project || !payload.path || !payload.action) return
+      // .agents 专属空间默认不进全文索引（Agent 网关产出，RAG 期再评估收录）
+      if (payload.project === '.agents' || payload.project.startsWith('.agents/')) return
+      const project = payload.project
+      const path = payload.path
+      switch (payload.action) {
+        case 'created':
+        case 'saved':
+        case 'restored':
           void indexFile(project, path)
           break
-        case 'delete':
-        case 'purge':
+        case 'deleted':
+        case 'purged':
           void search.remove(docId(project, path))
           break
-        case 'rename':
-        case 'move': {
-          // detail 形如 "-> 新名"（rename 同目录）或 "-> 目标/名"（move）
+        case 'renamed':
+        case 'moved': {
           void search.remove(docId(project, path))
-          const m = /^->\s*(.+)$/.exec(entry.detail ?? '')
-          if (m) {
-            const dest = m[1].trim()
-            const newPath = dest.includes('/') ? dest : (path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '') + dest
-            void indexFile(project, newPath)
-          }
+          if (payload.newPath) void indexFile(project, payload.newPath)
           break
         }
         case 'clean':
@@ -110,7 +111,7 @@ export function apply(ctx: Context): void {
           break
       }
     })
-    return () => { offSaved(); offAudit() }
+    return () => { offSaved(); offChanged() }
   })
 
   /* ---- 启动全量构建（不阻塞监听） ---- */

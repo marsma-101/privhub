@@ -38,6 +38,12 @@ tests/
 # tests/       测试脚本（不进 git）
 # screenshots/ 截图（不进 git）
 
+# ===== 杂项/构建产物（不进 git） =====
+# 误输出到根目录的数字文件
+/0
+# 部署压缩包（构建产物，由部署脚本随时重建）
+deploy.zip
+
 # ===== 运行期账号/会话数据（首次启动自动生成种子账号，不进 git） =====
 privhub/privhub-app/data/
 privhub-work/privhub-app/data/

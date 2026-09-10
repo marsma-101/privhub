@@ -27,6 +27,7 @@ import * as shell from '../plugins/privhub-shell/server/index.ts'
 
 /* ---- L2 能力 Service ---- */
 import * as svcStorage from '../plugins/privhub-svc-storage/src/index.ts'
+import * as svcEvents from '../plugins/privhub-svc-events/src/index.ts'
 import * as svcAudit from '../plugins/privhub-svc-audit/src/index.ts'
 import * as svcAcl from '../plugins/privhub-svc-acl/src/index.ts'
 import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
@@ -34,6 +35,7 @@ import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
 import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
 import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
+import * as svcModel from '../plugins/privhub-svc-model/src/index.ts'
 /* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
 import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 
@@ -42,8 +44,8 @@ import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
  * 在【进程根目录】（PRIVHUB_ROOT 或 cwd）的 plugins/ 下扫描发现，动态加载。
  * 生产环境跑在 deploy/privhub-deploy 时即扫描该目录，与开发环境零耦合。 */
 const CORE_PLUGINS = new Set([
-  'privhub-svc-storage', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
-  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-office',
+  'privhub-svc-storage', 'privhub-svc-events', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
+  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-office', 'privhub-svc-model',
   'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
   'privhub-admin', 'privhub-shell',
 ])
@@ -108,6 +110,8 @@ async function main(): Promise<void> {
   /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
    *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
   await mount(svcStorage, { enabled: true, keyFile: '', auditMagic: 'PHAUD1\0' })
+  /* E1 事件注册表（早于各业务插件挂载，供声明） */
+  await mount(svcEvents)
   await mount(svcAudit, { file: '', retentionDays: 60 })
   await mount(svcAcl, { file: '' })
   await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })
@@ -115,6 +119,8 @@ async function main(): Promise<void> {
   await mount(svcMeta, { file: '' })
   await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
   await mount(svcOffice)
+  /* M0 模型接入层（配置经 RAG 界面/API 动态写入 data/model.json，无需改代码） */
+  await mount(svcModel)
 
   /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })

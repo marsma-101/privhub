@@ -5,13 +5,19 @@
  *
  * 1. **全路由守卫**：本插件在 main.ts 中挂载于 privhub-core 之后、auth/files 等
  *    路由插件之前。apply 内包装 `svc.route`（PrivHubStore 实例方法，effect 可逆），
- *    使之后注册的 9 个文件 API 路由全部经过 ACL 守卫：
- *       view   → /api/list /preview /preview-raw /download
- *       upload → /api/upload /api/mkdir
- *       delete → /api/delete
- *       edit   → /api/rename /api/move
- *    body 类路由（mkdir/delete/rename/move）由守卫先行读取 JSON body 判定，
+ *    使之后注册的【全部文件相关路由】经过 ACL 守卫（2026-09-05 扩展至 L3 写路由）：
+ *       view   → list/preview/preview-raw/download/doc(GET)/doc/versions/comments(GET)/
+ *                 office/read/office-preview/office2/lock/office2/raw/export/
+ *                 fulltext/search/search/kg/meta/tags(GET)/meta/tagged/publish/list/versions(GET)
+ *       upload → upload/mkdir
+ *       delete → delete/trash-purge
+ *       edit   → rename/move/doc(PUT)/doc/restore/text/save/versions/snapshot/versions/restore/
+ *                 trash-restore/office/write/office/convert-doc/office2/save/
+ *                 mdpage/generate/dataview/new/publish/meta/tags(POST)
+ *    per-method 裁决：同路径 GET/PUT 可配置不同动作（如 /api/doc）。
+ *    body 类路由（mkdir/delete/rename/move/...）由守卫先行读取 JSON body 判定，
  *    放行后用 PassThrough 重放给原 handler（原 handler 的 readBody 不受影响）。
+ *    resolver：无法直接取 project/path 的（如 trash-restore 按 id 定位记录）用 resolve 回调。
  *
  * 2. **规则管理 API（adminOnly）**：
  *       GET    /privhub/api/acl/rules   列出全部规则
@@ -36,17 +42,80 @@ import { json, readBody, tokenOf } from '../../privhub-core/src/index'
 export const name = 'privhub-admin-acl'
 export const inject = ['privhub', 'acl', 'webServer']
 
-/** 受文件级 ACL 管辖的路由 → 判定动作。fromBody：project/path 在 JSON body 中（bodyField 指定路径字段名）。 */
-const GUARD_PATHS: Record<string, { action: string; fromBody?: boolean; bodyField?: string }> = {
-  '/privhub/api/list': { action: 'view' },
-  '/privhub/api/preview': { action: 'view' },
-  '/privhub/api/preview-raw': { action: 'view' },
-  '/privhub/api/download': { action: 'view' },
-  '/privhub/api/upload': { action: 'upload' },
-  '/privhub/api/mkdir': { action: 'upload', fromBody: true },
-  '/privhub/api/delete': { action: 'delete', fromBody: true },
-  '/privhub/api/rename': { action: 'edit', fromBody: true },
-  '/privhub/api/move': { action: 'edit', fromBody: true, bodyField: 'from' },
+/** 单个 method 的守卫裁决配置。 */
+interface MethodGuard {
+  action: string
+  /** body 类：project/path 在 JSON body 中 */
+  fromBody?: boolean
+  /** body 中路径字段名（默认 'path'） */
+  bodyField?: string
+  /** 无法直接取 project/path 时（如 trash 按 id 定位），用 resolve 回调；返回 null 则透传原 handler */
+  resolve?: (svc: any, body: any) => Promise<{ project: string; path: string } | null>
+}
+
+/** 受文件级 ACL 管辖的路由 → per-method 动作（缺省的 method 直接透传）。 */
+const GUARD_PATHS: Record<string, Partial<Record<string, MethodGuard>>> = {
+  /* L1 files 核心（9 路由） */
+  '/privhub/api/list': { GET: { action: 'view' } },
+  '/privhub/api/preview': { GET: { action: 'view' } },
+  '/privhub/api/preview-raw': { GET: { action: 'view' } },
+  '/privhub/api/download': { GET: { action: 'view' } },
+  '/privhub/api/upload': { POST: { action: 'upload' } },
+  '/privhub/api/mkdir': { POST: { action: 'upload', fromBody: true } },
+  '/privhub/api/delete': { POST: { action: 'delete', fromBody: true } },
+  '/privhub/api/rename': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/move': { POST: { action: 'edit', fromBody: true, bodyField: 'from' } },
+
+  /* edit-md：文档读写（GET=view / PUT=edit 同路径） */
+  '/privhub/api/doc': { GET: { action: 'view' }, PUT: { action: 'edit', fromBody: true } },
+  '/privhub/api/doc/versions': { GET: { action: 'view' } },
+  '/privhub/api/doc/restore': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/text/save': { POST: { action: 'edit', fromBody: true } },
+
+  /* files-versions：通用版本快照 */
+  '/privhub/api/versions': { GET: { action: 'view' } },
+  '/privhub/api/versions/snapshot': { POST: { action: 'view', fromBody: true } },
+  '/privhub/api/versions/restore': { POST: { action: 'edit', fromBody: true } },
+
+  /* trash：恢复=写回项目（edit），彻底删除=delete；按 trash 记录 id 定位原路径 */
+  '/privhub/api/trash-list': { GET: { action: 'view' } },
+  '/privhub/api/trash-restore': {
+    POST: { action: 'edit', fromBody: true, bodyField: 'id', resolve: async (svc, body) => {
+      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === String(body?.id ?? ''))
+      return rec ? { project: rec.project, path: rec.relPath ?? '' } : null
+    } },
+  },
+  '/privhub/api/trash-purge': {
+    POST: { action: 'delete', fromBody: true, bodyField: 'id', resolve: async (svc, body) => {
+      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === String(body?.id ?? ''))
+      return rec ? { project: rec.project, path: rec.relPath ?? '' } : null
+    } },
+  },
+  // trash-clean：adminOnly（清空回收站）——不纳入文件级 ACL
+
+  /* comments：列表/批注读取（view）；写类经 id 定位（本轮暂不纳入，记录后续治理） */
+  '/privhub/api/comments': { GET: { action: 'view' } },
+
+  /* Office 域 */
+  '/privhub/api/office/read': { GET: { action: 'view' } },
+  '/privhub/api/office/write': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/office/convert-doc': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/office-preview': { GET: { action: 'view' } },
+  '/privhub/api/office2/lock': { GET: { action: 'view' } },
+  '/privhub/api/office2/raw': { GET: { action: 'view' } },
+  '/privhub/api/office2/save': { POST: { action: 'edit', fromBody: true } },
+
+  /* 知识域 */
+  '/privhub/api/export': { GET: { action: 'view' } },
+  '/privhub/api/fulltext/search': { GET: { action: 'view' } },
+  '/privhub/api/search': { GET: { action: 'view' } },
+  '/privhub/api/kg': { GET: { action: 'view' } },
+  '/privhub/api/meta/tags': { GET: { action: 'view' }, POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/meta/tagged': { GET: { action: 'view' } },
+  '/privhub/api/mdpage/generate': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/dataview/new': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/publish': { POST: { action: 'edit', fromBody: true } },
+  '/privhub/api/publish/list': { GET: { action: 'view' } },
 }
 
 export function apply(ctx: Context): void {
@@ -62,20 +131,28 @@ export function apply(ctx: Context): void {
     path: string,
     handler: (req: any, res: any) => void | Promise<void>,
   ): ((req: any, res: any) => void | Promise<void>) => {
-    const spec = GUARD_PATHS[path]
-    if (!spec) return handler
+    const methods = GUARD_PATHS[path]
+    if (!methods) return handler
     return async (req, res) => {
+      const spec: MethodGuard | undefined = methods[String(req.method).toUpperCase()]
+      if (!spec) return handler(req, res) // 未配置的 method：透传
       const u = svc.me(tokenOf(req))
       if (!u) return handler(req, res) // 未登录：交给原 handler 返回 401
       let project = ''
       let relPath = ''
       if (spec.fromBody) {
         const raw = await readBody(req).catch(() => '')
-        try {
-          const b = JSON.parse(raw) as { project?: unknown; [k: string]: unknown }
-          project = String(b.project ?? '')
-          relPath = String(b[spec.bodyField ?? 'path'] ?? '')
-        } catch { /* 非 JSON：交回原 handler 报 400 */ }
+        let body: any = null
+        try { body = JSON.parse(raw) } catch { /* 非 JSON：交回原 handler 报 400 */ }
+        if (spec.resolve && body) {
+          const r = await spec.resolve(svc, body).catch(() => null)
+          if (!r) return handler(req, res) // 无法解析（条目不存在等）：交回原 handler（404/403）
+          project = r.project
+          relPath = r.path
+        } else {
+          project = String(body?.project ?? '')
+          relPath = String(body?.[spec.bodyField ?? 'path'] ?? '')
+        }
         const d = acl.can(u, spec.action, project, relPath)
         if (d && !d.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
         // 重放 body：原 handler 的 readBody 在 PassThrough 上正常工作

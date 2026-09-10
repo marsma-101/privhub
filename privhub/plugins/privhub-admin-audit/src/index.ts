@@ -20,7 +20,7 @@ import { json } from '../../privhub-core/src/index'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-admin-audit'
-export const inject = ['privhub', 'audit']
+export const inject = ['privhub', 'audit', 'eventBus']
 
 /** 环形缓冲上限（F15 实时刷新窗口）。 */
 const RING_MAX = 50
@@ -28,6 +28,9 @@ const RING_MAX = 50
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
   const audit = ctx.audit
+
+  /* E1 事件声明（监听） */
+  ctx.eventBus.declareListen('audit:logged', 'privhub-admin-audit', '审计广播 → 面板实时刷新')
 
   /* 事件监听（effect 可逆：插件卸载时自动移除监听，零残留） */
   const ring: AuditEntry[] = []

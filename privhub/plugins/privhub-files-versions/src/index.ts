@@ -5,13 +5,13 @@
  *   POST   /api/versions/snapshot { project, path } 手动创建快照（读当前内容）
  *   POST   /api/versions/restore { project, path, at } 恢复到指定版本（写回）
  *
- * 每文件保留最近 20 个版本；快照明文存 data/versions.json（与 tags/templates 同级）。
+ * 每文件保留最近 20 个版本；快照存 data/versions.json（S7 加密，兼容旧明文）。
  * 恢复时写回使用 storage.writeText（S7 加密存储）。
  *
  * @module privhub-files-versions
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -34,13 +34,14 @@ const MAX_PER_FILE = 20
 
 const TEXT_EXTS = new Set(['txt', 'md', 'json', 'js', 'ts', 'css', 'html', 'xml', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql'])
 
-async function load(): Promise<Store> {
+/** S7：快照库随 storage 加密（密文/明文自动识别，旧明文文件无缝兼容） */
+async function load(ctx: Context): Promise<Store> {
   if (!existsSync(FILE)) return {}
-  try { return JSON.parse(await readFile(FILE, 'utf8')) as Store } catch { return {} }
+  try { return JSON.parse(await ctx.storage.readText(FILE)) as Store } catch { return {} }
 }
-async function save(store: Store): Promise<void> {
+async function save(ctx: Context, store: Store): Promise<void> {
   await mkdir(dirname(FILE), { recursive: true })
-  await writeFile(FILE, JSON.stringify(store, null, 2), 'utf8')
+  await ctx.storage.writeText(FILE, JSON.stringify(store, null, 2))
 }
 
 export function apply(ctx: Context): void {
@@ -60,7 +61,7 @@ export function apply(ctx: Context): void {
     const project = url.searchParams.get('project') ?? ''
     const path = url.searchParams.get('path') ?? ''
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const store = await load()
+    const store = await load(ctx)
     const raw = store[project + '|' + path] || []
     const withContent = url.searchParams.get('preview') === '1'
     const list = raw.map(v => withContent ? { at: v.at, by: v.by, len: v.content.length, content: v.content } : { at: v.at, by: v.by, len: v.content.length })
@@ -80,13 +81,13 @@ export function apply(ctx: Context): void {
     const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文件不存在' })
     const content = await ctx.storage.readText(target).catch(() => '')
-    const store = await load()
+    const store = await load(ctx)
     const key = project + '|' + path
     const arr = store[key] || []
     arr.push({ at: Date.now(), by: u.username, content })
     while (arr.length > MAX_PER_FILE) arr.shift()
     store[key] = arr
-    await save(store)
+    await save(ctx, store)
     json(res, 200, { ok: true, at: arr[arr.length - 1].at, total: arr.length })
   }, 'versions-snapshot')
 
@@ -99,7 +100,7 @@ export function apply(ctx: Context): void {
     const path = String(body.path ?? '')
     const at = Number(body.at)
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const store = await load()
+    const store = await load(ctx)
     const arr = store[project + '|' + path] || []
     const ver = arr.find(v => v.at === at)
     if (!ver) return json(res, 404, { ok: false, error: '版本不存在' })
@@ -110,7 +111,7 @@ export function apply(ctx: Context): void {
     arr.push({ at: Date.now(), by: u.username, content: ver.content })
     while (arr.length > MAX_PER_FILE) arr.shift()
     store[project + '|' + path] = arr
-    await save(store)
+    await save(ctx, store)
     json(res, 200, { ok: true })
   }, 'versions-restore')
 }

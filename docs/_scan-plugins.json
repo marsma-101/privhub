@@ -1,0 +1,605 @@
+[
+ {
+  "dir": "privhub-admin",
+  "name": "privhub-admin",
+  "inject": [
+   "privhub",
+   "audit"
+  ],
+  "routes": [
+   "project-create",
+   "project-delete",
+   "admin/users",
+   "admin/user-update",
+   "admin/user-delete",
+   "admin/user-reset-password"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged"
+  ]
+ },
+ {
+  "dir": "privhub-admin-acl",
+  "name": "privhub-admin-acl",
+  "inject": [
+   "privhub",
+   "acl",
+   "webServer"
+  ],
+  "routes": [
+   "acl/rules",
+   "acl/policy"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-admin-audit",
+  "name": "privhub-admin-audit",
+  "inject": [
+   "privhub",
+   "audit"
+  ],
+  "routes": [
+   "audit",
+   "audit/export",
+   "audit/recent"
+  ],
+  "ons": [
+   "audit:logged"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-auth",
+  "name": "privhub-auth",
+  "inject": [
+   "privhub",
+   "audit"
+  ],
+  "routes": [
+   "login",
+   "register",
+   "me",
+   "logout"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged"
+  ]
+ },
+ {
+  "dir": "privhub-auth-watermark",
+  "name": "privhub-auth-watermark",
+  "inject": [
+   "privhub",
+   "watermark"
+  ],
+  "routes": [
+   "watermark"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-core",
+  "name": "privhub-core",
+  "inject": [
+   "webServer",
+   "storage"
+  ],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files",
+  "name": "privhub-files",
+  "inject": [
+   "privhub",
+   "audit",
+   "storage"
+  ],
+  "routes": [
+   "projects",
+   "list",
+   "preview",
+   "preview-raw",
+   "upload",
+   "mkdir",
+   "delete",
+   "rename",
+   "move",
+   "download"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged"
+  ]
+ },
+ {
+  "dir": "privhub-files-agent",
+  "name": "privhub-files-agent",
+  "inject": [
+   "privhub",
+   "storage",
+   "audit",
+   "acl"
+  ],
+  "routes": [
+   "agent/v1/schema",
+   "agent/v1/me",
+   "agent/v1/projects",
+   "agent/v1/list",
+   "agent/v1/read",
+   "agent/v1/versions",
+   "agent/v1/versions/restore",
+   "agent/v1/write",
+   "agent/v1/fork",
+   "agent/v1/rename",
+   "agent/v1/delete",
+   "agent/v1/keys",
+   "agent/v1/keys/revoke",
+   "agent/v1/keys/",
+   "agent/v1/keys/rotate",
+   "agent/v1/my-keys",
+   "agent/v1/trash",
+   "agent/v1/trash/"
+  ],
+  "ons": [
+   "dispose"
+  ],
+  "emits": [
+   "audit:logged"
+  ]
+ },
+ {
+  "dir": "privhub-files-comments",
+  "name": "privhub-files-comments",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "comments",
+   "comments/reply",
+   "comments/status"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-dataview",
+  "name": "privhub-files-dataview",
+  "inject": [
+   "storage",
+   "privhub",
+   "office"
+  ],
+  "routes": [
+   "dataview/new"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-edit-md",
+  "name": "privhub-files-edit-md",
+  "inject": [
+   "privhub",
+   "audit",
+   "storage"
+  ],
+  "routes": [
+   "doc",
+   "text/save",
+   "doc/versions",
+   "doc/restore"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged",
+   "file:saved"
+  ]
+ },
+ {
+  "dir": "privhub-files-explorer-v3",
+  "name": "privhub-files-explorer-v3",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "duplicates"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-export",
+  "name": "privhub-files-export",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [
+   "export"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-fulltext",
+  "name": "privhub-files-fulltext",
+  "inject": [
+   "privhub",
+   "storage",
+   "search",
+   "audit"
+  ],
+  "routes": [
+   "fulltext/search"
+  ],
+  "ons": [
+   "file:saved",
+   "audit:logged"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-invite",
+  "name": "privhub-files-invite",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "invite/create",
+   "invite/list",
+   "invite",
+   "invite/info",
+   "invite/join"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-kg",
+  "name": "privhub-files-kg",
+  "inject": [
+   "privhub",
+   "storage",
+   "meta"
+  ],
+  "routes": [
+   "kg"
+  ],
+  "ons": [
+   "file:saved",
+   "meta:changed"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-mdpage",
+  "name": "privhub-files-mdpage",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "mdpage/generate"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-office",
+  "name": "privhub-files-office",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [
+   "office-preview"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-office-ai",
+  "name": "privhub-files-office-ai",
+  "inject": [
+   "privhub",
+   "office",
+   "storage",
+   "audit"
+  ],
+  "routes": [
+   "ai/office/schema",
+   "ai/office/read",
+   "ai/office/write",
+   "ai/office/keys"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged"
+  ]
+ },
+ {
+  "dir": "privhub-files-office-ui",
+  "name": "privhub-files-office-ui",
+  "inject": [
+   "privhub",
+   "office",
+   "acl",
+   "audit"
+  ],
+  "routes": [
+   "office/read",
+   "office/write",
+   "office/convert-doc"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged",
+   "file:saved"
+  ]
+ },
+ {
+  "dir": "privhub-files-office2",
+  "name": "privhub-files-office2",
+  "inject": [
+   "storage",
+   "privhub",
+   "office"
+  ],
+  "routes": [
+   "office2/lock",
+   "office2/raw",
+   "office2/save"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-publish",
+  "name": "privhub-files-publish",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "publish",
+   "publish/list"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-search",
+  "name": "privhub-files-search",
+  "inject": [
+   "privhub",
+   "search"
+  ],
+  "routes": [
+   "search"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-tags",
+  "name": "privhub-files-tags",
+  "inject": [
+   "privhub",
+   "meta"
+  ],
+  "routes": [
+   "meta/tags",
+   "meta/tags/all",
+   "meta/tagged"
+  ],
+  "ons": [],
+  "emits": [
+   "meta:changed"
+  ]
+ },
+ {
+  "dir": "privhub-files-template",
+  "name": "privhub-files-template",
+  "inject": [
+   "privhub",
+   "meta"
+  ],
+  "routes": [
+   "templates"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-files-versions",
+  "name": "privhub-files-versions",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "versions",
+   "versions/snapshot",
+   "versions/restore"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-git-backup",
+  "name": "privhub-git-backup",
+  "inject": [
+   "storage",
+   "privhub"
+  ],
+  "routes": [
+   "gitbackup/commit",
+   "gitbackup/history",
+   "gitbackup/restore"
+  ],
+  "ons": [
+   "dispose"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-shell",
+  "name": "privhub-shell",
+  "inject": [
+   "webServer",
+   "privhub"
+  ],
+  "routes": [
+   "shell/manifest"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-shell-favorites",
+  "name": "privhub-shell-favorites",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [
+   "favorites"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-shell-recent",
+  "name": "privhub-shell-recent",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [
+   "recent"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-shell-settings",
+  "name": "privhub-shell-settings",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [
+   "settings"
+  ],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-acl",
+  "name": "privhub-svc-acl",
+  "inject": [
+   "storage"
+  ],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-audit",
+  "name": "privhub-svc-audit",
+  "inject": [
+   "storage"
+  ],
+  "routes": [],
+  "ons": [
+   "dispose"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-collab",
+  "name": "privhub-svc-collab",
+  "inject": [],
+  "routes": [],
+  "ons": [
+   "dispose"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-meta",
+  "name": "privhub-svc-meta",
+  "inject": [
+   "storage"
+  ],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-office",
+  "name": "privhub-svc-office",
+  "inject": [
+   "privhub",
+   "storage"
+  ],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-search",
+  "name": "privhub-svc-search",
+  "inject": [],
+  "routes": [],
+  "ons": [
+   "dispose"
+  ],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-storage",
+  "name": "privhub-svc-storage",
+  "inject": [],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-svc-watermark",
+  "name": "privhub-svc-watermark",
+  "inject": [],
+  "routes": [],
+  "ons": [],
+  "emits": []
+ },
+ {
+  "dir": "privhub-trash",
+  "name": "privhub-trash",
+  "inject": [
+   "privhub",
+   "audit",
+   "acl"
+  ],
+  "routes": [
+   "trash-list",
+   "trash-restore",
+   "trash-purge",
+   "trash-clean"
+  ],
+  "ons": [],
+  "emits": [
+   "audit:logged"
+  ]
+ }
+]
