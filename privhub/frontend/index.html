@@ -45,6 +45,34 @@
     }
     .field input:focus { border-color: var(--accent); }
     .field-hint { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.6; }
+
+    /* ============ 智能体接入（开发者平台） ============ */
+    .ac-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+    .ac-card-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+    .ac-grid { display: flex; flex-direction: column; gap: 7px; }
+    .ac-kv { display: flex; gap: 10px; font-size: 13px; align-items: baseline; }
+    .ac-kv .k { color: var(--muted); flex: 0 0 108px; }
+    .ac-kv .v { flex: 1; word-break: break-all; }
+    .ac-kv code, .ac-hint code, .ac-pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+    .ac-hint { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
+    .ac-warn { font-size: 12px; color: var(--warn); margin-top: 10px; line-height: 1.7; }
+    .ac-fresh { border-color: var(--warn); background: rgba(200,150,60,.08); }
+    .ac-keyrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .ac-key { flex: 1; min-width: 240px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; word-break: break-all; }
+    .ac-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 6px 0 14px; }
+    .ac-tab { padding: 7px 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .ac-tab:hover { color: var(--text); }
+    .ac-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+    .ac-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+    .ac-form input, .ac-form select { width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; }
+    .ac-status { font-size: 12px; padding: 1px 7px; border-radius: 10px; }
+    .ac-status.on { color: #3f9d63; background: rgba(63,157,99,.14); }
+    .ac-status.off { color: var(--muted); background: rgba(128,128,128,.14); }
+    .ac-dim { color: var(--muted); font-size: 12px; }
+    .ac-codes { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+    .ac-code { display: flex; gap: 10px; }
+    .ac-code code { flex: 0 0 92px; color: var(--muted); }
+    .ac-pre { margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; white-space: pre; }
     .btn { padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
     .btn-primary { background: var(--accent); color: #fff; width: 100%; }
     .btn-primary:hover { filter: brightness(1.08); }
@@ -723,7 +751,7 @@
       // ⑤ 功能面板 = 视图（llm_wiki 范式）：图标点击切换 activeView，再点回文件视图
       else if (view === 'admin' || view === 'settings' || view === 'acl' || view === 'audit' ||
                view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki' ||
-               view === 'rag') {
+               view === 'rag' || view === 'agent') {
         nav.setActiveView(view)
       }
     }
@@ -998,6 +1026,7 @@
               <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-else-if="nav.activeView === 'kg' && slotComps.kg && slotComps.kg.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps['rag-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'rag' && slotComps['rag-view'] && slotComps['rag-view'].length" @close="nav.setActiveView('files')"></component>
+              <component v-for="c in slotComps['agent-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'agent' && slotComps['agent-view'] && slotComps['agent-view'].length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
               <!-- 欢迎页（未选项目：简单文案，选项目在左侧栏） -->
               <div v-else-if="nav.activeView === 'files' && nav.project === null" class="main-welcome">

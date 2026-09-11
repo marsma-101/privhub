@@ -1,0 +1,10 @@
+{
+  "id": "privhub-shell-agent-console",
+  "title": "智能体接入",
+  "icon": "🔌",
+  "description": "开发者平台：智能体 API 密钥管理（签发/吊销/续期/范围）、接入信息与接口文档。密钥通道与网页登录完全分离。",
+  "slots": ["agent-view"],
+  "barItems": [
+    { "icon": "🔌", "title": "智能体接入", "slot": "app-iconbar", "view": "agent" }
+  ]
+}

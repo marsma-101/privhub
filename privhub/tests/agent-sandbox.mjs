@@ -204,6 +204,54 @@ export function build() {
     eq(r.status, 400, `对个人空间查重应 400（实际 ${r.status}）`)
   })
 
+  s.test('H 开发者平台端点：仅网页会话可用，且给出沙箱与密钥清单', async () => {
+    // 未登录一律拒绝（该端点走会话通道，不接受 Agent 密钥）
+    const anon = await GET('/privhub/api/agent/v1/console')
+    eq(anon.status, 401, `未登录访问平台端点应 401（实际 ${anon.status}）`)
+
+    const kAnon = await GET('/privhub/api/agent/v1/console', { headers: { 'x-agent-key': aKey } })
+    eq(kAnon.status, 401, `平台端点不接受 Agent 密钥（它是给【人】用的会话通道，实际 ${kAnon.status}）`)
+
+    const r = await GET('/privhub/api/agent/v1/console', { token: userToken })
+    ok(r.json && r.json.ok, '登录后应可取平台数据：' + r.text.slice(0, 160))
+    eq(r.json.sandbox, realName, '平台应返回沙箱目录名')
+    eq(r.json.projectReadOnly, true, '平台应声明项目只读')
+    ok(r.json.keyPrefix === 'pha_', '平台应返回密钥前缀')
+    ok(Array.isArray(r.json.myKeys), '平台应返回我的密钥列表')
+    ok(r.json.myKeys.every((k) => !('keyHash' in k) && !('key' in k)),
+      '密钥清单【不得】包含哈希或明文')
+  })
+
+  s.test('I 接口清单：未授权不得读取（地址规则不公开）', async () => {
+    const anon = await GET('/privhub/api/agent/v1/schema')
+    eq(anon.status, 401, `未授权读接口清单应 401（实际 ${anon.status}）`)
+
+    const bySession = await GET('/privhub/api/agent/v1/schema', { token: userToken })
+    ok(bySession.json && bySession.json.ok, '登录会话应可读接口清单（平台要渲染文档）')
+
+    const byKey = await GET('/privhub/api/agent/v1/schema', { headers: { 'x-agent-key': aKey } })
+    ok(byKey.json && byKey.json.ok, '有效 Agent 密钥应可读接口清单（自描述发现）')
+  })
+
+  s.test('J 自助密钥：可签单项目范围，但不允许 all scope', async () => {
+    const okOne = await POST('/privhub/api/agent/v1/my-keys', {
+      token: userToken, body: { name: 'self-' + rand, scope: { kind: 'project', project: PROJECT } },
+    })
+    ok(okOne.json && okOne.json.ok && okOne.json.key, '自助签发单项目密钥失败：' + okOne.text.slice(0, 160))
+    ok(String(okOne.json.key).startsWith('pha_'), '自助密钥应为 pha_ 前缀')
+
+    const bad = await POST('/privhub/api/agent/v1/my-keys', {
+      token: userToken, body: { name: 'self-all-' + rand, scope: { kind: 'all' } },
+    })
+    eq(bad.status, 403, `自助签发 all scope 应 403（实际 ${bad.status}）`)
+    eq(bad.json?.code, 'AGENT-4035', '错误码应为 AGENT-4035')
+
+    // 清理：吊销刚签发的自助密钥
+    await POST('/privhub/api/agent/v1/my-keys', {
+      token: userToken, method: 'DELETE', body: { id: okOne.json.id },
+    }).catch(() => null)
+  })
+
   s.test('清理测试产物', async () => {
     // 删掉写进个人空间的文件（走网页接口，本人有权）
     for (const rel of [PFX + 'ai-note.md', PFX + 'leak-canary.md']) {

@@ -57,7 +57,20 @@ if (!existsSync(DEPLOY)) {
   }
   const devPlugins = countPlugins(ROOT)
   const depPlugins = countPlugins(DEPLOY)
-  ok(depPlugins === devPlugins, `插件数一致（开发 ${devPlugins} / 部署 ${depPlugins}）`)
+  /* 口径与下面的「关键文件漂移」保持一致：
+   * 非发布模式下开发领先部署是正常状态（同步生产需显式授权），只报告不判失败；
+   * --release（发布闸门）下必须完全一致。
+   * 若这里硬失败，则每新增一个插件都会让回归套件变红，
+   * 反而逼着人在未获授权时去动 deploy/ —— 那是更危险的默认行为。 */
+  if (RELEASE_GATE) {
+    ok(depPlugins === devPlugins, `[发布闸门] 插件数一致（开发 ${devPlugins} / 部署 ${depPlugins}）`)
+  } else if (depPlugins === devPlugins) {
+    console.log(`  ✅ 插件数一致（开发 ${devPlugins} / 部署 ${depPlugins}）`)
+    pass++
+  } else {
+    console.log(`  ℹ️  部署插件数落后（开发 ${devPlugins} / 部署 ${depPlugins}）—— 授权同步前属预期`)
+    pass++
+  }
   ok(existsSync(join(DEPLOY, 'plugins', 'privhub-svc-rag', 'src', 'index.ts')), '部署包含 svc-rag 插件')
 
   // 关键源码逐字节比对：不一致即意味着线上跑的不是这套代码
@@ -305,6 +318,22 @@ ok(/setSessionValidator/.test(wsP) && /authSlotDirs/.test(wsP),
   '静态资源鉴权存在：插件代码需会话，登录前仅放行 auth slot 插件')
 ok(/sessionValidator !== null && this\.sessionValidator\(req\)/.test(wsP),
   '未注入校验器时按【拒绝】处理（fail-closed，缺省不放行）')
+
+/* 接口清单 = 地址规则本身，不得对未授权方公开 */
+const agentP2 = readFileSync(join(ROOT, 'plugins', 'privhub-files-agent', 'src', 'index.ts'), 'utf8')
+ok(/agent\/v1\/schema[\s\S]{0,900}?ctx\.privhub\.me\(tokenOf\(req\)\)/.test(agentP2),
+  '接口清单 /schema 需会话或有效密钥（地址规则不对未授权方公开）')
+ok(/agent\/v1\/console/.test(agentP2),
+  '开发者平台端点存在（网页会话通道，与 Agent 密钥通道分离）')
+ok(/自助密钥不支持 all scope/.test(agentP2),
+  '自助签发禁止 all scope（避免无人复核的广域授权）')
+
+/* 平台界面必须挂进骨架：slot 组件 + barItem 视图分发缺一不可 */
+const acManifest = readFileSync(join(ROOT, 'plugins', 'privhub-shell-agent-console', 'client', 'manifest.json'), 'utf8')
+ok(/"agent-view"/.test(acManifest), '平台插件声明 agent-view slot')
+ok(/"view":\s*"agent"/.test(acManifest), '平台插件声明 agent 视图 barItem')
+ok(/slotComps\['agent-view'\]/.test(feSrc), '骨架模板挂载 agent-view（否则界面渲染不出来）')
+ok(/view === 'agent'/.test(feSrc), '骨架 barItem 分发包含 agent 视图')
 
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)

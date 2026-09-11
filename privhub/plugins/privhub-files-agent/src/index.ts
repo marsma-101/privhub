@@ -25,6 +25,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { join, extname } from 'node:path'
 import { stat, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { tokenOf } from '../../privhub-core/src/index'
 import { WriteGate, Idempotency, QuotaLedger, RateLimiter, PathLocks, versionSnapshot, startFlusher, restoreRateBuckets, fileEtag, sha256 as sha256m, M2Config, M2_DEFAULTS } from './m2'
 
 export const name = 'privhub-files-agent'
@@ -272,11 +273,33 @@ function personalScopeRel(key: AgentKey): string {
  * 个人空间由真实姓名创建并在 core 的 users[].personalDir 登记，
  * 这里必须走 core 的登记信息，不能自行拼路径——否则会绕过「仅本人可见」的判定。
  */
-function sandboxDirOf(ctx: Context, key: AgentKey): string | null {
-  const u = ctx.privhub.users.get(key.username) as { personalDir?: string } | undefined
+function sandboxDirOfUser(ctx: Context, username: string): string | null {
+  const u = ctx.privhub.users.get(username) as { personalDir?: string } | undefined
   const d = String(u?.personalDir ?? '').trim()
   if (d === '' || !ctx.privhub.isValidProjectName(d)) return null
   return d
+}
+
+/** 密钥视角的沙箱目录名（= 其绑定账号的个人空间）。 */
+function sandboxDirOf(ctx: Context, key: AgentKey): string | null {
+  return sandboxDirOfUser(ctx, key.username)
+}
+
+/** 展示用状态：把「已到期但还没被惰性标记」的密钥显示为 expired。 */
+function displayStatus(k: AgentKey): AgentKey['status'] {
+  if (k.status === 'active' && k.expiresAt > 0 && Date.now() > k.expiresAt) return 'expired'
+  return k.status
+}
+
+/** 密钥的对外视图（绝不含明文与哈希）。 */
+function keyView(k: AgentKey): Record<string, unknown> {
+  return {
+    id: k.id, name: k.name, username: k.username, type: k.type,
+    scope: k.scope, status: displayStatus(k),
+    expiresAt: k.expiresAt, ipWhitelist: k.ipWhitelist,
+    keyMask: maskKey(KEY_PREFIX + k.keyHash.slice(7)),
+    at: k.at, lastUsedAt: k.lastUsedAt, usageCount: k.usageCount, createdBy: k.createdBy,
+  }
 }
 
 /** 沙箱不可用（账号未开通个人空间）时的统一拒绝。 */
@@ -366,6 +389,23 @@ export function apply(ctx: Context, config?: M2Config): void {
   /* ---------- 发现与身份 ---------- */
 
   svc.route('/privhub/api/agent/v1/schema', wrap(async (ctx, env, req, res) => {
+    /* 接口清单等于「地址规则」本身：端点、参数、错误码一应俱全。
+     * 未授权者不得靠猜地址把它读走——这正是「智能体只能通过 API 读授权信息」的另一半。
+     * 放行两类合法调用方：
+     *   ① 已登录的网页会话（开发者平台要渲染接口文档）；
+     *   ② 持有效密钥的智能体（自描述发现，便于接入方自检）。 */
+    const session = ctx.privhub.me(tokenOf(req))
+    if (!session) {
+      const a = await authAgent(ctx, req, env)
+      if ('errStatus' in a) {
+        return json(res, 401, {
+          ok: false, code: 'AGENT-4010',
+          error: '需要登录会话或有效 Agent 密钥',
+          hint: '接口清单即地址规则，不对未授权方公开',
+          requestId: env.rid,
+        }, { 'x-request-id': env.rid })
+      }
+    }
     json(res, 200, {
       ok: true,
       name: 'privhub-agent-api',
@@ -885,6 +925,37 @@ export function apply(ctx: Context, config?: M2Config): void {
     }
   }, 'agent-versions-restore'))
 
+  /* ---------- 开发者平台（网页登录态；与 Agent 密钥通道严格分开） ---------- */
+
+  /**
+   * 开发者平台数据：沙箱信息 + 我的密钥（管理员额外拿到全部密钥）。
+   *
+   * 为什么不复用 /me：/me 走【Agent 密钥】通道，是给智能体用的；
+   * 开发者平台是【人】在网页上用，身份来自登录会话。两者来源不同，
+   * 不能互相替代——这也是「用户登录不受影响、智能体另走密钥」的落点。
+   */
+  svc.route('/privhub/api/agent/v1/console', wrap(async (ctx, env, req, res) => {
+    const u = ctx.privhub.requireUser(req, res)
+    if (!u) return
+    const keys = await loadKeys(ctx)
+    const sandbox = sandboxDirOfUser(ctx, u.username)
+    json(res, 200, {
+      ok: true,
+      keyPrefix: KEY_PREFIX,
+      keyCycle: 'monthly',
+      projectReadOnly: true,
+      sandbox,
+      sandboxPath: sandbox === null ? null : sandbox + '/',
+      // 沙箱未开通时给出可执行的下一步，而不是让用户猜
+      sandboxHint: sandbox === null
+        ? '你的账号尚未开通个人空间。智能体沙箱即个人空间（由真实姓名创建），请联系管理员为你的账号设置真实姓名。'
+        : null,
+      myKeys: keys.filter((k) => k.username === u.username).map(keyView),
+      isAdmin: u.role === 'admin',
+      allKeys: u.role === 'admin' ? keys.map(keyView) : null,
+    }, { 'x-request-id': env.rid })
+  }, 'agent-console'))
+
   /* ---------- 管理：key 生命周期（admin 登录态） ---------- */
 
   const adminOnly = (env: Env, req: IncomingMessage, res: ServerResponse): { username: string; role: string } | null => requireAdmin(ctxRef, req, res, env)
@@ -1013,6 +1084,16 @@ export function apply(ctx: Context, config?: M2Config): void {
     }
     if (req.method === 'POST') {
       let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
+      // 自助通道不允许 'all' scope：它等于「该用户可见的全部项目」，
+      // 而自助签发没有任何人复核。要广域授权请走管理员签发（管理员通道仍允许 all）。
+      if (String(body?.scope?.kind ?? 'project') === 'all') {
+        return json(res, 403, {
+          ok: false, code: 'AGENT-4035',
+          error: '自助密钥不支持 all scope',
+          hint: '自助仅可签发单个项目或目录范围的密钥；需要访问全部项目请由管理员签发',
+          requestId: env.rid,
+        }, { 'x-request-id': env.rid })
+      }
       body.username = u.username
       const r = await createKey(ctx, u.username, 'user', body)
       if (!r.ok) return json(res, r.status, { ok: false, code: r.code, error: r.hint, hint: r.hint, requestId: env.rid }, { 'x-request-id': env.rid })
