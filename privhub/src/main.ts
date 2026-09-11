@@ -187,6 +187,12 @@ async function main(): Promise<void> {
    *    偶发「用户名或密码错误」；账号文件损坏时也应在此明确失败而非带病启动。 */
   await ctx.privhub.ready
 
+  /* 5.5 静态资源鉴权接线：插件前端代码即 API 全貌，未登录不得枚举。
+   *     校验器在此注入而非在 web-server 内 inject privhub —— privhub-core 已
+   *     inject webServer，反向注入会成环。会话优先取 Bearer，回退会话 Cookie
+   *     （浏览器 import() 子资源无法附加自定义请求头）。 */
+  ctx.webServer.setSessionValidator((req) => ctx.privhub.me(core.tokenOf(req)) !== null)
+
   /* 6. 启动 HTTP 服务 */
   await ctx.webServer.listen(port)
 

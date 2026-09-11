@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-recent'
-export const inject = ['privhub', 'storage']
+export const inject = ['privhub', 'storage', 'eventBus']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -48,6 +48,32 @@ async function saveAll(storage: { writeText: (f: string, d: string) => Promise<v
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
+
+  ctx.eventBus.declareListen('personal:renamed', 'privhub-shell-recent', '个人空间改名 → 同步最近列表里的项目名')
+
+  /* 个人空间改名 → 把最近列表里指向旧目录名的条目的 project 改写成新名。
+   * 不改写也不会报错（读取时会按 visibleProjects 过滤掉），但用户的「最近」
+   * 记录会静默丢失一条，属于数据腐坏，顺手修掉。 */
+  ctx.effect(() => {
+    const off = ctx.on('personal:renamed', (p: { oldName?: string; newName?: string }) => {
+      const oldName = String(p?.oldName ?? '')
+      const newName = String(p?.newName ?? '')
+      if (oldName === '' || newName === '' || oldName === newName) return
+      void (async () => {
+        try {
+          const all = await loadAll(ctx.storage)
+          let touched = false
+          for (const key of Object.keys(all)) {
+            for (const e of all[key] ?? []) {
+              if (e.project === oldName) { e.project = newName; touched = true }
+            }
+          }
+          if (touched) await saveAll(ctx.storage, all)
+        } catch { /* 最近列表非关键数据，失败不影响改名本身 */ }
+      })()
+    })
+    return () => off()
+  })
 
   /* 最近列表（当前用户） */
   svc.route('/privhub/api/recent', async (req, res) => {

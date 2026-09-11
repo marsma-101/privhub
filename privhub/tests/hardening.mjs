@@ -7,6 +7,8 @@
  * @module tests/hardening
  */
 
+import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   createSuite, ok, eq, includes,
   loginOk, uploadFile, listDir, safeDelete, purgeTrashOfProject,
@@ -15,6 +17,17 @@ import {
 
 const PROJECT = process.env.PRIVHUB_TEST_PROJECT || '公共'
 const PFX = '_hard_'
+const TEST_ROOT = process.env.PRIVHUB_TEST_ROOT || ''
+
+/**
+ * 清理测试账号的个人空间目录。
+ * 设计上删除用户【不会】删除个人空间（数据保留给项目维护者），
+ * 所以测试必须自行清理；否则残留的同名目录会让下一次注册查重失败。
+ */
+function cleanupPersonalDir(dir) {
+  if (!TEST_ROOT || !dir) return
+  try { rmSync(join(TEST_ROOT, 'data-files', dir), { recursive: true, force: true }) } catch { /* 忽略 */ }
+}
 
 export function build() {
   const s = createSuite('加固回归（hardening）')
@@ -167,16 +180,24 @@ export function build() {
     const orig = before.json?.settings?.allowSelfRegister
     const rand = Math.random().toString(36).slice(2, 8)
     const uname = PFX + rand
+    // 实名制：注册必须带姓名，且姓名是全局唯一的个人空间目录名
+    const pdir = 'S11测试' + rand
 
     // 审核指出：复原必须放在 finally。否则任一断言失败，目标环境的
     // allowSelfRegister 会永久停在 false（真实服务器上等于悄悄关掉注册）。
     try {
       await POST('/privhub/api/settings', { token: admin, body: { allowSelfRegister: false } })
-      const r1 = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456' } })
+      const r1 = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456', displayName: pdir } })
       eq(r1.status, 403, '关闭注册后应 403，实际 ' + r1.status)
 
       await POST('/privhub/api/settings', { token: admin, body: { allowSelfRegister: true } })
-      const r2 = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456' } })
+
+      // 实名制前提：不填姓名必须被拒（而不是回退成用户名）
+      const r1b = await POST('/privhub/api/register', { body: { username: uname + 'n', password: 'test123456' } })
+      eq(r1b.status, 400, '未填真实姓名应 400，实际 ' + r1b.status)
+      ok(!r1b.json?.ok, '未填姓名不得注册成功')
+
+      const r2 = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456', displayName: pdir } })
       ok(r2.json && r2.json.ok, '打开注册后应可注册：' + r2.text.slice(0, 120))
     } finally {
       await POST('/privhub/api/settings', {
@@ -185,6 +206,7 @@ export function build() {
       }).catch(() => null)
       // 清理测试账号，避免永久污染 users.json
       await POST('/privhub/api/admin/user-delete', { token: admin, body: { username: uname } }).catch(() => null)
+      cleanupPersonalDir(pdir)
     }
   })
 
@@ -207,6 +229,8 @@ export function build() {
     // 只有在「本人删除、但之后失去该项目权限」时才暴露。
     const uname = PFX + 'u' + Math.random().toString(36).slice(2, 7)
     const name = PFX + 'revoke.txt'
+    // 实名制：姓名全局唯一，且同时是个人空间目录名
+    const pdir9 = 'S9测试' + uname.slice(PFX.length)
     let created = false
 
     // 1) 建一个普通用户。
@@ -216,7 +240,7 @@ export function build() {
     const origReg = before.json?.settings?.allowSelfRegister
     try {
       await POST('/privhub/api/settings', { token: admin, body: { allowSelfRegister: true } })
-      const mk = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456', displayName: 'S9 测试用户' } })
+      const mk = await POST('/privhub/api/register', { body: { username: uname, password: 'test123456', displayName: pdir9 } })
       ok(mk.json && mk.json.ok, '创建测试用户：' + mk.text.slice(0, 120))
       created = !!(mk.json && mk.json.ok)
 
@@ -229,6 +253,7 @@ export function build() {
         token: admin,
         body: { allowSelfRegister: typeof origReg === 'boolean' ? origReg : false },
       }).catch(() => null)
+      cleanupPersonalDir(pdir9)
     }
     if (!created) {
       ok(false, '未能创建测试用户，S9 判别用例无法执行')

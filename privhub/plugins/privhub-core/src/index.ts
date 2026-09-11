@@ -7,8 +7,11 @@
  * 接口按域归属各业务插件，路由注册通过 svc.route() 复用底座 webServer。
  *
  * 数据模型：
- *   - users.json       账号列表（密码 scrypt 盐哈希、角色、负责的项目）
+ *   - users.json       账号列表（密码 scrypt 盐哈希、角色、负责的项目、个人空间目录）
  *   - data-files/      文件存储根，顶层文件夹即「项目」
+ *                      另有一类特殊顶层文件夹＝用户「个人空间」，在 users[].personalDir 登记，
+ *                      不属于项目：仅归属者本人可见可访问（管理员亦不可见，只能看到审计记录）、
+ *                      不参与查重/向量化/全文索引、且系统永不自动删除。
  *   - sessions.json    持久会话（token -> username）
  *   - trash.json + data-files/.trash/  回收站记录与实体文件
  *
@@ -34,6 +37,11 @@ export interface UserRecord {
   displayName: string
   role: Role
   projects: string[] // 有权限的项目文件夹名（管理员忽略此字段，默认全部）
+  /**
+   * 个人空间目录名（data-files 下的顶层文件夹，与 displayName 同步）。
+   * 未开通个人空间的历史账号为 undefined。
+   */
+  personalDir?: string
 }
 
 /** 回收站一条记录。 */
@@ -78,6 +86,8 @@ interface UserView {
   displayName: string
   role: Role
   projects: string[]
+  /** 本人个人空间目录名；未开通为 undefined。前端据此在项目列表里标记「我的空间」。 */
+  personalDir?: string
 }
 
 /* ============ HTTP 共享工具（供各业务插件 import） ============ */
@@ -173,11 +183,52 @@ export function readBodyRaw(req: IncomingMessage, max: number): Promise<Buffer> 
   })
 }
 
+/**
+ * 会话 Cookie 名。
+ *
+ * 为什么需要第二条通道：插件前端是经 `import('/privhub-plugins/...')` 加载的，
+ * 浏览器对动态 import / `<script>` 这类子资源请求【无法附加自定义请求头】，
+ * 因此 Authorization: Bearer 在静态资源这一层用不了，只能靠 Cookie 携带会话。
+ * Cookie 只作为 Bearer 缺失时的回退，接口鉴权语义不变。
+ */
+export const SESSION_COOKIE = 'privhub_sid'
+
+/** 从 Cookie 头解析会话 token。 */
+export function cookieToken(req: IncomingMessage): string | undefined {
+  const raw = req.headers.cookie
+  if (!raw) return undefined
+  for (const seg of raw.split(';')) {
+    const i = seg.indexOf('=')
+    if (i < 0) continue
+    if (seg.slice(0, i).trim() !== SESSION_COOKIE) continue
+    const v = seg.slice(i + 1).trim()
+    if (v === '') return undefined
+    try { return decodeURIComponent(v) } catch { return v }
+  }
+  return undefined
+}
+
+/**
+ * 取请求携带的会话 token：优先 Authorization: Bearer，回退会话 Cookie。
+ * （web-server 的静态资源鉴权也复用本函数，保证两条通道判定一致。）
+ */
 export function tokenOf(req: IncomingMessage): string | undefined {
   const h = req.headers.authorization
-  if (!h) return undefined
-  const m = /^Bearer\s+(.+)$/i.exec(h)
-  return m?.[1]
+  if (h) {
+    const m = /^Bearer\s+(.+)$/i.exec(h)
+    if (m) return m[1]
+  }
+  return cookieToken(req)
+}
+
+/** 下发会话 Cookie：HttpOnly（脚本读不到）+ SameSite=Strict（跨站不携带）。 */
+export function sessionSetCookie(token: string, maxAgeSec: number): string {
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(0, Math.floor(maxAgeSec))}`
+}
+
+/** 清除会话 Cookie（Path/属性需与下发时一致，否则浏览器不会覆盖）。 */
+export function sessionClearCookie(): string {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`
 }
 
 /* ============ 密码：scrypt 盐哈希（Node 内置，自包含） ============ */
@@ -224,6 +275,21 @@ export class PrivHubStore extends Service {
   users: Map<string, UserRecord> = new Map()
   sessions: Map<string, SessionEntry> = new Map() // token -> { username, expiresAt }
   loginFails: Map<string, { count: number; until: number }> = new Map()
+  /**
+   * 「退休」的个人空间目录名：改过名之后，旧名字永久保留在此，映射到原归属者。
+   *
+   * 为什么必须保留而不能直接释放：个人空间的数据不止在文件夹里，还散落在
+   * 一批【以目录名为键】的存储中（versions/comments/meta/fulltext/回收站/
+   * 收藏/最近…）。这些存储只用 canAccess 把关，而 canAccess 对管理员
+   * 是「任意合法名字都放行」。一旦旧名字被释放：
+   *   ① 管理员可以按旧名直接读到私人文件的历史版本正文（越权）；
+   *   ② 若之后有人注册成同名，新人会拿到旧名的可见性，直接读到前任的
+   *      版本历史与批注内容。
+   * 保留旧名字并维持其归属，canAccess / visibleProjects 就会继续把
+   * 旧名字对所有人（含管理员）挡在外面，从根上关闭这一整类越权，
+   * 也无需逐个存储去补清理钩子。
+   */
+  private retiredDirs: Map<string, string> = new Map()
   private readonly dataDir: string
   private readonly sessionsFile: string
   private readonly trashFile: string
@@ -319,10 +385,23 @@ export class PrivHubStore extends Service {
     for (const u of parsed.users) {
       if (u && typeof u.username === 'string') this.users.set(u.username, { ...u, projects: u.projects ?? [] })
     }
+    // 旧文件没有 retiredPersonalDirs 字段：视为空（不影响既有账号）
+    this.retiredDirs = new Map()
+    const retired = (parsed as { retiredPersonalDirs?: Record<string, string> }).retiredPersonalDirs
+    if (retired && typeof retired === 'object') {
+      for (const [dir, owner] of Object.entries(retired)) {
+        if (typeof dir === 'string' && dir !== '' && typeof owner === 'string' && owner !== '') {
+          this.retiredDirs.set(dir, owner)
+        }
+      }
+    }
   }
 
   async saveUsers(): Promise<void> {
-    await this.atomicWrite(this.usersFile, JSON.stringify({ users: [...this.users.values()] }, null, 2))
+    await this.atomicWrite(this.usersFile, JSON.stringify({
+      users: [...this.users.values()],
+      retiredPersonalDirs: Object.fromEntries(this.retiredDirs),
+    }, null, 2))
   }
 
   async loadSessions(): Promise<void> {
@@ -350,26 +429,213 @@ export class PrivHubStore extends Service {
 
   /* ---------- 权限辅助 ---------- */
   userView(u: UserRecord): UserView {
-    return { username: u.username, displayName: u.displayName, role: u.role, projects: [...u.projects] }
+    return { username: u.username, displayName: u.displayName, role: u.role, projects: [...u.projects], personalDir: u.personalDir }
   }
 
+  /* ---------- 个人空间 ---------- */
+  /*
+   * 个人空间与「项目」是两类东西：它同样是 data-files 下的顶层文件夹，但在
+   * users[].personalDir 中登记，因此：
+   *   ① 不计入 allProjects()（管理员的项目列表/项目下拉里看不到）；
+   *   ② canAccess 只对归属者本人放行（管理员也不行）；
+   *   ③ 不参与查重/向量化/全文索引（见 indexableProjects）；
+   *   ④ 系统永不自动删除（项目软删、删除账号都不动它）。
+   */
+
+  /** 所有已登记的个人空间目录名。 */
+  private personalDirSet(): Set<string> {
+    // 含「退休」名：旧名仍然必须被当作个人空间对待，
+    // 否则它会退回普通项目身份（管理员 canAccess 放行），泄露历史数据。
+    const set = new Set<string>(this.retiredDirs.keys())
+    for (const u of this.users.values()) {
+      const d = (u.personalDir ?? '').trim()
+      if (d !== '' && this.isValidProjectName(d)) set.add(d)
+    }
+    return set
+  }
+
+  /** 该顶层文件夹是否是某个用户的个人空间。 */
+  isPersonalDir(name: string): boolean {
+    return this.personalDirSet().has(name)
+  }
+
+  /** 个人空间的归属者用户名；不是个人空间返回 null。 */
+  ownerOfPersonalDir(name: string): string | null {
+    for (const u of this.users.values()) if ((u.personalDir ?? '').trim() === name) return u.username
+    // 退休名仍归原主：canAccess 因此继续拒绝其他人（含管理员）
+    return this.retiredDirs.get(name) ?? null
+  }
+
+  /** 本人个人空间目录名；未开通或目录不存在返回 null。 */
+  personalDirOf(user: UserRecord): string | null {
+    const d = (user.personalDir ?? '').trim()
+    if (d === '' || !this.isValidProjectName(d)) return null
+    return existsSync(resolve(this.dataRoot, d)) ? d : null
+  }
+
+  /**
+   * 姓名查重（注册与改名共用）。冲突来源：
+   *   ① 其他账号的显示名  ② 其他账号的个人空间目录名  ③ data-files 下已存在的同名顶层文件夹。
+   * exceptUsername 用于「改自己的名字」时排除自己。
+   */
+  async checkNameAvailable(name: string, exceptUsername?: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const n = String(name ?? '').trim()
+    if (n === '') return { ok: false, reason: '姓名不能为空' }
+    if (n.length > 32) return { ok: false, reason: '姓名过长（上限 32 字）' }
+    if (!this.isValidProjectName(n)) return { ok: false, reason: '姓名不能包含 / \\ .. 等字符' }
+    for (const u of this.users.values()) {
+      if (exceptUsername !== undefined && u.username === exceptUsername) continue
+      if ((u.displayName ?? '').trim() === n) return { ok: false, reason: `姓名「${n}」已被账号 ${u.username} 使用` }
+      if ((u.personalDir ?? '').trim() === n) return { ok: false, reason: `姓名「${n}」已被占用` }
+    }
+    // 退休名不可给他人：否则新人会继承旧名的可见性，
+    // 从而读到前任留在版本历史/批注/全文索引里的私人内容
+    const retiredOwner = this.retiredDirs.get(n)
+    if (retiredOwner !== undefined && retiredOwner !== exceptUsername) {
+      return { ok: false, reason: `姓名「${n}」曾被使用，为保护历史数据不可复用` }
+    }
+    if (existsSync(resolve(this.dataRoot, n))) return { ok: false, reason: `已存在同名文件夹「${n}」` }
+    return { ok: true }
+  }
+
+  /**
+   * 绑定个人空间：把 users[].personalDir 置为 dirName 并确保目录存在。
+   * 只负责建目录与登记，不改 displayName——一致性由调用方（注册/改名）保证。
+   */
+  async bindPersonalDir(username: string, dirName: string): Promise<boolean> {
+    const u = this.users.get(username)
+    if (!u) return false
+    const n = String(dirName ?? '').trim()
+    if (n === '' || !this.isValidProjectName(n)) return false
+    const owner = this.ownerOfPersonalDir(n)
+    if (owner !== null && owner !== username) return false
+    await mkdir(resolve(this.dataRoot, n), { recursive: true })
+    u.personalDir = n
+    return true
+  }
+
+  /**
+   * 改显示名 —— 与个人空间目录名 live-bound（二者必须同名）。
+   *
+   * 为什么必须在一个方法里同时改：显示名与目录名是同一件事的两个副本，
+   * 任何只改一半的结果都是「文件夹叫新名、账号记着旧名」——那样本人访问不到、
+   * 而旧名又因为不再登记为个人空间而被当成普通项目名（管理员可见），是最坏状态。
+   *
+   * 顺序与回滚：
+   *   ① 查重（其他账号姓名 / 其他账号个人空间名 / 退休名 / data-files 下已存在同名顶层目录）
+   *   ② 改磁盘目录（先做，失败则整体放弃，registry 未动）
+   *   ③ 改 registry + 旧名退休，一并落盘；落盘失败则把磁盘与退休表都【改回去】
+   *
+   * 旧名退休是关键（见 retiredDirs 说明）：改完名后旧名不能直接消失，
+   * 否则它会退回普通项目身份，让管理员按旧名读到版本历史/批注等私人内容。
+   *
+   * 未开通个人空间的历史账号（personalDir 为空）只改显示名，不碰磁盘。
+   *
+   * @returns ok=false 时保证不产生任何改动。
+   */
+  async changeDisplayName(username: string, rawName: string): Promise<
+    | { ok: true; oldName: string; newName: string; renamedDir: boolean }
+    | { ok: false; reason: string }
+  > {
+    const u = this.users.get(username)
+    if (!u) return { ok: false, reason: '用户不存在' }
+    const newName = String(rawName ?? '').trim()
+    if (newName === '') return { ok: false, reason: '姓名不能为空' }
+    const oldName = String(u.displayName ?? '').trim()
+    if (newName === oldName) return { ok: true, oldName, newName, renamedDir: false }
+
+    const avail = await this.checkNameAvailable(newName, username)
+    if (!avail.ok) return { ok: false, reason: avail.reason }
+
+    const oldDir = String(u.personalDir ?? '').trim()
+    const hasSpace = oldDir !== ''
+    const willRename = hasSpace && oldDir !== newName
+    const oldAbs = resolve(this.dataRoot, oldDir)
+    const newAbs = resolve(this.dataRoot, newName)
+
+    if (willRename && existsSync(newAbs)) {
+      return { ok: false, reason: `已存在同名文件夹「${newName}」` }
+    }
+
+    let renamedDir = false
+    if (willRename && existsSync(oldAbs)) {
+      try {
+        await rename(oldAbs, newAbs)
+        renamedDir = true
+      } catch (e) {
+        return { ok: false, reason: '改名失败：' + (e instanceof Error ? e.message : String(e)) }
+      }
+    }
+    // 幂等：改名成功后目录已在；旧目录缺失时补建，保证个人空间始终可用
+    if (hasSpace) await mkdir(newAbs, { recursive: true })
+
+    const prevDisplay = u.displayName
+    const prevPersonal = u.personalDir
+    const retiredSnapshot = new Map(this.retiredDirs)
+    u.displayName = newName
+    if (hasSpace) u.personalDir = newName
+    if (renamedDir) {
+      // 旧名退休 + 本人的旧名若被重新取回则取消退休
+      this.retiredDirs.set(oldDir, username)
+      this.retiredDirs.delete(newName)
+    }
+    try {
+      await this.saveUsers()
+    } catch (e) {
+      u.displayName = prevDisplay
+      u.personalDir = prevPersonal
+      this.retiredDirs = retiredSnapshot
+      if (renamedDir) await rename(newAbs, oldAbs).catch(() => { /* 回滚尽力而为 */ })
+      return { ok: false, reason: '保存账号失败：' + (e instanceof Error ? e.message : String(e)) }
+    }
+    return { ok: true, oldName, newName, renamedDir }
+  }
+
+  /* ---------- 项目列表与权限 ---------- */
+
+  /** 所有「真正的项目」——不含任何个人空间（管理员界面与索引类功能都以此为准）。 */
   async allProjects(): Promise<string[]> {
     if (!existsSync(this.dataRoot)) return []
     const ents = await readdir(this.dataRoot, { withFileTypes: true })
-    return ents.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name).sort()
+    const personal = this.personalDirSet()
+    return ents
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !personal.has(e.name))
+      .map((e) => e.name)
+      .sort()
   }
 
+  /**
+   * 用户可见的顶层文件夹：本人的个人空间 + 有权限的项目。
+   * 管理员拿到全部项目，但【不含】他人个人空间。
+   */
   async visibleProjects(user: UserRecord): Promise<string[]> {
-    if (user.role === 'admin') return this.allProjects()
-    return user.projects.filter((p) => this.isValidProjectName(p))
+    const own = this.personalDirOf(user)
+    const personal = this.personalDirSet()
+    const base = user.role === 'admin'
+      ? await this.allProjects()
+      : user.projects.filter((p) => this.isValidProjectName(p) && !personal.has(p))
+    return own === null ? base : [own, ...base.filter((p) => p !== own)]
+  }
+
+  /** 索引类功能（查重/向量化/全文索引）的目标范围：只针对项目，排除个人空间。 */
+  async indexableProjects(user: UserRecord): Promise<string[]> {
+    const personal = this.personalDirSet()
+    return (await this.visibleProjects(user)).filter((p) => !personal.has(p))
   }
 
   isValidProjectName(name: string): boolean {
     return name !== '' && !name.includes('/') && !name.includes('\\') && !name.includes('..') && name !== '.'
   }
 
+  /**
+   * 文件访问判定。个人空间优先级最高：只有归属者本人可以访问，
+   * 管理员同样不可访问（管理员对个人空间的可见性仅限审计记录，不含文件内容）。
+   */
   canAccess(user: UserRecord, project: string): boolean {
-    if (user.role === 'admin') return this.isValidProjectName(project)
+    if (!this.isValidProjectName(project)) return false
+    const owner = this.ownerOfPersonalDir(project)
+    if (owner !== null) return user.username === owner
+    if (user.role === 'admin') return true
     return user.projects.includes(project)
   }
 
@@ -487,6 +753,8 @@ export class PrivHubStore extends Service {
 
   async createProject(project: string): Promise<boolean> {
     if (!this.isValidProjectName(project)) return false
+    // 不允许与任何个人空间同名：顶层目录撞名会让权限判定无法区分二者
+    if (this.isPersonalDir(project)) return false
     const dir = resolve(this.dataRoot, project)
     if (existsSync(dir)) return false
     await mkdir(dir, { recursive: true })
@@ -495,6 +763,8 @@ export class PrivHubStore extends Service {
   /** 项目软删除：整个项目文件夹移入回收站（可恢复）。 */
   async moveProjectToTrash(project: string, operator: string): Promise<boolean> {
     if (!this.isValidProjectName(project)) return false
+    // 个人空间永不删除：即使管理员直接调接口，这里也硬拦
+    if (this.isPersonalDir(project)) return false
     const target = resolve(this.dataRoot, project)
     if (!existsSync(target)) return false
     const id = `${Date.now()}_${randomBytes(4).toString('hex')}`

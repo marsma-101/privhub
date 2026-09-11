@@ -2,13 +2,14 @@
  * privhub-files-agent — Agent API 智能体接口网关（M1 网关核心 + M2 可靠治理）
  *
  * 企业级智能体接入（C22）：局域网内智能体经受控 API 读取用户权限内项目（只读），
- * 并在用户专属空间（.agents/<user>/<project>/）读写删改生成物。
+ * 并在用户沙箱（= 该用户的个人空间 data-files/<真实姓名>/，按 key scope 分区）
+ * 读写删改生成物；项目对智能体始终只读。
  *
  * M1 网关核心：
  *   - Key 治理：sha256 哈希存储、状态机（active/suspended/revoked/expired 惰性）、
  *     自然月周期（X-Key-Expires 预警）、IPv4 CIDR 白名单、mask 展示、明文仅一次
  *   - scope 矩阵：project / directory / all；项目只读 403 硬隔离；ACL view 逐请求
- *   - 专属空间分区 + resolveReal 防穿越 + 敏感扩展名豁免
+ *   - 沙箱（个人空间）分区 + resolveReal 防穿越 + 敏感扩展名豁免
  * M2 可靠与治理（逻辑在 m2.ts）：
  *   - 幂等写（X-Idempotency-Key 必填，重放/冲突）、If-Match/ETag 乐观并发
  *   - 写并发排队（8/100/30s）、per-path 锁、配额账本（1GB）、持久化限流、版本快照
@@ -241,7 +242,15 @@ function requireAdmin(ctx: Context, req: IncomingMessage, res: ServerResponse, e
   return u
 }
 
-/* ============ scope 与专属空间 ============ */
+/* ============ scope 与智能体沙箱 ============ */
+/*
+ * 沙箱 = 绑定用户的「个人空间」目录（data-files/<真实姓名>/），不再是 .agents 隐藏目录。
+ *
+ * 为什么改用个人空间：个人空间本就是「仅本人可见可访问、管理员也读不到、
+ * 系统永不自动删除、不参与查重/向量化/全文索引」的私有区，正是沙箱需要的语义；
+ * 复用它还让用户能直接在界面里查看和整理 AI 产物，不必再维护第二套私有目录。
+ *
+ * 不变的部分：项目对智能体【始终只读】，任何写入项目目录的请求一律 403。 */
 
 function scopeAllows(key: AgentKey, project: string, relPath: string): boolean {
   const s = key.scope
@@ -258,31 +267,55 @@ function personalScopeRel(key: AgentKey): string {
   return key.scope.kind === 'all' ? '' : key.scope.project
 }
 
-function personalProject(key: AgentKey): string {
-  return '.agents/' + key.username
+/**
+ * 沙箱目录名 = 绑定用户的个人空间目录名；账号未开通个人空间时为 null。
+ * 个人空间由真实姓名创建并在 core 的 users[].personalDir 登记，
+ * 这里必须走 core 的登记信息，不能自行拼路径——否则会绕过「仅本人可见」的判定。
+ */
+function sandboxDirOf(ctx: Context, key: AgentKey): string | null {
+  const u = ctx.privhub.users.get(key.username) as { personalDir?: string } | undefined
+  const d = String(u?.personalDir ?? '').trim()
+  if (d === '' || !ctx.privhub.isValidProjectName(d)) return null
+  return d
 }
 
-function personalBase(ctx: Context, key: AgentKey): string {
-  return join(ctx.privhub.dataRoot, '.agents', key.username, personalScopeRel(key))
+/** 沙箱不可用（账号未开通个人空间）时的统一拒绝。 */
+function sandboxMissing(env: Env, res: ServerResponse, extra: Record<string, string>): void {
+  json(res, 403, {
+    ok: false,
+    code: 'AGENT-4036',
+    error: '智能体沙箱不可用',
+    hint: '绑定账号尚未开通个人空间。沙箱即该账号的个人空间（由真实姓名创建），'
+      + '请先为其设置真实姓名（注册实名 / 管理员改显示名）后重试。',
+    requestId: env.rid,
+  }, extra)
 }
 
-async function ensurePersonalBase(ctx: Context, key: AgentKey): Promise<string> {
-  const base = personalBase(ctx, key)
+/** 沙箱内的相对路径（含 scope 分区前缀）：用于审计目标与版本键。 */
+function sandboxRel(key: AgentKey, relPath: string): string {
+  const s = personalScopeRel(key)
+  return s === '' ? relPath : (relPath === '' ? s : s + '/' + relPath)
+}
+
+function sandboxBase(ctx: Context, dir: string, key: AgentKey): string {
+  return join(ctx.privhub.dataRoot, dir, personalScopeRel(key))
+}
+
+async function ensureSandboxBase(ctx: Context, dir: string, key: AgentKey): Promise<string> {
+  const base = sandboxBase(ctx, dir, key)
   await mkdir(base, { recursive: true })
   return base
 }
 
-/** 解析个人空间内路径（防穿越 + realpath 校验） */
-async function resolvePersonal(ctx: Context, key: AgentKey, relPath: string): Promise<string | null> {
-  await ensurePersonalBase(ctx, key)
-  const full = personalScopeRel(key)
-  const withScope = full === '' ? relPath : (relPath === '' ? full : full + '/' + relPath)
-  return ctx.privhub.resolveReal(personalProject(key), withScope)
+/** 解析沙箱内路径（防穿越 + realpath 校验） */
+async function resolvePersonal(ctx: Context, dir: string, key: AgentKey, relPath: string): Promise<string | null> {
+  await ensureSandboxBase(ctx, dir, key)
+  return ctx.privhub.resolveReal(dir, sandboxRel(key, relPath))
 }
 
-/** 个人空间写目标：逐段建目录 + realpath 校验 */
-async function personalTarget(ctx: Context, key: AgentKey, relPath: string): Promise<string | null> {
-  const base = await ensurePersonalBase(ctx, key)
+/** 沙箱写目标：逐段建目录 + realpath 校验 */
+async function personalTarget(ctx: Context, dir: string, key: AgentKey, relPath: string): Promise<string | null> {
+  const base = await ensureSandboxBase(ctx, dir, key)
   const segs = relPath.replace(/\\/g, '/').split('/').filter((s) => s !== '')
   let cur = base
   for (const seg of segs.slice(0, -1)) {
@@ -290,9 +323,7 @@ async function personalTarget(ctx: Context, key: AgentKey, relPath: string): Pro
     cur = join(cur, seg)
     await mkdir(cur, { recursive: true })
   }
-  const scopeRel = personalScopeRel(key)
-  const withScope = scopeRel === '' ? relPath : (relPath === '' ? scopeRel : scopeRel + '/' + relPath)
-  return ctx.privhub.resolveReal(personalProject(key), withScope)
+  return ctx.privhub.resolveReal(dir, sandboxRel(key, relPath))
 }
 
 function validRelPath(relPath: string): boolean {
@@ -342,7 +373,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       auth: { header: 'X-Agent-Key', prefix: KEY_PREFIX, keyCycle: 'monthly', expiresWarnDays: 7 },
       boundary: {
         projectReadOnly: true,
-        writeScope: '专属空间 .agents/<用户>/<项目>/（按 key scope 分区）',
+        writeScope: '沙箱 = 绑定用户的个人空间（data-files/<真实姓名>/，按 key scope 分区）；项目只读',
         sensitiveExts: SENSITIVE_EXTS,
         channel: '仅 X-Agent-Key 通道；禁止使用网页会话',
       },
@@ -375,23 +406,41 @@ export function apply(ctx: Context, config?: M2Config): void {
 
   svc.route('/privhub/api/agent/v1/me', withAgent(async (ctx, env, a, req, res, extra) => {
     const u = a.user
-    const projects = await ctx.privhub.visibleProjects(u as never)
+    /* 只列出「真正的项目」：个人空间不算项目，它作为沙箱单独给出。
+     * 用 indexableProjects（= visibleProjects 去掉个人空间）保证与查重/索引
+     * 用的是同一份范围定义，避免两处口径漂移。 */
+    const projects = await ctx.privhub.indexableProjects(u as never)
+    const sandbox = sandboxDirOf(ctx, a.key)
     const scopeRel = personalScopeRel(a.key)
     json(res, 200, {
       ok: true,
       key: { name: a.key.name, expiresAt: a.key.expiresAt, scope: a.key.scope, ipWhitelist: a.key.ipWhitelist },
       user: { username: u.username, displayName: u.displayName, role: u.role },
       visibleProjects: projects,
-      personalSpace: '.agents/' + u.username + '/' + (scopeRel ? scopeRel + '/' : ''),
+      // 沙箱即该账号的个人空间；未开通时为 null（写入类操作会被 403 AGENT-4036 拒绝）
+      sandbox: sandbox,
+      sandboxPath: sandbox === null ? null : sandbox + '/' + (scopeRel ? scopeRel + '/' : ''),
+      projectReadOnly: true,
     }, extra)
   }, 'agent-me'))
 
   svc.route('/privhub/api/agent/v1/projects', withAgent(async (ctx, env, a, req, res, extra) => {
-    const projects = await ctx.privhub.visibleProjects(a.user as never)
-    const filtered = a.key.scope.kind === 'all' ? projects
-      : a.key.scope.kind === 'directory' ? (projects.includes(a.key.scope.project) ? [a.key.scope.project] : [])
-        : (projects.includes(a.key.scope.project) ? [a.key.scope.project] : [])
-    json(res, 200, { ok: true, projects: filtered, personalSpace: '.agents/' + a.user.username + '/' }, extra)
+    /* 只暴露「真正的项目」，并按密钥 scope 收窄。
+     * 个人空间【不在此列出】——它是沙箱，不是项目；把别人的或自己的个人空间
+     * 混进项目清单会让智能体以为可以像项目那样按名枚举，也会泄露目录名。
+     * 同时这也修掉了原实现里 /me 不做 scope 过滤、把全部项目名发给智能体的疏漏。 */
+    const projects = await ctx.privhub.indexableProjects(a.user as never)
+    const filtered = a.key.scope.kind === 'all'
+      ? projects
+      : (projects.includes(a.key.scope.project) ? [a.key.scope.project] : [])
+    const sandbox = sandboxDirOf(ctx, a.key)
+    json(res, 200, {
+      ok: true,
+      projects: filtered,
+      sandbox,
+      sandboxPath: sandbox === null ? null : sandbox + '/',
+      projectReadOnly: true,
+    }, extra)
   }, 'agent-projects'))
 
   /* ---------- 读 ---------- */
@@ -409,9 +458,11 @@ export function apply(ctx: Context, config?: M2Config): void {
     let entries: Awaited<ReturnType<typeof svc.listFiles>> = []
     if (isPersonal) {
       if (!validRelPath(path)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '路径非法', hint: '路径包含不合法字符', requestId: env.rid }, extra)
-      const withScope = personalScopeRel(a.key) === '' ? path : (path === '' ? personalScopeRel(a.key) : personalScopeRel(a.key) + '/' + path)
-      entries = await svc.listFiles(personalProject(a.key), withScope)
-      void audit(ctx, 'ai:' + a.key.name, 'agent-list', '.agents/' + a.user.username + '/' + withScope, 'via=' + a.user.username)
+      const sandbox = sandboxDirOf(ctx, a.key)
+      if (sandbox === null) return sandboxMissing(env, res, extra)
+      const withScope = sandboxRel(a.key, path)
+      entries = await svc.listFiles(sandbox, withScope)
+      void audit(ctx, 'ai:' + a.key.name, 'agent-list', sandbox + '/' + withScope, 'via=' + a.user.username)
     } else {
       const pr = await authProjectRead(ctx, a, project, path)
       if (!pr.ok) return json(res, pr.status, { ok: false, code: pr.code, error: pr.hint, hint: pr.hint, requestId: env.rid }, extra)
@@ -440,8 +491,10 @@ export function apply(ctx: Context, config?: M2Config): void {
     let auditTarget = ''
     if (isPersonal) {
       if (!validRelPath(path)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '路径非法', hint: '路径包含不合法字符', requestId: env.rid }, extra)
-      target = await resolvePersonal(ctx, a.key, path)
-      auditTarget = '.agents/' + a.user.username + '/' + (personalScopeRel(a.key) ? personalScopeRel(a.key) + '/' : '') + path
+      const sandbox = sandboxDirOf(ctx, a.key)
+      if (sandbox === null) return sandboxMissing(env, res, extra)
+      target = await resolvePersonal(ctx, sandbox, a.key, path)
+      auditTarget = sandbox + '/' + sandboxRel(a.key, path)
     } else {
       const pr = await authProjectRead(ctx, a, project, path)
       if (!pr.ok) return json(res, pr.status, { ok: false, code: pr.code, error: pr.hint, hint: pr.hint, requestId: env.rid }, extra)
@@ -524,7 +577,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     const path = relOf(String(body.path ?? ''))
     if (!path) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失', hint: 'path 必填', requestId: env.rid }, extra)
     if (String(body.project ?? '') !== '' && body.project !== '@me') {
-      return json(res, 403, { ok: false, code: 'AGENT-4032', error: '项目只读', hint: '智能体仅可读项目，写入限定专属空间（省略 project 即专属空间）', requestId: env.rid }, extra)
+      return json(res, 403, { ok: false, code: 'AGENT-4032', error: '项目只读', hint: '智能体仅可读项目，写入限定沙箱（省略 project 或 @me 即写入沙箱 = 你的个人空间）', requestId: env.rid }, extra)
     }
     if (!validRelPath(path)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '路径非法', hint: '路径包含不合法字符', requestId: env.rid }, extra)
     if (sensitiveName(path.split('/').pop() ?? '')) return json(res, 403, { ok: false, code: 'AGENT-4033', error: '敏感文件豁免', hint: '该文件类型禁止经 Agent API 写入', requestId: env.rid }, extra)
@@ -544,10 +597,12 @@ export function apply(ctx: Context, config?: M2Config): void {
       idemKey = await idemKeyOf(a, req, res, env, extra, body)
       if (idemKey === null) return
     }
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
-    const savedAt = '.agents/' + a.user.username + '/' + scopeRel + path
-    const lockKey = personalProject(a.key) + '|' + scopeRel + path
-    const target = await personalTarget(ctx, a.key, path)
+    const savedAt = sandbox + '/' + scopeRel + path
+    const lockKey = sandbox + '|' + scopeRel + path
+    const target = await personalTarget(ctx, sandbox, a.key, path)
     if (target === null) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '路径无效', hint: '目标路径越界或父目录不可解析', requestId: env.rid }, extra)
     if (dryRun) {
       const usage = await quota.usage(ctx, a.user.username)
@@ -560,7 +615,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     if (g.g.position > 0) { qExtra['x-queue-position'] = String(g.g.position); qExtra['x-queue-wait-ms'] = String(g.g.waitMs) }
     try {
       const out: any = await locks.run(lockKey, async () => {
-        const abs = await personalTarget(ctx, a.key, path)
+        const abs = await personalTarget(ctx, sandbox, a.key, path)
         if (abs === null) return { status: 400, code: 'AGENT-4001', hint: '目标路径越界或父目录不可解析' }
         const existed = existsSync(abs)
         let oldPlain = 0
@@ -575,11 +630,11 @@ export function apply(ctx: Context, config?: M2Config): void {
           if (!constEq(et, ifMatch)) return { status: 409, code: 'AGENT-4091', hint: '并发版本冲突：目标已被其他写入修改，请重新 read 获取新 ETag 后再写' }
         }
         const pr = await quota.precheck(ctx, a.user.username, data.length, oldPlain)
-        if (!pr.ok) return { status: 429, code: 'AGENT-4292', hint: '专属空间配额超限（' + fmtBytes(pr.usage) + ' / ' + fmtBytes(pr.quota) + '），清理空间后可再写', usage: pr.usage, quota: pr.quota }
+        if (!pr.ok) return { status: 429, code: 'AGENT-4292', hint: '沙箱配额超限（' + fmtBytes(pr.usage) + ' / ' + fmtBytes(pr.quota) + '），清理空间后可再写', usage: pr.usage, quota: pr.quota }
         let snapshot = false
         let backupped = false
         if (existed) {
-          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, personalProject(a.key), scopeRel + path, abs, m2cfg.snapshotMax)
+          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, sandbox, scopeRel + path, abs, m2cfg.snapshotMax)
           if (TEXT_EXT.has(extname(abs).slice(1).toLowerCase())) {
             snapshot = true
           } else {
@@ -627,16 +682,18 @@ export function apply(ctx: Context, config?: M2Config): void {
     const destRel = toSubdir === '' ? name : toSubdir + '/' + name
     const idemKey = await idemKeyOf(a, req, res, env, extra, body)
     if (idemKey === null) return
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
-    const savedAt = '.agents/' + a.user.username + '/' + scopeRel + destRel
-    const lockKey = personalProject(a.key) + '|' + scopeRel + destRel
+    const savedAt = sandbox + '/' + scopeRel + destRel
+    const lockKey = sandbox + '|' + scopeRel + destRel
     const g = await gateAcquire(env, res, extra)
     if (!g) return
     const qExtra: Record<string, string> = { 'x-queue-limit': String(m2cfg.queueCapacity) }
     if (g.g.position > 0) { qExtra['x-queue-position'] = String(g.g.position); qExtra['x-queue-wait-ms'] = String(g.g.waitMs) }
     try {
       const out: any = await locks.run(lockKey, async () => {
-        const abs = await personalTarget(ctx, a.key, destRel)
+        const abs = await personalTarget(ctx, sandbox, a.key, destRel)
         if (abs === null) return { status: 400, code: 'AGENT-4001', hint: '目标路径越界或父目录不可解析' }
         const existed = existsSync(abs)
         let oldPlain = 0
@@ -645,11 +702,11 @@ export function apply(ctx: Context, config?: M2Config): void {
           oldPlain = st.size - (await ctx.storage.isEncrypted(abs) ? 36 : 0)
         }
         const prq = await quota.precheck(ctx, a.user.username, s.size - 36, oldPlain)
-        if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '专属空间配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
+        if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '沙箱配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
         let snapshot = false
         let backupped = false
         if (existed) {
-          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, personalProject(a.key), scopeRel + destRel, abs, m2cfg.snapshotMax)
+          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, sandbox, scopeRel + destRel, abs, m2cfg.snapshotMax)
           if (TEXT_EXT.has(extname(abs).slice(1).toLowerCase())) {
             snapshot = true
           } else {
@@ -677,7 +734,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     }
   }, 'agent-fork'))
 
-  /* rename：专属空间内 */
+  /* rename：沙箱内 */
   svc.route('/privhub/api/agent/v1/rename', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
     let body: any
@@ -687,15 +744,17 @@ export function apply(ctx: Context, config?: M2Config): void {
     if (!path || !newName) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失', hint: 'path 与 newName 必填', requestId: env.rid }, extra)
     if (!svc.isValidName(newName)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '文件名非法', hint: 'newName 含非法字符', requestId: env.rid }, extra)
     if (sensitiveName(newName)) return json(res, 403, { ok: false, code: 'AGENT-4033', error: '敏感文件豁免', hint: '目标名为敏感类型', requestId: env.rid }, extra)
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
-    const lockKey = personalProject(a.key) + '|' + scopeRel + path
+    const lockKey = sandbox + '|' + scopeRel + path
     const g = await gateAcquire(env, res, extra)
     if (!g) return
     const qExtra: Record<string, string> = { 'x-queue-limit': String(m2cfg.queueCapacity) }
     if (g.g.position > 0) { qExtra['x-queue-position'] = String(g.g.position); qExtra['x-queue-wait-ms'] = String(g.g.waitMs) }
     try {
       const out: any = await locks.run(lockKey, async () => {
-        const target = await resolvePersonal(ctx, a.key, path)
+        const target = await resolvePersonal(ctx, sandbox, a.key, path)
         if (target === null || !existsSync(target)) return { status: 404, code: 'AGENT-4041', hint: '源文件不存在' }
         const dest = target.slice(0, Math.max(target.lastIndexOf('\\'), target.lastIndexOf('/')) + 1) + newName
         if (existsSync(dest)) return { status: 409, code: 'AGENT-4092', hint: '目标文件名已存在' }
@@ -703,7 +762,7 @@ export function apply(ctx: Context, config?: M2Config): void {
         return { ok: true }
       })
       if (!out.ok) return json(res, out.status as number, { ok: false, code: out.code, error: out.hint, hint: out.hint, requestId: env.rid }, { ...extra, ...qExtra })
-      const rel = '.agents/' + a.user.username + '/' + scopeRel + path
+      const rel = sandbox + '/' + scopeRel + path
       void audit(ctx, 'ai:' + a.key.name, 'agent-rename', rel, '-> ' + newName + ' via=' + a.user.username)
       json(res, 200, { ok: true, from: path, to: newName }, { ...extra, ...qExtra })
     } finally {
@@ -711,33 +770,35 @@ export function apply(ctx: Context, config?: M2Config): void {
     }
   }, 'agent-rename'))
 
-  /* delete：专属空间 → 回收站 */
+  /* delete：沙箱 → 回收站 */
   svc.route('/privhub/api/agent/v1/delete', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
     let body: any
     try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', hint: '请求体不是合法 JSON', requestId: env.rid }, extra) }
     const path = relOf(String(body.path ?? ''))
     if (!path) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失', hint: 'path 必填', requestId: env.rid }, extra)
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
     const withScope = scopeRel + path
-    const lockKey = personalProject(a.key) + '|' + withScope
+    const lockKey = sandbox + '|' + withScope
     const g = await gateAcquire(env, res, extra)
     if (!g) return
     const qExtra: Record<string, string> = { 'x-queue-limit': String(m2cfg.queueCapacity) }
     if (g.g.position > 0) { qExtra['x-queue-position'] = String(g.g.position); qExtra['x-queue-wait-ms'] = String(g.g.waitMs) }
     try {
       const out: any = await locks.run(lockKey, async () => {
-        const abs = await resolvePersonal(ctx, a.key, path)
+        const abs = await resolvePersonal(ctx, sandbox, a.key, path)
         if (abs === null || !existsSync(abs)) return { status: 404, code: 'AGENT-4041', hint: '文件不存在或已在回收站' }
         const st = await stat(abs)
         const plain = Math.max(0, st.size - (await ctx.storage.isEncrypted(abs) ? 36 : 0))
-        const ok = await svc.moveToTrash(personalProject(a.key), withScope, 'ai:' + a.key.name)
+        const ok = await svc.moveToTrash(sandbox, withScope, 'ai:' + a.key.name)
         if (!ok) return { status: 404, code: 'AGENT-4041', hint: '文件不存在或已在回收站' }
         await quota.add(ctx, a.user.username, -plain)
         return { ok: true }
       })
       if (!out.ok) return json(res, out.status as number, { ok: false, code: out.code, error: out.hint, hint: out.hint, requestId: env.rid }, { ...extra, ...qExtra })
-      const rel = '.agents/' + a.user.username + '/' + withScope
+      const rel = sandbox + '/' + withScope
       void audit(ctx, 'ai:' + a.key.name, 'agent-delete', rel, 'via=' + a.user.username)
       json(res, 200, { ok: true, note: '已移入回收站（可经管理员恢复）', path: rel }, { ...extra, ...qExtra })
     } finally {
@@ -745,25 +806,27 @@ export function apply(ctx: Context, config?: M2Config): void {
     }
   }, 'agent-delete'))
 
-  /* M2：专属空间版本历史（复用 versions.json 数据格式） */
+  /* M2：沙箱版本历史（复用 versions.json 数据格式） */
   svc.route('/privhub/api/agent/v1/versions', withAgent(async (ctx, env, a, req, res, extra) => {
     const url = new URL(req.url ?? '/', 'http://x')
     const project = url.searchParams.get('project') ?? ''
-    if (project !== '' && project !== '@me') return json(res, 400, { ok: false, code: 'AGENT-4001', error: '仅支持专属空间', hint: '版本接口仅针对专属空间；项目文件的版本历史请使用网页接口 /privhub/api/versions', requestId: env.rid }, extra)
+    if (project !== '' && project !== '@me') return json(res, 400, { ok: false, code: 'AGENT-4001', error: '仅支持沙箱', hint: '版本接口仅针对沙箱（个人空间）；项目文件的版本历史请使用网页接口 /privhub/api/versions', requestId: env.rid }, extra)
     const path = relOf(url.searchParams.get('path') ?? '')
     if (!path) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失', hint: 'path 必填', requestId: env.rid }, extra)
-    const key = personalProject(a.key) + '|' + scopeRelOf(a) + path
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
+    const key = sandbox + '|' + scopeRelOf(a) + path
     let arr: Array<{ at: number; by: string; content: string }> = []
     try {
       const f = join(rootDir, 'data', 'versions.json')
       if (existsSync(f)) { const store = JSON.parse(await ctx.storage.readText(f)) as Record<string, Array<{ at: number; by: string; content: string }>>; arr = store[key] || [] }
     } catch { /* 无历史 */ }
     const list = arr.map((v) => ({ at: v.at, by: v.by, len: String(v.content ?? '').length })).sort((x, y) => y.at - x.at)
-    void audit(ctx, 'ai:' + a.key.name, 'agent-versions', '.agents/' + a.user.username + '/' + scopeRelOf(a) + path, 'via=' + a.user.username)
+    void audit(ctx, 'ai:' + a.key.name, 'agent-versions', sandbox + '/' + scopeRelOf(a) + path, 'via=' + a.user.username)
     json(res, 200, { ok: true, versions: list }, extra)
   }, 'agent-versions'))
 
-  /* M2：专属空间版本恢复 */
+  /* M2：沙箱版本恢复 */
   svc.route('/privhub/api/agent/v1/versions/restore', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
     let body: any
@@ -771,36 +834,38 @@ export function apply(ctx: Context, config?: M2Config): void {
     const path = relOf(String(body.path ?? ''))
     const at = Number(body.at)
     if (!path || !at) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失', hint: 'path 与 at 必填（at 来自版本列表）', requestId: env.rid }, extra)
+    const sandbox = sandboxDirOf(ctx, a.key)
+    if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
     const f = join(rootDir, 'data', 'versions.json')
     let store = {} as Record<string, Array<{ at: number; by: string; content: string }>>
     let ver: { at: number; by: string; content: string } | null = null
     try {
       if (existsSync(f)) store = JSON.parse(await ctx.storage.readText(f))
-      const key = personalProject(a.key) + '|' + scopeRel + path
+      const key = sandbox + '|' + scopeRel + path
       ver = (store[key] || []).find((v) => v.at === at) ?? null
     } catch { /* 版本不存在 */ }
     if (!ver) return json(res, 404, { ok: false, code: 'AGENT-4041', error: '版本不存在', hint: '该路径在此时间点无版本记录', requestId: env.rid }, extra)
     const content = String(ver.content ?? '')
-    const lockKey = personalProject(a.key) + '|' + scopeRel + path
+    const lockKey = sandbox + '|' + scopeRel + path
     const g = await gateAcquire(env, res, extra)
     if (!g) return
     const qExtra: Record<string, string> = { 'x-queue-limit': String(m2cfg.queueCapacity) }
     if (g.g.position > 0) { qExtra['x-queue-position'] = String(g.g.position); qExtra['x-queue-wait-ms'] = String(g.g.waitMs) }
     try {
       const out: any = await locks.run(lockKey, async () => {
-        const abs = await resolvePersonal(ctx, a.key, path)
+        const abs = await resolvePersonal(ctx, sandbox, a.key, path)
         if (abs === null) return { status: 400, code: 'AGENT-4001', hint: '目标路径越界或父目录不可解析' }
         const existed = existsSync(abs)
         let oldPlain = 0
         if (existed) { const s = await stat(abs); oldPlain = s.size - (await ctx.storage.isEncrypted(abs) ? 36 : 0) }
         const prq = await quota.precheck(ctx, a.user.username, Buffer.byteLength(content), oldPlain)
-        if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '专属空间配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
+        if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '沙箱配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
         const tmp = abs + '.part-' + Date.now()
         await ctx.storage.writeBuffer(tmp, Buffer.from(content, 'utf8'))
         await rename(tmp, abs).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
         await quota.add(ctx, a.user.username, Buffer.byteLength(content) - oldPlain)
-        const key = personalProject(a.key) + '|' + scopeRel + path
+        const key = sandbox + '|' + scopeRel + path
         const arr = store[key] || []
         arr.push({ at: Date.now(), by: 'ai:' + a.key.name, content })
         while (arr.length > m2cfg.snapshotMax) arr.shift()
@@ -812,7 +877,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       if (!out.ok) {
         return json(res, out.status as number, { ok: false, code: out.code, error: out.hint, hint: out.hint, requestId: env.rid, ...(out.usage !== undefined ? { usage: out.usage, quota: out.quota } : {}) }, { ...extra, ...qExtra })
       }
-      const rel = '.agents/' + a.user.username + '/' + scopeRel + path
+      const rel = sandbox + '/' + scopeRel + path
       void audit(ctx, 'ai:' + a.key.name, 'agent-version-restore', rel, 'from=' + at + ' via=' + a.user.username)
       json(res, 200, { ok: true, at: Date.now(), size: out.size }, { ...extra, ...qExtra })
     } finally {
@@ -969,14 +1034,34 @@ export function apply(ctx: Context, config?: M2Config): void {
     json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST/DELETE', requestId: env.rid }, { 'x-request-id': env.rid })
   }, 'agent-my-keys'))
 
-  /* ---------- 专属空间回收站（admin 登录态） ---------- */
+  /* ---------- 沙箱回收站（admin 登录态） ---------- */
+
+  /**
+   * 沙箱条目识别：回收站记录的 project 命中某个账号的个人空间目录名。
+   *
+   * 只认「由智能体删除」的记录（deletedBy 前缀 ai:）——沙箱现在就是用户的
+   * 个人空间，用户自己在网页上删的文件也会落进同一张回收站表；若不加这层区分，
+   * 管理员会在「智能体回收站」里看到用户自己的私人文书条目，属于越权可见。
+   */
+  const sandboxOwnerOf = (proj: string): string | null => {
+    for (const uname of ctx.privhub.users.keys()) {
+      const u = ctx.privhub.users.get(uname) as { personalDir?: string } | undefined
+      if (String(u?.personalDir ?? '').trim() === proj) return uname
+    }
+    return null
+  }
 
   svc.route('/privhub/api/agent/v1/trash', wrap(async (ctx, env, req, res) => {
     const admin = adminOnly(env, req, res); if (!admin) return
     const url = new URL(req.url ?? '/', 'http://x')
     const user = url.searchParams.get('user') ?? ''
     const list = await ctx.privhub.loadTrash()
-    const mine = list.filter((t) => t.project.startsWith('.agents/') && (!user || t.project === '.agents/' + user))
+    const mine = list.filter((t) => {
+      if (!String(t.deletedBy ?? '').startsWith('ai:')) return false
+      const owner = sandboxOwnerOf(t.project)
+      if (owner === null) return false
+      return !user || owner === user
+    })
     json(res, 200, { ok: true, trash: mine }, { 'x-request-id': env.rid })
   }, 'agent-trash'))
 
@@ -989,11 +1074,13 @@ export function apply(ctx: Context, config?: M2Config): void {
       const rec = (await ctx.privhub.loadTrash()).find((t) => t.id === tId)
       const ok = await (ctx.privhub[fn] as (id: string) => Promise<boolean>)(tId)
       if (!ok) return json(res, 404, { ok: false, code: 'AGENT-4041', error: '记录不存在或操作失败', requestId: env.rid }, { 'x-request-id': env.rid })
-      if (rec && rec.project.startsWith('.agents/')) await quota.recalc(ctx, rec.project.slice('.agents/'.length))
+      // 配额按【账号】记账（沙箱即该账号的个人空间），故用沙箱归属者重算
+      const owner = rec ? sandboxOwnerOf(rec.project) : null
+      if (owner !== null) await quota.recalc(ctx, owner)
       void audit(ctx, admin.username, 'agent-trash-' + op, 'trash:' + tId, rec ? rec.project + '/' + rec.relPath : '')
       json(res, 200, { ok: true }, { 'x-request-id': env.rid })
     }, 'agent-trash-' + op))
   }
 
-  console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 专属空间 / 配额限流 / 版本快照）')
+  console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 沙箱=个人空间 / 配额限流 / 版本快照）')
 }

@@ -16,6 +16,7 @@ export const inject = ['privhub', 'audit', 'eventBus']
 export function apply(ctx: Context): void {
   /* E1 事件声明 */
   ctx.eventBus.declareEmit('audit:logged', 'privhub-admin', '写操作成功审计广播（S1 闭环）')
+  ctx.eventBus.declareEmit('personal:renamed', 'privhub-admin', '个人空间目录改名（管理员改显示名联动）→ 各存储同步引用')
   const svc = ctx.privhub
 
   /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
@@ -53,7 +54,12 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(req, res)
     if (!u) return
     if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
-    const users = [...svc.users.values()].map((x) => ({ username: x.username, displayName: x.displayName, role: x.role, projects: x.projects }))
+    // hasPersonalSpace 用于界面提示「改名会同步改个人空间文件夹」。
+    // 只暴露「是否存在」，不暴露目录内容（目录名恒等于 displayName，无额外信息泄露）。
+    const users = [...svc.users.values()].map((x) => ({
+      username: x.username, displayName: x.displayName, role: x.role, projects: x.projects,
+      hasPersonalSpace: String(x.personalDir ?? '').trim() !== '',
+    }))
     json(res, 200, { ok: true, users, allProjects: await svc.allProjects() })
   }, 'admin-users')
 
@@ -67,12 +73,30 @@ export function apply(ctx: Context): void {
     const username = String(body.username ?? '')
     const rec = svc.users.get(username)
     if (!rec) return json(res, 404, { ok: false, error: '用户不存在' })
+    // 改显示名必须走 core：显示名与个人空间目录名 live-bound，要一起改。
+    // 直接 rec.displayName = ... 会造出「文件夹叫旧名、账号记新名」的不可访问状态，
+    // 且旧名不再登记为个人空间后会被当成普通项目名（管理员可见）——最坏结果。
+    // 放在 role/projects 之前：改名失败即整单中止，不产生半改。
+    let renamed: { oldName: string; newName: string; renamedDir: boolean } | null = null
+    if (typeof body.displayName === 'string' && body.displayName.trim() !== '') {
+      const r = await svc.changeDisplayName(username, body.displayName)
+      if (!r.ok) return json(res, 400, { ok: false, error: r.reason })
+      renamed = r
+    }
+
     if (body.role === 'admin' || body.role === 'user') rec.role = body.role
     if (Array.isArray(body.projects)) rec.projects = [...new Set(body.projects.filter((p: unknown) => typeof p === 'string'))]
-    if (typeof body.displayName === 'string' && body.displayName.trim() !== '') rec.displayName = body.displayName.trim()
     await svc.saveUsers()
-    json(res, 200, { ok: true })
-    void audit(u, 'user-update', username, 'role=' + rec.role + ' projects=[' + rec.projects.join(',') + ']')
+
+    // 广播放在 registry 落盘之后：监听方（rag/recent）据此清理旧目录名引用
+    if (renamed && renamed.renamedDir) {
+      ctx.emit('personal:renamed', { username, oldName: renamed.oldName, newName: renamed.newName })
+    }
+
+    json(res, 200, { ok: true, renamedDir: !!(renamed && renamed.renamedDir) })
+    void audit(u, 'user-update', username,
+      'role=' + rec.role + ' projects=[' + rec.projects.join(',') + ']' +
+      (renamed && renamed.renamedDir ? ' displayName=' + renamed.oldName + '->' + renamed.newName + '（文件夹已同步改名）' : ''))
   }, 'admin-user-update')
 
   /* 用户管理：删除用户（管理员） */

@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { join, extname, sep } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -88,8 +88,54 @@ export class WebServerService extends Service {
   private readonly routes = new Map<string, RouteHandler>()
   private server: ReturnType<typeof createServer> | null = null
 
+  /**
+   * 会话校验钩子：由 main.ts 在 privhub 就绪后注入。
+   * 不在本文件 inject privhub —— privhub-core 已经 inject webServer，
+   * 反向注入会形成循环依赖，故走显式注入。
+   */
+  private sessionValidator: ((req: IncomingMessage) => boolean) | null = null
+
+  /** auth slot 插件目录缓存（静态资源鉴权的放行名单；目录扫描较重，5s TTL）。 */
+  private static authSlotCache: { at: number; dirs: Set<string> } | null = null
+
   constructor(ctx: Context, private readonly config: WebServerConfig) {
     super(ctx, 'webServer')
+  }
+
+  /** 由 main.ts 在 privhub.ready 之后注入：判断请求是否携带有效会话。 */
+  setSessionValidator(fn: (req: IncomingMessage) => boolean): void {
+    this.sessionValidator = fn
+  }
+
+  /**
+   * 登录前必须放行的插件目录名：声明了 `auth` slot 的插件。
+   *
+   * 登录框本身由插件提供（privhub-auth 挂 auth slot），若连它的代码都要登录才能加载，
+   * 就会形成 S16 那类死锁：拿不到插件 → 渲染不出登录框 → 用户无从登录。
+   * 这里与 shell 服务端 manifest 分级采用【同一条判据】，避免两处规则漂移。
+   *
+   * 失败关闭（fail-closed）：manifest 损坏或目录不可读时按「不放行」处理，
+   * 宁可让登录框报错，也不要把插件代码暴露出去。
+   */
+  private authSlotDirs(): Set<string> {
+    const now = Date.now()
+    const cached = WebServerService.authSlotCache
+    if (cached && now - cached.at < 5000) return cached.dirs
+    const dirs = new Set<string>()
+    const base = this.config.pluginsDir
+    try {
+      for (const ent of readdirSync(base, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue
+        const mf = join(base, ent.name, 'client', 'manifest.json')
+        if (!existsSync(mf)) continue
+        try {
+          const raw = JSON.parse(readFileSync(mf, 'utf8')) as { slots?: unknown }
+          if (Array.isArray(raw.slots) && raw.slots.includes('auth')) dirs.add(ent.name)
+        } catch { /* 坏 manifest：不放行 */ }
+      }
+    } catch { /* 目录不可读：不放行 */ }
+    WebServerService.authSlotCache = { at: now, dirs }
+    return dirs
   }
 
   /** 注册路由（effect 可逆：返回移除函数）。 */
@@ -138,13 +184,29 @@ export class WebServerService extends Service {
   }
 
   /** 静态文件服务（前端 + 插件 client 映射）。 */
-  private async serveStatic(pathname: string, res: ServerResponse): Promise<void> {
+  private async serveStatic(pathname: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     // /privhub-plugins/<插件名>/<文件> -> plugins/<插件名>/client/<文件>
     // S5：拒绝含 NUL 的路径（防截断绕过）
     if (pathname.includes('\0')) { res.writeHead(400); res.end('bad request'); return }
     const pluginMatch = /^\/privhub-plugins\/([^/]+)\/(.+)$/.exec(pathname)
     if (pluginMatch) {
       const [, pluginName, file] = pluginMatch
+      /* 插件前端代码等于本项目 API 的全貌（端点、参数、错误码、内部结构），
+       * 未登录者不得靠猜地址把它枚举走——否则「用地址直接读取页面信息」就成立了。
+       * 只放行登录框自身所需的最小集合（声明 auth slot 的插件），其余要求有效会话。
+       * 会话经 Cookie 传递：浏览器 import() 子资源无法附加 Bearer 头。 */
+      if (!this.authSlotDirs().has(pluginName)) {
+        const okSession = this.sessionValidator !== null && this.sessionValidator(req)
+        if (!okSession) {
+          res.writeHead(401, {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          })
+          res.end('unauthorized')
+          return
+        }
+      }
       const base = this.config.pluginsDir
       const target = join(base, pluginName, 'client', file)
       // S5：前缀比对必须带路径分隔符，否则 frontend-x/ 这类同前缀兄弟目录会被误判为「在范围内」
@@ -234,7 +296,7 @@ export class WebServerService extends Service {
           }
           const handler = routes.get(url.pathname)
           if (handler) return await handler(req, res)
-          await self.serveStatic(url.pathname, res)
+          await self.serveStatic(url.pathname, req, res)
         } catch (e) {
           try { res.writeHead(500); res.end('internal server error') } catch { /* 忽略 */ }
         }

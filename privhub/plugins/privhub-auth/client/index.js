@@ -28,6 +28,7 @@ const AuthView = {
           localStorage.setItem('privhub_token', r.token)
         } else {
           if (this.password.length < 6) { this.err = '密码至少6位'; return }
+          if (!this.displayName.trim()) { this.err = '请填写真实姓名（用于创建你的文件夹）'; return }
           const r = await api('/privhub/api/register', { method: 'POST', body: JSON.stringify({ username: this.username, password: this.password, displayName: this.displayName }) })
           if (!r.ok) { this.err = r.error || '注册失败'; return }
           this.mode = 'login'; this.err = '注册成功，请登录'
@@ -41,7 +42,14 @@ const AuthView = {
         <h1><span class="logo-dot"></span>私域枢纽</h1>
         <div class="auth-sub">公司内部文件管理系统</div>
         <div class="field"><label>用户名</label><input v-model="username" placeholder="请输入用户名" /></div>
-        <div class="field" v-if="mode === 'register'"><label>显示名（可选）</label><input v-model="displayName" placeholder="显示名" /></div>
+        <div class="field" v-if="mode === 'register'">
+          <label>真实姓名</label>
+          <input v-model="displayName" placeholder="请输入真实姓名，如：张伟" />
+          <div class="field-hint">
+            系统会以你的姓名建一个文件夹，<b>仅你本人可见</b>。<br />
+            若已被占用，请填「姓名-部门」，如：张伟-技术部
+          </div>
+        </div>
         <div class="field"><label>密码</label><input v-model="password" type="password" @keyup.enter="submit" placeholder="请输入密码" /></div>
         <button class="btn btn-primary" :disabled="busy" @click="submit">{{ busy ? '提交中…' : (mode === 'login' ? '登 录' : '注 册') }}</button>
         <div class="auth-err">{{ err }}</div>

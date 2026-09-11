@@ -330,6 +330,13 @@ async function parseToText(ctx: Context, project: string, relPath: string, absPa
 
 /** 摄取单文档（幂等：hash 未变跳过）。串行队列防风暴。manifestRef 供全量重建复用，避免反复 IO。 */
 async function ingestDoc(ctx: Context, project: string, path: string, knownText?: string, manifestRef?: Manifest): Promise<void> {
+  /* 个人空间（= 智能体沙箱）绝不进语料库。
+   * 为什么必须在【摄取口】拦：管理员端 /privhub/api/rag/corpus 是 adminOnly 且
+   * 不按 canAccess 过滤，会原样列出每条语料的 project/path——私人目录名与文件名
+   * 因此会直接暴露给管理员。全量 rebuild 走 allProjects() 已天然排除个人空间，
+   * 但 file:changed 事件驱动这条增量路径原先没有防护，上传即泄密，
+   * 直到下一次重启重建才被清掉（实测存在该时间窗）。 */
+  if (ctx.privhub.isPersonalDir(project)) return
   const abs = await ctx.privhub.resolveReal(project, path)
   if (abs === null || !existsSync(abs)) return
   const s = await stat(abs).catch(() => null)
@@ -392,6 +399,32 @@ async function removeDoc(ctx: Context, project: string, path: string, manifestRe
   // 同时清理向量表中的块。仅在向量库已存在时操作，
   // 避免为从不使用向量检索的部署凭空创建 db 文件。
   try { if (vecStore) vecStore.removeDoc(docId) } catch { /* 向量库不可用时忽略 */ }
+}
+
+/**
+ * 移除某个顶层目录（项目 / 个人空间）名下的全部语料与向量。
+ *
+ * 为什么需要：个人空间改名后，【旧目录名】既不是项目、也不再登记为任何人的
+ * 个人空间——此时它既不会被 allProjects() 扫到（rebuild 的 gone 逻辑失效），
+ * 也不受「个人空间不进入索引」类判断保护。若不清理：
+ *   ① 管理员端 /rag/corpus 不按权限过滤，仍会列出这些私人文档的 project/path；
+ *   ② 检索索引里留下指向不存在目录的孤儿条目。
+ * 因此改名时必须把旧目录名下的语料彻底清掉。
+ */
+async function removeProjectDocs(ctx: Context, project: string): Promise<number> {
+  if (!project) return 0
+  const manifest = await loadManifest(ctx)
+  let n = 0
+  for (const id of Object.keys(manifest)) {
+    if (manifest[id]?.project !== project) continue
+    delete manifest[id]
+    const f = chunkFileOf(id)
+    if (existsSync(f)) await ctx.storage.writeText(f, '').catch(() => { /* 尽力而为 */ })
+    try { if (vecStore) vecStore.removeDoc(id) } catch { /* 向量库不可用时忽略 */ }
+    n++
+  }
+  if (n > 0) await saveManifest(ctx, manifest)
+  return n
 }
 
 /** 全量重建：扫描 dataRoot 所有项目（跳过隐藏）；幂等；移除已消失文档的语料 */
@@ -1051,6 +1084,7 @@ export function apply(ctx: Context): void {
   /* E1 事件声明 */
   ctx.eventBus.declareListen('file:changed', 'privhub-svc-rag', '文件系统变更 → 语料增量更新')
   ctx.eventBus.declareListen('file:saved', 'privhub-svc-rag', '文档保存 → 语料重解析')
+  ctx.eventBus.declareListen('personal:renamed', 'privhub-svc-rag', '个人空间改名 → 清理旧目录名语料（防私人文档路径残留）')
   ctx.eventBus.declareEmit('audit:logged', 'privhub-svc-rag', '写操作成功审计广播（S1 闭环）')
 
   /* 摄取串行队列（防并发风暴） */
@@ -1064,6 +1098,7 @@ export function apply(ctx: Context): void {
     const off1 = ctx.on('file:changed', (p: { project?: string; path?: string; action?: string; newPath?: string }) => {
       if (!p?.project || !p.path) return
       if (p.project.startsWith('.agents') || p.project === '.agents') return
+      if (svc.isPersonalDir(p.project)) return // 个人空间（沙箱）不入语料（见 ingestDoc 说明）
       if (p.action === 'deleted' || p.action === 'purged') enqueue(() => removeDoc(ctx, p.project!, p.path!))
       else if (p.action === 'clean') enqueue(() => rebuild(ctx).then(() => {}))
       else if (p.action === 'renamed' || p.action === 'moved') {
@@ -1076,10 +1111,17 @@ export function apply(ctx: Context): void {
     const off2 = ctx.on('file:saved', (p: { project?: string; path?: string; doc?: string }) => {
       if (!p?.project || !p.path) return
       if (p.project.startsWith('.agents') || p.project === '.agents') return
+      if (svc.isPersonalDir(p.project)) return // 同上：个人空间不入语料
       if (typeof p.doc === 'string') enqueue(() => ingestDoc(ctx, p.project!, p.path!, p.doc!))
       else enqueue(() => ingestDoc(ctx, p.project!, p.path!))
     })
-    return () => { off1(); off2() }
+    // 个人空间改名：旧目录名下的语料必须清掉（见 removeProjectDocs 说明）
+    const off3 = ctx.on('personal:renamed', (p: { oldName?: string }) => {
+      const oldName = String(p?.oldName ?? '')
+      if (oldName === '') return
+      enqueue(async () => { await removeProjectDocs(ctx, oldName) })
+    })
+    return () => { off1(); off2(); off3() }
   })
 
   /* 启动全量（延迟避免与全量索引冲突；失败静默） */
@@ -1191,6 +1233,8 @@ export function apply(ctx: Context): void {
     const url = new URL(req.url ?? '/', 'http://x')
     const project = url.searchParams.get('project') ?? ''
     if (!project || !svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
+    // 查重只针对「项目」：个人空间是私人沙箱，不做跨文件重复治理
+    if (svc.isPersonalDir(project)) return json(res, 400, { ok: false, error: '查重仅针对项目，不作用于个人空间' })
     try {
       json(res, 200, { ok: true, ...await dupCheckProject(ctx, project) })
     } catch (e) {
@@ -1231,6 +1275,7 @@ export function apply(ctx: Context): void {
     const project = String(body.project ?? '')
     const path = String(body.path ?? '')
     if (!svc.isValidProjectName(project) || !path) return json(res, 400, { ok: false, error: 'project/path 必填' })
+    if (svc.isPersonalDir(project)) return json(res, 400, { ok: false, error: '个人空间不入语料库' })
     await ingestDoc(ctx, project, path)
     void audit(ctx, admin.username, 'rag-ingest', project + '/' + path)
     json(res, 200, { ok: true })

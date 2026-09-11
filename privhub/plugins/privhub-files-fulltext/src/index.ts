@@ -45,6 +45,10 @@ export function apply(ctx: Context): void {
 
   /** 读一个文件并索引（不存在/超限/非文本忽略）。 */
   async function indexFile(project: string, path: string): Promise<void> {
+    // 个人空间（= 智能体沙箱）不进全文索引：
+    // 它是「仅本人可见」的私有区，一旦入索引就可能经检索/问答间接泄露给他人；
+    // 事件驱动的增量索引尤其需要这道闸（全量 rebuild 走 allProjects 已天然排除）。
+    if (svc.isPersonalDir(project)) return
     const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return
     const s = await stat(target).catch(() => null)
@@ -57,6 +61,7 @@ export function apply(ctx: Context): void {
 
   /** 递归扫描项目内文本文件并索引。 */
   async function indexTree(project: string, rel = ''): Promise<void> {
+    if (svc.isPersonalDir(project)) return
     const dir = await svc.resolveReal(project, rel)
     if (dir === null || !existsSync(dir)) return
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
@@ -79,6 +84,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => {
     const offSaved = ctx.on('file:saved', (payload: { project?: string; path?: string; doc?: string }) => {
       if (!payload?.project || !payload.path || typeof payload.doc !== 'string') return
+      if (svc.isPersonalDir(payload.project)) return // 个人空间不入索引（见 indexFile 说明）
       void search.index({ id: docId(payload.project, payload.path), text: payload.doc })
     })
     // E1 语义拆分：文件系统变更走专用事件 file:changed（audit:logged 回归纯审计语义，不再兼任索引线索）

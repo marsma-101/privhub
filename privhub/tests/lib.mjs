@@ -106,6 +106,27 @@ export async function loginOk(username, password) {
   return r.json.token
 }
 
+/** 从响应头取指定 Cookie（set-cookie 可能是字符串或数组）。 */
+export function cookieOf(res, name) {
+  const raw = res.headers['set-cookie']
+  const list = Array.isArray(raw) ? raw : (raw ? [raw] : [])
+  const hit = list.find((c) => String(c).startsWith(name + '='))
+  return hit ? String(hit).split(';')[0] : ''
+}
+
+/**
+ * 登录并额外返回会话 Cookie。
+ *
+ * 为什么需要：插件前端代码（/privhub-plugins/...）经浏览器 import() 加载，
+ * 子资源请求【无法附加 Authorization 头】，只能用 Cookie 证明会话。
+ * 因此「登录后能加载插件」这条链路必须用 Cookie 验证，Bearer 验证的是另一条通道。
+ */
+export async function loginOkWithCookie(username, password) {
+  const r = await login(username, password)
+  ok(r.json && r.json.ok && r.json.token, `${username} 登录失败：${r.status} ${r.text.slice(0, 120)}`)
+  return { token: r.json.token, cookie: cookieOf(r, 'privhub_sid') }
+}
+
 export async function uploadFile(token, project, subPath, name, content) {
   const q = new URLSearchParams({ project, name })
   if (subPath) q.set('path', subPath)

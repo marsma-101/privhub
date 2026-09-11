@@ -28,7 +28,11 @@ const UserAdmin = {
       const r = await api('/privhub/api/admin/users')
       if (r.ok) { this.adminUsers = r.users; this.adminAllProjects = r.allProjects }
     },
-    openEditUser(u) { this.editUser = JSON.parse(JSON.stringify(u)) },
+    openEditUser(u) {
+      const copy = JSON.parse(JSON.stringify(u))
+      copy._origDisplayName = copy.displayName  // 用于判断是否触发了「文件夹同步改名」
+      this.editUser = copy
+    },
     toggleProject(p) {
       const i = this.editUser.projects.indexOf(p)
       if (i >= 0) this.editUser.projects.splice(i, 1)
@@ -87,7 +91,19 @@ const UserAdmin = {
         <div class="modal" style="width:420px">
           <h2>编辑用户：{{ editUser.username }}</h2>
           <div class="modal-body">
-            <div class="field"><label>显示名</label><input v-model="editUser.displayName" /></div>
+            <div class="field">
+              <label>显示名</label>
+              <input v-model="editUser.displayName" />
+              <!-- 显示名与该用户的文件夹名联动：改名前必须让管理员知道文件夹会跟着改 -->
+              <div class="field-hint" v-if="editUser.hasPersonalSpace && editUser.displayName.trim() !== editUser._origDisplayName" style="color:var(--warn)">
+                ⚠ 该用户名下已有同名文件夹，改名会<b>同步把它改名</b>：<br />
+                {{ editUser._origDisplayName }} → {{ editUser.displayName.trim() }}<br />
+                文件不会丢失；旧文件夹名将被系统永久保留（不会给别人用）。
+              </div>
+              <div class="field-hint" v-else-if="editUser.hasPersonalSpace">
+                该用户名下已有同名文件夹（仅其本人可见），名字与显示名保持一致。
+              </div>
+            </div>
             <div class="field">
               <label>角色</label>
               <select v-model="editUser.role" style="width:100%;padding:9px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)">

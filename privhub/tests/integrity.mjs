@@ -272,6 +272,40 @@ ok(/manifestsPartial/.test(feSrc), '骨架记录 manifest 是否为最小集合�
 ok(/bootTimedOut/.test(feSrc) && /登录界面加载失败/.test(feSrc),
   '首屏超时兜底：8 秒未渲染出界面时给出可见原因与重试（不再静默卡死）')
 
+/* ══════════ 个人空间：隐私边界的静态契约 ══════════
+ * 这些是「不能再被改回去」的安全性质。行为层面已由个人空间与智能体沙箱
+ * 各套件覆盖，这里额外守一道：即使某个行为用例被误删，边界本身也不该被无声移除。
+ */
+console.log('\n── 个人空间隐私边界契约 ──')
+
+const coreP = readFileSync(join(ROOT, 'plugins', 'privhub-core', 'src', 'index.ts'), 'utf8')
+ok(/retiredDirs/.test(coreP),
+  '旧名退休表存在（改过的个人空间目录名永不复用，防历史数据被他人读到）')
+ok(/indexableProjects/.test(coreP),
+  'core 提供 indexableProjects（索引范围=项目，排除个人空间）')
+
+const ragP = readFileSync(join(ROOT, 'plugins', 'privhub-svc-rag', 'src', 'index.ts'), 'utf8')
+ok(/isPersonalDir\(project\)\) return/.test(ragP),
+  'RAG 摄取口拦截个人空间（防私人目录名出现在管理员可读的语料清单里）')
+ok(/removeProjectDocs/.test(ragP) && /personal:renamed/.test(ragP),
+  'RAG 保留改名清理逻辑（对升级存量数据的防御纵深）')
+
+const ftP = readFileSync(join(ROOT, 'plugins', 'privhub-files-fulltext', 'src', 'index.ts'), 'utf8')
+ok(/isPersonalDir/.test(ftP), '全文索引排除个人空间')
+ok(/svc\.isPersonalDir/.test(ftP), '全文索引用 core 判定（规则单一来源，不自行拼路径）')
+
+const agentP = readFileSync(join(ROOT, 'plugins', 'privhub-files-agent', 'src', 'index.ts'), 'utf8')
+ok(/sandboxDirOf/.test(agentP) && /personalDir/.test(agentP),
+  '智能体沙箱取自 core 登记的个人空间目录名（不自行拼路径，避免绕过「仅本人可见」）')
+ok(/AGENT-4032/.test(agentP), '项目只读码 AGENT-4032 保留（智能体写项目必须被拒）')
+ok(!/personalProject\(/.test(agentP), '已无 personalProject 遗留（沙箱不再指向 .agents 隐藏目录）')
+
+const wsP = readFileSync(join(ROOT, 'src', 'web-server.ts'), 'utf8')
+ok(/setSessionValidator/.test(wsP) && /authSlotDirs/.test(wsP),
+  '静态资源鉴权存在：插件代码需会话，登录前仅放行 auth slot 插件')
+ok(/sessionValidator !== null && this\.sessionValidator\(req\)/.test(wsP),
+  '未注入校验器时按【拒绝】处理（fail-closed，缺省不放行）')
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)
 if (!RELEASE_GATE && drift > 0) {

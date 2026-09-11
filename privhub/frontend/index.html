@@ -44,6 +44,7 @@
       border-radius: 6px; color: var(--text); font-size: 14px; outline: none;
     }
     .field input:focus { border-color: var(--accent); }
+    .field-hint { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.6; }
     .btn { padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
     .btn-primary { background: var(--accent); color: #fff; width: 100%; }
     .btn-primary:hover { filter: brightness(1.08); }
@@ -813,6 +814,19 @@
                 this.failedPlugins.push({ id: p.id, title: p.title || p.id, error: String((e && e.message) || e) })
               }
             }
+            /* 兜底：插件代码需会话 Cookie 才能加载。若 Cookie 缺失导致整体 401，
+             * 用 Bearer 换一次 Cookie 后整体重试【一次】（限一次，避免死循环）。
+             * 这层是为了不再重演 S16 那类「界面加载不出来、且原因只存在于 console」。 */
+            if (this.failedPlugins.length && AUTH.token && !this._authRetried) {
+              this._authRetried = true
+              const me = await api('/privhub/api/me')
+              if (me.ok) {
+                this.failedPlugins = []
+                console.warn('[shell] 插件加载失败，已重新取会话 Cookie，正在重试一次')
+                await this.loadManifests()
+                return
+              }
+            }
             if (this.failedPlugins.length) {
               window.PrivHub.toast(this.failedPlugins.length + ' 个插件加载失败，部分功能不可用', 'error')
             }
@@ -844,6 +858,18 @@
         /* 插件 client 加载：manifest → import() → 按 slot 注册（同 slot 可多组件，数组累积） */
         window.PrivHub.manifests = []
         const self = this
+
+        /* 0）先用既有 token 换一次会话 Cookie。
+         * 插件前端代码现已要求登录后才能加载，而浏览器 import() 子资源请求
+         * 【无法附加 Authorization 头】，只能靠 Cookie 证明会话。
+         * 本调用把 Cookie 补上，覆盖「升级前已登录」「Cookie 被清理」等场景。
+         * 必须排在 loadManifests 之前，否则首次加载插件会整体 401 → 全部插件失败。 */
+        let restored = false
+        if (AUTH.token) {
+          const r = await api('/privhub/api/me')
+          if (r.ok) { AUTH.user = r.user; restored = true } else { logout() }
+        }
+
         /* 【必须无条件拉取一次】——包括未登录时。
          * 登录框由插件提供（auth slot），而插件清单来自本接口；
          * 若未登录就不拉，登录界面永远渲染不出来（死锁，已实测复现）。 */
@@ -874,10 +900,13 @@
           }
           else { bus.emit('auth:logout') }
         })
-        if (AUTH.token) {
-          const r = await api('/privhub/api/me')
+        // 恢复登录态后的初始化：watch 是在 AUTH.user 赋值【之后】注册的，
+        // 不会为本次恢复触发，故这里显式补一次（等价于登录成功后的收尾）
+        if (restored) {
+          await nav.loadProjects()
+          void nav.loadTrash()
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
-          if (r.ok) { AUTH.user = r.user; await nav.loadProjects(); void nav.loadTrash(); window.PrivHub.loadBarItems() } else { logout() }
+          window.PrivHub.loadBarItems()
         }
         /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用） */
         window.PrivHub.openAdmin = () => nav.setActiveView('admin')

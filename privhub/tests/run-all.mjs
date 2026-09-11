@@ -21,6 +21,9 @@ import { build as buildSmoke } from './smoke.mjs'
 import { build as buildSecurity } from './security.mjs'
 import { build as buildHardening } from './hardening.mjs'
 import { build as buildFirstScreen } from './first-screen.mjs'
+import { build as buildPersonalSpace } from './personal-space.mjs'
+import { build as buildPersonalRename } from './personal-rename.mjs'
+import { build as buildAgentSandbox } from './agent-sandbox.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -58,6 +61,9 @@ async function main() {
         try { symlinkSync(join(ROOT, d), link, 'junction') } catch { /* 已存在或权限不足 */ }
       }
     }
+    // 关键：把测试根也告诉【测试进程自身】，否则各套件里的磁盘落盘断言
+    // 会因为拿不到 PRIVHUB_TEST_ROOT 而静默跳过（= 空断言，看着通过其实没验）。
+    process.env.PRIVHUB_TEST_ROOT = TEST_ROOT
     console.log(`[run-all] 启动隔离测试实例：root=${TEST_ROOT} port=${TEST_PORT}`)
     child = spawn(process.execPath, ['--import', 'tsx/esm', 'src/main.ts', '--port', String(TEST_PORT)], {
       cwd: TEST_ROOT,
@@ -78,7 +84,10 @@ async function main() {
   console.log(`[run-all] 目标服务就绪：${BASE}`)
 
   // 首屏链放最前：它验证「能不能进得去」，是其它一切用例的前提
-  const suites = [buildFirstScreen(), buildSmoke(), buildSecurity(), buildHardening()]
+  const suites = [
+    buildFirstScreen(), buildSmoke(), buildSecurity(), buildHardening(),
+    buildPersonalSpace(), buildPersonalRename(), buildAgentSandbox(),
+  ]
   const results = []
   for (const s of suites) results.push({ suite: s.name, results: await s.run() })
 
@@ -86,7 +95,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 审计可靠性 / 交付完整性 / 首次部署')
-  for (const script of ['frontend-templates.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }

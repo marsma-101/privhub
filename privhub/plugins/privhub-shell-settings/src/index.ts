@@ -24,9 +24,9 @@ export interface Settings {
   maxUploadMB: number
   /**
    * S11：是否允许自助注册。
-   * 默认 false —— 局域网部署下开放注册等于把「公共」项目对全公司开放，
-   * 且是「上传恶意页面 → 窃取会话」攻击链的第一环。
-   * 关闭后由管理员建号，或走邀请码加入项目流程。
+   * 默认 true —— 自助注册是原有能力，缺省值必须等于「原来的行为」，
+   * 否则升级后功能会静默消失（a8148d8 曾把默认写成 false，导致注册被废）。
+   * 需要收紧时由管理员显式置为 false 关闭，再走管理员建号/邀请码流程。
    */
   allowSelfRegister: boolean
 }
@@ -35,7 +35,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'light',
   defaultView: 'grid',
   maxUploadMB: 2048,
-  allowSelfRegister: false,
+  allowSelfRegister: true,
 }
 
 /**
