@@ -1,6 +1,6 @@
 {
   "name": "privhub",
-  "version": "0.2.0",
+  "version": "3.0.1",
   "private": true,
   "type": "module",
   "description": "私域枢纽 PrivHub：纯 Cordis 底座 + 自研插件（文件管理系统）",

@@ -119,6 +119,7 @@
 - 新建 L3 插件 `privhub-files-agent`（对齐 C22「智能体外部 API/MCP」，已落地基础版 office-ai 的完整版）。
 - 已确认决策（详见 `docs/PrivHub-AgentAPI-智能体接口方案.md`）：
   1. 权限模型：**专属空间（.agents/<用户>/<项目>/，隐藏目录，按 key 项目 scope 分区）= 读/写/删/改全能力；项目文件夹 = 只读**（智能体 API 层面硬隔离，写/删/改项目一律 403）。
+     > ⚠️ v3.0.1 起：沙箱不再是 `.agents/` 隐藏目录，改为**该账号的「个人空间」`data-files/<真实姓名>/`**（仅本人可见、管理员亦不可见、不进索引、永不自动删除）。详见 `CHANGELOG.md` 的 3.0.1 条目与《PrivHub-AgentAPI-接入指南.md》。
   2. key 体系：`X-Agent-Key` 与用户绑定（data/agent-api.json，S7 加密），**一项目一 key**（project scope，空=全部可见项目含风险提示）；**用户登录后自助申请**（my-keys）+ admin 代生成（keys）；明文仅创建时返回一次，列表只回 mask；支持可选有效期。
   3. office-ai 一并改造：旧 X-Office-Key 作废统一到 X-Agent-Key，**修复 role:'admin' 硬编码缺陷**（原持 key 者可读写任意项目），office read 遵循项目只读 + ACL，office write 仅限专属空间。
   4. 写语义：专属空间 upsert（同名默认覆盖）+ 覆盖前自动 `.bak-<时间戳>` 备份（保留 5 份轮换）。

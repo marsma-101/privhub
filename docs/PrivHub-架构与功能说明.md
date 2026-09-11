@@ -20,9 +20,9 @@
 
 ## 二、总体架构
 
-### 2.1 插件全景（**48 个插件目录**，2026-09-11 复核）
+### 2.1 插件全景（**49 个插件目录**，2026-09-11 v3.0.1 复核）
 
-`privhub/plugins/` 下非归档目录共 **48 个**（另有 `_retired-v2/` 3 个已退役目录，以 `_` 前缀排除，不参与装配）。
+`privhub/plugins/` 下非归档目录共 **49 个**（另有 `_retired-v2/` 3 个已退役目录，以 `_` 前缀排除，不参与装配）。
 
 **按装配方式拆解（权威依据 = `src/main.ts` + 启动日志）**：
 
@@ -30,9 +30,13 @@
 |---|---|---|
 | 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 17 项） | 17 | L2 能力 Service 10 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
 | L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 26 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2） |
-| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 5 | `admin-audit-panel` / `files-upload` / `files-upload-queue` / `files-wiki` / `trash-ui` |
+| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 6 | `admin-audit-panel` / `files-upload` / `files-upload-queue` / `files-wiki` / `shell-agent-console` / `trash-ui` |
 
-→ **43 个含服务端 + 5 个纯前端 = 48**。其中 **30 个插件带 `client/manifest.json`**（前端可挂载）。
+→ **43 个含 `src/index.ts` + 6 个纯前端 = 49**。其中 **31 个插件带 `client/manifest.json`**（前端可挂载）；
+43 个有 `src/` 的插件里，**31 个真正注册 HTTP 路由**，其余仅提供注入能力或纯前端。
+
+> `privhub-shell` 属特例：服务端代码在 `server/index.ts`（非 `src/index.ts`），故计入「纯前端」列的统计口径，
+> 但它实际提供 manifest 聚合路由。
 
 **按分层归类**：
 
@@ -72,7 +76,8 @@
 
 | 机制 | 实际现状（2026-09-11 复核） |
 |---|---|
-| `window.PrivHub` 桥 | **28 个键**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`（赋值见 index.html#L688）；骨架扩展 13：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin` / `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`（#L690-823）；插件反向扩展 3：`openRagDup` / `ragIntent`（svc-rag）、`trashBadge`（trash-ui） |
+| `window.PrivHub` 桥 | **骨架 25 个键 + 插件运行时追加**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`；骨架扩展 13：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin` / `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`；插件运行时追加（实测 2 个）：`openRagDup` / `ragIntent`（svc-rag） |
+| `window.PrivHub` 第二层鉴权 | 插件前端代码经 `/privhub-plugins/<名>/<文件>` 加载，**需有效会话**（v3.0.1 起）。仅放行登录框自身（声明 `auth` slot 的插件，与 manifest 分级同判据）。会话经 `privhub_sid` Cookie 传递（HttpOnly + SameSite=Strict）——浏览器 `import()` 子资源无法附加 `Authorization` 头；`Bearer` 通道保持不变 |
 | slot 挂载 | 骨架按 `slots` 渲染；插件 client 导出 `export default { id, slots: { 槽名: Vue组件 } }`；**同 slot 可多组件**（数组累积，#L789）。实际并集 **25 个 slot**：`auth` `project-tabs` `user-area` `app-iconbar` `welcome` `tree` `panel` `preview` `tabs`※ `upload` `upload-queue` `trash-view` `search-view` `fav-view` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag-view` `md-editor` `office-editor` `watermark`（※ `tabs` 仅骨架渲染、已无插件声明：`shell-tabs` 已退役进 `_retired-v2/`） |
 | 多组件 slot | `office-editor` 挂 8 个插件（comments / dataview / invite / mdpage / office-ui / office2 / publish / versions）；`user-area` 挂 3 个（explorer-v3 / shell / shell-recent）；`auth` 挂 2 个（auth / shell） |
 | `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式），`nav` 定义于 #L394。#L428 的 `setActiveView` 已内置「同视图再点即回 files」的 toggle 语义。实际 **13 个视图**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` |
@@ -81,11 +86,44 @@
 | 项目上下文 | 选项目后搜索/收藏/回收站均限定当前项目（服务端 visibleProjects 白名单兜底） |
 | 持久化 | localStorage（token/主题/侧栏宽/字体档）、sessionStorage（标签，按用户名分 key） |
 
-### 2.3 后端路由面（**108 条路由 · 31 个插件**）
+### 2.3 后端路由面（**112 条路由 · 31 个插件**，v3.0.1）
 
-- 全仓 `svc.route('...')` 注册 **108 条**（无重复路径），分布于 **31 个插件**（其余 12 个服务端插件不注册 HTTP 路由，仅提供注入能力）。
-- 路由数 Top：`files-agent` 18 · `svc-rag` 14 · `files` 10 · `admin` 6 · `files-invite` 5。
+- 全仓 `svc.route('...')` 注册 **112 条**（无重复路径），分布于 **31 个插件**（其余有 `src/` 的插件不注册 HTTP 路由，仅提供注入能力）。
+- 路由数 Top：`files-agent` 20 · `svc-rag` 14 · `files` 10 · `admin` 6 · `files-invite` 5。
 - **ACL 守卫覆盖面**：`admin-acl` 以白名单表 `GUARD_PATHS` 显式管辖 **37 条文件相关路由**（per-method 裁决 view/upload/edit/delete），并包装 `svc.route` 使之后注册的全部路由都经守卫函数（未列入白名单的 method 直接透传）。守卫于 2026-09-05 从 L1 扩展到 L3 写路由。
+
+### 2.3b 核心概念：项目 / 个人空间 / 智能体沙箱（v3.0.1 新增）
+
+三类顶层目录，语义严格区分：
+
+| 概念 | 物理位置 | 可见性 | 索引 | 智能体权限 |
+|---|---|---|---|---|
+| **项目** | `data-files/<项目名>/` | 按账号授权；管理员可见全部项目 | 参与查重/向量化/全文索引 | **只读** |
+| **个人空间** | `data-files/<真实姓名>/` | **仅本人**；管理员亦不可见（只有审计记录） | **全部排除** | 读写（= 沙箱） |
+| 系统内部 | `data-files/.agents/`、`.trash/` | 以 `.` 前缀排除出项目枚举 | 排除 | — |
+
+**个人空间**（`users[].personalDir` 登记）：
+
+- 注册时按**真实姓名**自动创建；姓名全局唯一（与其他账号姓名、其他账号个人空间名、
+  `data-files` 下已存在的同名顶层目录查重），冲突时提示改用「姓名-部门」
+- 显示名与目录名 **live-bound**：改名时文件夹同步改名（先改磁盘、后落盘账号，落盘失败回滚）
+- **旧名退休**（`retiredPersonalDirs`）：改过的旧名永久保留并维持归属，`canAccess` 继续拒绝所有人
+  （含管理员），也不可再被注册
+
+> 为什么需要「退休」：个人空间的数据不止在文件夹里，还散落在一批**以目录名为键、只用 `canAccess` 把关**
+> 的存储中（`versions.json` 存的是文件正文、`comments.json`、`meta.json`、全文索引、回收站…），
+> 而 `canAccess` 对管理员是「任意合法名字都放行」。旧名一旦释放，① 管理员可按旧名读到私人文件的
+> 历史版本正文；② 若有人注册成同名，新人会继承旧名的可见性读到前任内容。退休一条规则关掉整类越权。
+
+- **系统永不自动删除**（删账号、删项目都不动它）
+- 权限收敛点集中在 `privhub-core` 的 `allProjects` / `visibleProjects` / `canAccess`，
+  另加 `indexableProjects`（索引范围 = 项目）供查重/向量化/全文索引共用，避免多处口径漂移
+
+**智能体沙箱 = 绑定账号的个人空间**（v3.0.1 起，原为 `.agents/<用户>/` 隐藏目录）：
+
+- 项目对智能体**始终只读**，写项目一律 `403 AGENT-4032`
+- 沙箱缺位（账号未开通个人空间）→ `403 AGENT-4036`，显式失败而非静默落到别处
+- 沙箱名不出现在 `/me`、`/projects` 的项目清单里
 
 ### 2.4 数据与安全
 
@@ -126,7 +164,7 @@
 | 导出（F21） | MD → HTML/PDF/Word |
 | 知识库视图（F22） | README.md 渲染为 Wiki 页，双链可点击定位 |
 | RAG 问答 | svc-rag：语料治理（解析/去重/策展）+ BM25/向量混合检索 + LLM 问答（OpenAI 兼容模型接入 svc-model）；sqlite-vec 向量库 |
-| 智能体接入 | `files-agent`（19 路由，`pha_` 密钥 / 专属空间 / 配额限流 / 版本快照）+ `files-office-ai`（Office 智能体入口）；方案与接入见《PrivHub-AgentAPI-*》 |
+| 智能体接入 | `files-agent`（20 路由，`pha_` 密钥 / **沙箱=个人空间** / 配额限流 / 版本快照）+ `files-office-ai`（Office 智能体入口）；平台界面见 `shell-agent-console`；方案与接入见《PrivHub-AgentAPI-*》 |
 
 ### 3.3 管理能力
 | 功能 | 说明 |
@@ -240,6 +278,7 @@ node --import tsx/esm src/main.ts --port 3181     # 或双击其中的 start.bat
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-11 | **v3.0.1 个人空间批次**：新增 2.3b「项目 / 个人空间 / 智能体沙箱」核心概念；插件数 48→**49**（新增 `shell-agent-console`）；路由数 108→**112**（files-agent 18→20）；`window.PrivHub` 键口径改为「骨架 25 + 插件追加」；补静态资源鉴权说明；智能体写入落点由 `.agents/<用户>/` 改为**个人空间**。完整变更见仓库根 `CHANGELOG.md` |
 | 2026-09-11 | **三路审计后重建改进清单**：新建《PrivHub-改进建议.md》（42 项）；旧《改进需求清单》归档至 `v2/`；本文档索引与引用同步 |
 | 2026-09-11 | **代码核对同步**：插件数 45→48（新增装配方式拆解：17 手动 + 26 自动 + 5 纯前端）；补后端路由面（108 条 / 31 插件 / ACL 守卫 37 条）；`window.PrivHub` 桥 9→28 键；slot 并集 25 个、视图 13 个；**纠正加密描述**（4 个 JSON 为明文）；新增「环境注意」节；标注部署包落后与测试脚本缺失；文档索引补齐 |
 | 2026-09-06 | 升级为 V3 现状快照：插件全景 33→45、前端骨架/V3 布局、功能全景补全、文档索引补新 |
