@@ -20,9 +20,9 @@ styleEl.textContent = `
 .v3-content:has(iframe.office2-frame) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
 .v3-content:has(iframe.office2-frame) iframe.office2-frame { flex:1 1 auto; min-height:0; }
 iframe.office2-frame { display:block; width:100%; height:100%; border:none; background:#fff; }
-/* 不要给 .v3-content-head 加 flex-shrink:0 / 背景 —— 它现在是右上角【悬浮】按钮组。
-   若在此处把它拉回成一行标题栏，office 预览就会出现
-   「标签栏 + 标题栏 + office 自身工具条」三层顶栏（用户反馈的问题）。 */
+/* 注意：V3 的内容区已不再有 .v3-content-head（详情/⋯ 已移到标签行）。
+   不要在这里重新引入任何占据内容区顶部的元素——否则又会变成
+   「标签行 + 内容顶栏 + office 自身工具条」的多层顶栏与重叠干涉。 */
 `
 document.head.appendChild(styleEl)
 
@@ -55,9 +55,9 @@ const Office2Replace = {
       frame.className = 'office2-frame'
       frame.src = this.frameUrl(payload)
       frame.style.cssText = 'width:100%;height:100%;flex:1 1 auto;min-height:0;border:none;background:#fff'
-      const body = content.querySelector('.v3-content-head')
-      if (body) body.after(frame)
-      else content.appendChild(frame)
+      // 作为内容区首个子元素插入：V3 已移除 .v3-content-head（内容区不再有顶栏），
+      // 原先以它为锚点的写法会找不到元素而退化成 appendChild（顺序错乱）。
+      content.prepend(frame)
     },
     frameUrl(payload) {
       return '/privhub-plugins/privhub-files-office2/view.html?project=' + encodeURIComponent(payload.project) +

@@ -60,18 +60,24 @@ styleEl.textContent = `
 .v3-tab .v3-tab-name { overflow:hidden; text-overflow:ellipsis; }
 .v3-tab .v3-tab-x { width:16px; height:16px; border-radius:50%; text-align:center; line-height:15px; font-size:11px; flex-shrink:0; }
 .v3-tab .v3-tab-x:hover { background:var(--line); color:var(--danger); }
-.v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); position:relative; }
-/* 内容工具条 = 右上角悬浮按钮组，【不再单独占一行】。
- * 原因：原先它与标签栏各占一行，且两边都显示同一个文件名，加上 office 自身工具条
- * 会形成三层顶栏、文件名重复三次。文件名以标签栏为唯一出处，其余功能收进 ⋯ 菜单。 */
-.v3-content-head { position:absolute; top:8px; right:14px; z-index:6; display:flex; align-items:center; gap:6px; }
-/* 悬浮条上的按钮在浅色内容上可能不够清楚，加一层底衬 */
-.v3-content-head .v3-op-btn { background:var(--panel); box-shadow:0 1px 4px rgba(0,0,0,.10); }
+.v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); }
 /* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏 */
 .v3-content:has(.md-inline-root) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
-.v3-content:has(.md-inline-root) .md-src { padding-top:34px; }
-/* ⋯ 菜单（内容区/标签栏共用的紧凑下拉） */
-.v3-menu { position:absolute; top:34px; right:0; z-index:20; min-width:172px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 0; box-shadow:0 10px 28px rgba(0,0,0,.25); }
+/*
+ * 标签行 = 标签栏 + 右侧操作区（详情 / ⋯）。
+ *
+ * 操作区为什么放在【标签行】而不是内容区：
+ *   内容区会被 Office 预览的 iframe 整块占满（office2 从顶部铺到底），
+ *   任何悬浮在内容区之上的按钮都会压到 iframe 自身的工具条上——实测到的重叠干涉。
+ *   标签行是唯一不被内容遮挡的空白带，放这里与内容天然互不干扰。
+ *   同时它不额外增加顶栏层数：按钮与标签同一行。
+ */
+.v3-tabrow { display:flex; align-items:stretch; background:var(--panel); border-bottom:1px solid var(--line); }
+.v3-tabrow .v3-tabs { flex:1; min-width:0; border-bottom:none; background:transparent; }
+.v3-tabops { position:relative; display:flex; align-items:center; gap:4px; padding:0 8px 0 4px; flex-shrink:0; }
+/* ⋯ 菜单：锚在操作区上。操作区没有 overflow，菜单不会被裁掉
+ * （标签栏本身 overflow-x:auto，菜单若放它内部会被裁）。 */
+.v3-menu { position:absolute; top:32px; right:6px; z-index:30; min-width:172px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 0; box-shadow:0 10px 28px rgba(0,0,0,.25); }
 .v3-menu-item { display:flex; align-items:center; gap:8px; padding:6px 12px; font-size:12.5px; cursor:pointer; color:var(--text); white-space:nowrap; }
 .v3-menu-item:hover { background:var(--panel); color:var(--accent); }
 .v3-menu-item .v3-menu-k { margin-left:auto; color:var(--muted); font-size:11.5px; }
@@ -1177,45 +1183,46 @@ const PanelV3 = {
   },
   template: `
     <div style="display:contents">
-      <!-- 标签栏（文件级，VS Code 风格） -->
-      <div v-if="showTabs" class="v3-tabs">
-        <div
-          v-for="t in store.tabs" :key="t.key"
-          class="v3-tab" :class="{ on: t.key === store.activeKey }"
-          @click="activate(t.key)" @auxclick="onAuxclick(t.key, $event)"
-          :title="t.project + ' / ' + t.path"
-        >
-          <span>{{ fileIcon(t.type) }}</span>
-          <span class="v3-tab-name">{{ t.dirty ? '● ' : '' }}{{ t.name }}</span>
-          <span class="v3-tab-x" title="关闭" @click.stop="close(t.key)">✕</span>
+      <!-- 标签行：左＝标签栏（文件名唯一出处），右＝操作区（详情 / ⋯），同一行不叠层 -->
+      <div v-if="showTabs" class="v3-tabrow">
+        <div class="v3-tabs">
+          <div
+            v-for="t in store.tabs" :key="t.key"
+            class="v3-tab" :class="{ on: t.key === store.activeKey }"
+            @click="activate(t.key)" @auxclick="onAuxclick(t.key, $event)"
+            :title="t.project + ' / ' + t.path"
+          >
+            <span>{{ fileIcon(t.type) }}</span>
+            <span class="v3-tab-name">{{ t.dirty ? '● ' : '' }}{{ t.name }}</span>
+            <span class="v3-tab-x" title="关闭" @click.stop="close(t.key)">✕</span>
+          </div>
+          <div style="flex:1"></div>
         </div>
-        <div style="flex:1"></div>
+        <div v-if="activeTab" class="v3-tabops">
+          <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
+          <button class="v3-op-btn" title="更多（字号 / 关闭标签 / 文件位置）" @click.stop="toggleMenu">⋯</button>
+          <div v-if="store.menu" class="ctx-mask" @click="store.menu = false"></div>
+          <div v-if="store.menu" class="v3-menu" @click.stop>
+            <div class="v3-menu-row" title="内容/编辑字号">
+              <span>字号</span>
+              <span class="v3-fs" @click="previewFontDec">A−</span>
+              <span class="v3-fs" @click="previewFontReset">{{ previewFont }}px</span>
+              <span class="v3-fs" @click="previewFontInc">A+</span>
+            </div>
+            <div class="v3-menu-sep"></div>
+            <div class="v3-menu-item" @click="menuCloseCurrent">✕ 关闭当前标签</div>
+            <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseOthers">✕ 关闭其他标签</div>
+            <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseAll">✕ 关闭全部标签</div>
+            <div class="v3-menu-sep"></div>
+            <div class="v3-menu-item" :title="activeTab.project + ' / ' + activeTab.path" @click="menuCopyPath">📋 复制文件位置<span class="v3-menu-k">{{ activeTab.project }}</span></div>
+          </div>
+        </div>
       </div>
 
       <!-- 主区：有激活标签 → 内容区；否则 → 目录浏览 -->
       <template v-if="activeTab && content && content.key === activeTab.key">
         <div class="v3-content">
-          <!-- 内容工具条：右上角悬浮，不占行。文件名以标签栏为唯一出处，此处不再重复。 -->
-          <div class="v3-content-head">
-            <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
-            <button class="v3-op-btn" title="更多（字号 / 关闭标签 / 文件位置）" @click.stop="toggleMenu">⋯</button>
-            <div v-if="store.menu" class="ctx-mask" @click="store.menu = false"></div>
-            <div v-if="store.menu" class="v3-menu" @click.stop>
-              <div class="v3-menu-row" title="内容/编辑字号">
-                <span>字号</span>
-                <span class="v3-menu-k"></span>
-                <span class="v3-fs" @click="previewFontDec">A−</span>
-                <span class="v3-fs" @click="previewFontReset">{{ previewFont }}px</span>
-                <span class="v3-fs" @click="previewFontInc">A+</span>
-              </div>
-              <div class="v3-menu-sep"></div>
-              <div class="v3-menu-item" @click="menuCloseCurrent">✕ 关闭当前标签</div>
-              <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseOthers">✕ 关闭其他标签</div>
-              <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseAll">✕ 关闭全部标签</div>
-              <div class="v3-menu-sep"></div>
-              <div class="v3-menu-item" :title="activeTab.project + ' / ' + activeTab.path" @click="menuCopyPath">📋 复制文件位置<span class="v3-menu-k">{{ activeTab.project }}</span></div>
-            </div>
-          </div>
+          <!-- 内容区不再有任何顶栏/悬浮条：文件名在标签行，操作也在标签行 -->
           <div v-if="content.state === 'loading'" class="v3-loading">正在加载…</div>
           <div v-else-if="content.state === 'error'" class="v3-loading">{{ content.error }}</div>
           <template v-else-if="content.office">

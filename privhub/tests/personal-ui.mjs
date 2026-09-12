@@ -289,44 +289,45 @@ console.log('\n── E 通行契约：项目下拉的 value 必须是真实文�
   ok(/\{\{\s*p\s*\}\}/.test(blk), '下拉项文本直接渲染 p（真实名）')
 }
 
-console.log('\n── F 内容区顶栏层数（用户反馈：三层顶栏、文件名重复三次）──')
+console.log('\n── F 顶栏层数与重叠（用户反馈：三层顶栏、文件名重复、按钮压到 office 工具条）──')
 {
   const tpl = templateAfter(TREE, 'const PanelV3')
+  const o2Src = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'index.js'), 'utf8')
+  const o2View = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.html'), 'utf8')
+  const o2Js = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.js'), 'utf8')
+
+  // ① 内容区彻底没有顶栏/悬浮条 —— 这是不重叠的根本保证
+  ok(!/v3-content-head/.test(tpl), '内容区模板中已无任何工具条元素（不占位即不可能与 office 工具条重叠）')
+  ok(!/v3-content-head/.test(TREE), '样式里也无 .v3-content-head 残留')
+  // 只查真实代码用法（选择器/样式规则），注释里提到该名字是为了说明历史，不算引用
+  ok(!/querySelector\(['"]\.v3-content-head/.test(o2Src) && !/\.v3-content-head\s*\{/.test(o2Src),
+    'office2 不再以 .v3-content-head 为锚点或样式目标（旧锚点，已改 prepend）')
+
+  // ② 操作区与标签同一行，不新增层
+  ok(/class="v3-tabrow"/.test(tpl), '存在「标签行」容器（标签栏 + 操作区同一行）')
   ok(/class="v3-tabs"/.test(tpl), '标签栏存在（文件名以此处为唯一出处）')
-  ok(/class="v3-content-head"/.test(tpl), '内容工具条存在（office2/edit-md 以它为 DOM 锚点，不可删除）')
+  ok(/class="v3-tabops"/.test(tpl), '操作区在标签行内（与标签同行，不叠层）')
+  const rowTpl = tpl.slice(tpl.indexOf('v3-tabrow'), tpl.indexOf('v3-content') > 0 ? tpl.indexOf('</template>', tpl.indexOf('v3-tabrow')) : tpl.length)
+  ok(!/activeTab\.name/.test(rowTpl), '标签行内不重复渲染文件名（标签本身已显示）')
 
-  // 关键：内容工具条里【不得】再显示文件名 —— 否则与标签栏重复
-  const headStart = tpl.indexOf('class="v3-content-head"')
-  const menuAt = tpl.indexOf('v3-menu', headStart)
-  const headTpl = tpl.slice(headStart, menuAt > 0 ? menuAt : headStart + 900)
-  ok(!/activeTab\.name/.test(headTpl), '内容工具条内不得再渲染 activeTab.name（否则文件名重复）')
-  ok(!/fileIcon\(activeTab\.type\)/.test(headTpl), '内容工具条内不得再渲染文件图标（与标签栏重复）')
-
-  // 原「✕ 其他」文字按钮应已并入 ⋯ 菜单
-  const tabsTpl = tpl.slice(tpl.indexOf('v3-tabs'), headStart)
-  ok(!/✕ 其他/.test(tabsTpl), '标签栏不再有独立的「✕ 其他」按钮（已并入 ⋯ 菜单）')
-  ok(/toggleMenu/.test(tpl) && /class="v3-menu"/.test(tpl), '内容工具条提供单个 ⋯ 菜单')
-
-  // ⋯ 菜单必须承接原先散落的全部功能
+  // ③ ⋯ 菜单必须承接原先散落的全部功能
+  ok(/toggleMenu/.test(tpl) && /class="v3-menu"/.test(tpl), '提供单个 ⋯ 菜单')
   for (const fn of ['previewFontDec', 'previewFontReset', 'previewFontInc', 'menuCloseCurrent', 'menuCloseOthers', 'menuCloseAll', 'menuCopyPath']) {
     ok(tpl.includes(fn), `⋯ 菜单承接了 ${fn}`)
   }
   ok(/detailToggle/.test(tpl), '右侧详情面板仍有一键开关（保留两侧）')
+  ok(!/✕ 其他/.test(tpl), '原「✕ 其他」文字按钮已并入 ⋯ 菜单')
 
-  // CSS：工具条必须是绝对定位的悬浮层，而不是占一行
-  ok(/\.v3-content-head\s*\{[^}]*position:\s*absolute/.test(TREE), '内容工具条为绝对定位悬浮（不再独占一行顶栏）')
-  ok(/\.v3-content\s*\{[^}]*position:\s*relative/.test(TREE), '内容区为定位上下文（悬浮条挂靠点）')
+  // ④ 菜单不得放进 overflow 容器，否则会被裁掉
+  ok(/\.v3-tabops\s*\{[^}]*position:\s*relative/.test(TREE), '操作区为定位上下文（菜单锚点）')
+  ok(!/\.v3-tabs\s*\{[^}]*position:\s*relative/.test(TREE),
+    '菜单不挂在 .v3-tabs 上（它 overflow-x:auto，会裁掉下拉）')
 
-  // office2 不得把悬浮条再拉回成一行标题栏
-  const o2Src = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'index.js'), 'utf8')
-  const o2HeadRule = /\.v3-content:has\(iframe\.office2-frame\)\s+\.v3-content-head\s*\{([^}]*)\}/.exec(o2Src)
-  ok(!o2HeadRule || !/flex-shrink\s*:\s*0/.test(o2HeadRule[1]),
-    'office2 不再把内容工具条拉回成标题栏（否则 office 预览又是三层顶栏）')
+  // ⑤ office2 的 iframe 插入锚点必须是 prepend（旧锚点已删除）
+  ok(/content\.prepend\(frame\)/.test(o2Src), 'office2 以 prepend 插入 iframe（不再依赖已删除的锚点）')
 
-  // office 预览页：iframe 内不重复显示文件名
-  const o2View = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.html'), 'utf8')
-  const o2Js = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.js'), 'utf8')
-  ok(/#bar\s+\.fname\s*\{\s*display:\s*none/.test(o2View), 'office 预览页默认隐藏文件名（避免第三次重复）')
+  // ⑥ office 预览页：iframe 内不重复显示文件名
+  ok(/#bar\s+\.fname\s*\{\s*display:\s*none/.test(o2View), 'office 预览页默认隐藏文件名（避免重复）')
   ok(/standalone/.test(o2View) && /standalone/.test(o2Js), '单独打开 office 预览页时仍显示文件名（standalone 兜底）')
 }
 
