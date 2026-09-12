@@ -335,6 +335,72 @@ ok(/"view":\s*"agent"/.test(acManifest), '平台插件声明 agent 视图 barIte
 ok(/slotComps\['agent-view'\]/.test(feSrc), '骨架模板挂载 agent-view（否则界面渲染不出来）')
 ok(/view === 'agent'/.test(feSrc), '骨架 barItem 分发包含 agent 视图')
 
+/* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
+ * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现
+ * 拆成若干职责单一的文件，且【全部留在该插件目录内】——卸载插件时它的前端
+ * 一并消失；改哪块只碰哪个文件。 */
+console.log('\n── 前端模块化契约 ──')
+
+const EXP_DIR = join(ROOT, 'plugins', 'privhub-files-explorer-v3', 'client')
+const expFiles = readdirSync(EXP_DIR).filter((f) => f.endsWith('.js')).sort()
+const expEntrySrc = readFileSync(join(EXP_DIR, 'index.js'), 'utf8')
+
+ok(expFiles.length >= 10, `explorer-v3 client 已按职责拆分（${expFiles.length} 个模块文件）`)
+ok(expEntrySrc.split('\n').length < 60, `入口只做装配（${expEntrySrc.split('\n').length} 行，不再堆实现）`)
+ok(!/template:\s*`/.test(expEntrySrc), '入口不含任何组件模板（界面实现都在各自模块里）')
+
+// ① 拆分产物必须全部留在插件目录内（不得引用插件之外的相对路径）
+const escapeHits = []
+for (const f of expFiles) {
+  const t = readFileSync(join(EXP_DIR, f), 'utf8')
+  for (const m of t.matchAll(/from\s+'([^']+)'/g)) {
+    const spec = m[1]
+    if (spec.startsWith('./') || spec.startsWith('node:')) continue
+    escapeHits.push(f + ' → ' + spec)
+  }
+}
+ok(escapeHits.length === 0,
+  `模块只引用同目录文件（拆出来的东西都留在插件内）${escapeHits.length ? '：' + escapeHits.slice(0, 3).join('; ') : ''}`)
+
+// ② 模块依赖必须单向无环（有环会让加载顺序变脆弱）
+const depGraph = new Map()
+for (const f of expFiles) {
+  const t = readFileSync(join(EXP_DIR, f), 'utf8')
+  const deps = new Set()
+  for (const m of t.matchAll(/from\s+'\.\/([\w-]+)\.js'/g)) deps.add(m[1] + '.js')
+  depGraph.set(f, deps)
+}
+const cyc = []
+const state = new Map()
+const dfs = (n, path) => {
+  const st = state.get(n)
+  if (st === 1) return
+  if (st === 0) { cyc.push([...path, n].join(' → ')); return }
+  state.set(n, 0)
+  for (const d of depGraph.get(n) || []) if (depGraph.has(d)) dfs(d, [...path, n])
+  state.set(n, 1)
+}
+for (const n of expFiles) dfs(n, [])
+ok(cyc.length === 0, `模块依赖无环${cyc.length ? '：' + cyc.slice(0, 2).join(' | ') : ''}`)
+
+// ③ 模块划分要稳定：关键职责文件必须存在（防止日后被合并回单文件）
+const needMods = ['deps', 'utils', 'styles', 'store', 'treecache', 'content', 'tabs', 'ops', 'tree', 'panel', 'detail', 'fontzoom']
+const missingMods = needMods.filter((m) => !expFiles.includes(m + '.js'))
+ok(missingMods.length === 0, `职责模块齐全${missingMods.length ? '，缺：' + missingMods.join(', ') : '（' + needMods.length + ' 个）'}`)
+
+// ④ 骨架仍是唯一主界面：插件不得自带整页 HTML（只能经 slot 挂组件）
+const pageHtml = []
+for (const d of readdirSync(join(ROOT, 'plugins'), { withFileTypes: true })) {
+  if (!d.isDirectory() || d.name.startsWith('_')) continue
+  const cdir = join(ROOT, 'plugins', d.name, 'client')
+  if (!existsSync(cdir)) continue
+  for (const f of readdirSync(cdir)) {
+    // office2 的 view.html 是 iframe 渲染页（编辑宿主），属已知例外
+    if (f.endsWith('.html') && f !== 'view.html') pageHtml.push(d.name + '/' + f)
+  }
+}
+ok(pageHtml.length === 0, `插件目录内无自建整页 HTML（骨架是唯一主界面）${pageHtml.length ? '：' + pageHtml.join(', ') : ''}`)
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)
 if (!RELEASE_GATE && drift > 0) {

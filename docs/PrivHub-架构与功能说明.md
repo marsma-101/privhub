@@ -82,7 +82,8 @@
 | 多组件 slot | `office-editor` 挂 8 个插件（comments / dataview / invite / mdpage / office-ui / office2 / publish / versions）；`user-area` 挂 3 个（explorer-v3 / shell / shell-recent）；`auth` 挂 2 个（auth / shell） |
 | `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式），`nav` 定义于 #L394。#L428 的 `setActiveView` 已内置「同视图再点即回 files」的 toggle 语义。实际 **13 个视图**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` |
 | manifest 加载链 | 骨架 `GET /privhub/api/shell/manifest`（shell 插件聚合，5s TTL 缓存 + A19 view 冲突检测）→ 逐插件 `import('/privhub-plugins/<目录名>/index.js')` → 按 slot 注册（#L775-797） |
-| V3 布局 | explorer-v3 自带文件树（含文件 + ⋯ 菜单）+ 中央 VS Code 式标签页 + 右侧详情面板；md/txt 内嵌编辑 + office 浮层编辑；标签页软上限 **30**（超限从头部淘汰，explorer-v3/client/index.js#L197） |
+| V3 布局 | explorer-v3 自带文件树（含文件 + ⋯ 菜单）+ 中央 VS Code 式标签页 + 右侧详情面板；md/txt 内嵌编辑 + office 浮层编辑；标签页软上限 **30**（超限从头部淘汰，见 `explorer-v3/client/tabs.js`） |
+| **插件前端模块化**（v3.0.4） | 插件前端按职责拆成同目录多文件，**全部留在该插件目录内**（卸载插件则其前端一并消失）。首个范例：`explorer-v3/client/` 由单文件 1628 行拆为 12 个模块，`index.js` 仅 40 行装配。依赖方向严格单向：`deps → utils → store → treecache → {content, tabs} → ops → tree → panel`。骨架 `frontend/` 只做容器与总线（唯一主界面），不承载业务 UI |
 | 项目上下文 | 选项目后搜索/收藏/回收站均限定当前项目（服务端 visibleProjects 白名单兜底） |
 | 持久化 | localStorage（token/主题/侧栏宽/字体档）、sessionStorage（标签，按用户名分 key） |
 
@@ -278,6 +279,7 @@ node --import tsx/esm src/main.ts --port 3181     # 或双击其中的 start.bat
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-12 | **v3.0.4 前端模块化拆分**：`explorer-v3/client` 由单文件 1628 行拆为 12 个职责模块（入口仅 40 行装配）；新增「插件前端模块化」条目；确立约束「拆出来的东西必须留在所属插件目录内、骨架只做容器与总线」。完整变更见 `CHANGELOG.md` |
 | 2026-09-11 | **v3.0.1 个人空间批次**：新增 2.3b「项目 / 个人空间 / 智能体沙箱」核心概念；插件数 48→**49**（新增 `shell-agent-console`）；路由数 108→**112**（files-agent 18→20）；`window.PrivHub` 键口径改为「骨架 25 + 插件追加」；补静态资源鉴权说明；智能体写入落点由 `.agents/<用户>/` 改为**个人空间**。完整变更见仓库根 `CHANGELOG.md` |
 | 2026-09-11 | **三路审计后重建改进清单**：新建《PrivHub-改进建议.md》（42 项）；旧《改进需求清单》归档至 `v2/`；本文档索引与引用同步 |
 | 2026-09-11 | **代码核对同步**：插件数 45→48（新增装配方式拆解：17 手动 + 26 自动 + 5 纯前端）；补后端路由面（108 条 / 31 插件 / ACL 守卫 37 条）；`window.PrivHub` 桥 9→28 键；slot 并集 25 个、视图 13 个；**纠正加密描述**（4 个 JSON 为明文）；新增「环境注意」节；标注部署包落后与测试脚本缺失；文档索引补齐 |

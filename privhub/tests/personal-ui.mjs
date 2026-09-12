@@ -17,7 +17,7 @@
  * @module tests/personal-ui
  */
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
@@ -159,8 +159,19 @@ const squash = (s) => String(s).replace(/\s+/g, '')
 /* ================= 3. 被测源码 ================= */
 
 const SHELL = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'index.js'), 'utf8')
-const TREE = readFileSync(join(ROOT, 'plugins', 'privhub-files-explorer-v3', 'client', 'index.js'), 'utf8')
 const SKELETON = readFileSync(join(ROOT, 'frontend', 'index.html'), 'utf8')
+
+/**
+ * explorer-v3 已按职责拆分为多个模块文件（index.js 只做装配）。
+ * 断言要跟着拆分走：组件模板去各自模块找，跨文件的整体性检查用合并文本。
+ */
+const EXPLORER_DIR = join(ROOT, 'plugins', 'privhub-files-explorer-v3', 'client')
+const explorerFiles = readdirSync(EXPLORER_DIR).filter((f) => f.endsWith('.js')).sort()
+const readExplorer = (name) => readFileSync(join(EXPLORER_DIR, name), 'utf8')
+const TREE_TREE = readExplorer('tree.js')      // 目录树组件
+const TREE_PANEL = readExplorer('panel.js')    // 中栏面板组件
+const TREE_STYLES = readExplorer('styles.js')  // 样式
+const TREE_ALL = explorerFiles.map(readExplorer).join('\n')  // 合并文本（整体性检查用）
 
 /**
  * 构造实例上下文；mock 声明的每个名字必须在【真实组件源码】里存在，
@@ -206,7 +217,7 @@ function tabsInstance(role = 'user') {
 
 function treeInstance(role = 'user') {
   const nav = navOf()
-  return instance(TREE, 'const TreeV3', {
+  return instance(TREE_TREE, 'const TreeV3', {
     data: { nav, store: { newMenu: false } },
     computed: { isAdmin: role === 'admin', rootChildren: [], rootExpanded: false },
     methods: {
@@ -244,7 +255,7 @@ try {
 
 console.log('\n── C 目录树根节点：真实姓名 + 🏠 ──')
 try {
-  const t = squash(renderTemplate(TREE, 'const TreeV3', treeInstance()).text)
+  const t = squash(renderTemplate(TREE_TREE, 'const TreeV3', treeInstance()).text)
   ok(t.includes('🏠' + NAME), '树根显示「🏠 真实姓名」')
   ok(!t.includes('个人空间'), '树根不出现「个人空间」字样')
 } catch (e) {
@@ -254,7 +265,7 @@ try {
 console.log('\n── D 防回退：界面不得引入个人空间专属标签 ──')
 {
   const BANNED = ['PERSONAL_LABEL', 'personalLabel', 'personal-block', 'personal-item', 'personal-hint', 'side-divider', 'isPersonalDir', 'rootIcon']
-  for (const [label, src] of [['shell', SHELL], ['explorer-v3', TREE], ['骨架 index.html', SKELETON]]) {
+  for (const [label, src] of [['shell', SHELL], ['explorer-v3', TREE_ALL], ['骨架 index.html', SKELETON]]) {
     const found = BANNED.filter((m) => src.includes(m))
     ok(found.length === 0, `${label} 无个人空间专属界面标签残留${found.length ? '（发现：' + found.join(', ') + '）' : ''}`)
   }
@@ -291,14 +302,14 @@ console.log('\n── E 通行契约：项目下拉的 value 必须是真实文�
 
 console.log('\n── F 顶栏层数与重叠（用户反馈：三层顶栏、文件名重复、按钮压到 office 工具条）──')
 {
-  const tpl = templateAfter(TREE, 'const PanelV3')
+  const tpl = templateAfter(TREE_PANEL, 'const PanelV3')
   const o2Src = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'index.js'), 'utf8')
   const o2View = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.html'), 'utf8')
   const o2Js = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'view.js'), 'utf8')
 
   // ① 内容区彻底没有顶栏/悬浮条 —— 这是不重叠的根本保证
   ok(!/v3-content-head/.test(tpl), '内容区模板中已无任何工具条元素（不占位即不可能与 office 工具条重叠）')
-  ok(!/v3-content-head/.test(TREE), '样式里也无 .v3-content-head 残留')
+  ok(!/v3-content-head/.test(TREE_ALL), '样式里也无 .v3-content-head 残留')
   // 只查真实代码用法（选择器/样式规则），注释里提到该名字是为了说明历史，不算引用
   ok(!/querySelector\(['"]\.v3-content-head/.test(o2Src) && !/\.v3-content-head\s*\{/.test(o2Src),
     'office2 不再以 .v3-content-head 为锚点或样式目标（旧锚点，已改 prepend）')
@@ -319,8 +330,8 @@ console.log('\n── F 顶栏层数与重叠（用户反馈：三层顶栏、�
   ok(!/✕ 其他/.test(tpl), '原「✕ 其他」文字按钮已并入 ⋯ 菜单')
 
   // ④ 菜单不得放进 overflow 容器，否则会被裁掉
-  ok(/\.v3-tabops\s*\{[^}]*position:\s*relative/.test(TREE), '操作区为定位上下文（菜单锚点）')
-  ok(!/\.v3-tabs\s*\{[^}]*position:\s*relative/.test(TREE),
+  ok(/\.v3-tabops\s*\{[^}]*position:\s*relative/.test(TREE_STYLES), '操作区为定位上下文（菜单锚点）')
+  ok(!/\.v3-tabs\s*\{[^}]*position:\s*relative/.test(TREE_STYLES),
     '菜单不挂在 .v3-tabs 上（它 overflow-x:auto，会裁掉下拉）')
 
   // ⑤ office2 的 iframe 插入锚点必须是 prepend（旧锚点已删除）

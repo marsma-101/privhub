@@ -5,7 +5,7 @@
 #### 介绍
 私域枢纽 PrivHub —— 局域网文件枢纽中心：基于纯 Cordis 底座 + 自研插件架构的文件管理系统。开箱即用、数据加密落盘、可私有化部署。
 
-**当前版本 3.0.3** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本 3.0.4** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 #### 软件架构
 - **纯 Cordis 底座**：核心框架仅依赖 `@deepseek-ai/cordis` + `schemastery` + `tsx`，无重型 Web 框架，整个目录搬走即可运行。
