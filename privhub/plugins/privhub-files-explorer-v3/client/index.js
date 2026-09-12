@@ -32,12 +32,14 @@ const store = reactive({
   moveState: null,   // 移动选择器 { project, from, entry, tree:[{path,name,depth}], loading, target, busy }
   lightbox: null,    // 图片放大预览 url
   newMenu: false,    // 侧边栏「+」下拉
+  menu: false,       // 内容区右上角 ⋯ 菜单（字号/关闭标签/复制位置）
 })
 /* 全局 Esc：取消行内重命名（焦点不在输入框时兜底） */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (store.renameState) { cancelRename(); e.stopPropagation() }
     if (store.newMenu) store.newMenu = false
+    if (store.menu) store.menu = false
   }
 })
 
@@ -58,14 +60,25 @@ styleEl.textContent = `
 .v3-tab .v3-tab-name { overflow:hidden; text-overflow:ellipsis; }
 .v3-tab .v3-tab-x { width:16px; height:16px; border-radius:50%; text-align:center; line-height:15px; font-size:11px; flex-shrink:0; }
 .v3-tab .v3-tab-x:hover { background:var(--line); color:var(--danger); }
-.v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); }
-.v3-content-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line); }
-.v3-content-title { font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
-.v3-content-title .v3-path { font-weight:400; font-size:11.5px; color:var(--muted); }
+.v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); position:relative; }
+/* 内容工具条 = 右上角悬浮按钮组，【不再单独占一行】。
+ * 原因：原先它与标签栏各占一行，且两边都显示同一个文件名，加上 office 自身工具条
+ * 会形成三层顶栏、文件名重复三次。文件名以标签栏为唯一出处，其余功能收进 ⋯ 菜单。 */
+.v3-content-head { position:absolute; top:8px; right:14px; z-index:6; display:flex; align-items:center; gap:6px; }
+/* 悬浮条上的按钮在浅色内容上可能不够清楚，加一层底衬 */
+.v3-content-head .v3-op-btn { background:var(--panel); box-shadow:0 1px 4px rgba(0,0,0,.10); }
 /* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏 */
 .v3-content:has(.md-inline-root) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
-.v3-content:has(.md-inline-root) .v3-content-head { flex-shrink:0; margin:0; padding:7px 14px; background:var(--panel); }
-.v3-content:has(.md-inline-root) .v3-content-title { max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.v3-content:has(.md-inline-root) .md-src { padding-top:34px; }
+/* ⋯ 菜单（内容区/标签栏共用的紧凑下拉） */
+.v3-menu { position:absolute; top:34px; right:0; z-index:20; min-width:172px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 0; box-shadow:0 10px 28px rgba(0,0,0,.25); }
+.v3-menu-item { display:flex; align-items:center; gap:8px; padding:6px 12px; font-size:12.5px; cursor:pointer; color:var(--text); white-space:nowrap; }
+.v3-menu-item:hover { background:var(--panel); color:var(--accent); }
+.v3-menu-item .v3-menu-k { margin-left:auto; color:var(--muted); font-size:11.5px; }
+.v3-menu-sep { height:1px; background:var(--line); margin:5px 0; }
+.v3-menu-row { display:flex; align-items:center; gap:2px; padding:5px 12px; font-size:12.5px; color:var(--muted); }
+.v3-menu-row .v3-fs { cursor:pointer; padding:1px 7px; border-radius:5px; }
+.v3-menu-row .v3-fs:hover { background:var(--panel); color:var(--accent); }
 /* 编辑期间隐藏只读预览（CSS 级，重渲染后依然生效） */
 .v3-content:has(.md-inline-root) .v3-md, .v3-content:has(.md-inline-root) .v3-text { display:none; }
 .v3-content:has(.md-inline-root) .md-inline-root { flex:1 1 auto; min-height:0; }
@@ -943,6 +956,24 @@ const PanelV3 = {
     previewFontInc() { this.previewFont = Math.min(24, Math.round((this.previewFont + 1) * 10) / 10); this.applyPreviewFont() },
     previewFontDec() { this.previewFont = Math.max(10, Math.round((this.previewFont - 1) * 10) / 10); this.applyPreviewFont() },
     previewFontReset() { this.previewFont = 13.5; this.applyPreviewFont() },
+    /* ---- 内容区 ⋯ 菜单（把原先散在标题行上的功能收进一个按钮） ---- */
+    toggleMenu() { store.menu = !store.menu },
+    menuCloseCurrent() { store.menu = false; close(store.activeKey) },
+    menuCloseOthers() { store.menu = false; closeOthers(store.activeKey) },
+    menuCloseAll() {
+      store.menu = false
+      store.tabs = []
+      store.activeKey = ''
+      store.content = null
+      persistTabs()
+    },
+    async menuCopyPath() {
+      store.menu = false
+      const t = this.activeTab
+      if (!t) return
+      const abs = t.project + '/' + t.path
+      try { await navigator.clipboard.writeText(abs); window.PrivHub.toast('已复制：' + abs) } catch { window.PrivHub.toast('复制失败：' + abs, 'warn') }
+    },
     reloadActive() { const t = this.activeTab; if (t) void loadContent(t.key) },
     /* ---- 目录浏览 ---- */
     onEntryClick(e) {
@@ -1159,23 +1190,31 @@ const PanelV3 = {
           <span class="v3-tab-x" title="关闭" @click.stop="close(t.key)">✕</span>
         </div>
         <div style="flex:1"></div>
-        <span v-if="store.tabs.length > 1" style="font-size:11px;color:var(--muted);cursor:pointer;padding:2px 8px;flex-shrink:0" title="关闭其他标签" @click="closeOthers(store.activeKey)">✕ 其他</span>
       </div>
 
       <!-- 主区：有激活标签 → 内容区；否则 → 目录浏览 -->
       <template v-if="activeTab && content && content.key === activeTab.key">
         <div class="v3-content">
+          <!-- 内容工具条：右上角悬浮，不占行。文件名以标签栏为唯一出处，此处不再重复。 -->
           <div class="v3-content-head">
-            <span class="v3-content-title" :title="activeTab.project + ' / ' + activeTab.path">
-              <span>{{ fileIcon(activeTab.type) }}</span>{{ activeTab.name }}
-            </span>
-            <span class="spacer"></span>
-            <span style="display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:1px 4px;font-size:12px;color:var(--muted)" title="内容/编辑字号">
-              <span style="cursor:pointer;padding:0 5px" @click="previewFontDec">A−</span>
-              <span style="cursor:pointer;padding:0 5px;min-width:32px;text-align:center" @click="previewFontReset">{{ previewFont }}px</span>
-              <span style="cursor:pointer;padding:0 5px" @click="previewFontInc">A+</span>
-            </span>
-            <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 收起详情' : 'ℹ️ 详情' }}</button>
+            <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
+            <button class="v3-op-btn" title="更多（字号 / 关闭标签 / 文件位置）" @click.stop="toggleMenu">⋯</button>
+            <div v-if="store.menu" class="ctx-mask" @click="store.menu = false"></div>
+            <div v-if="store.menu" class="v3-menu" @click.stop>
+              <div class="v3-menu-row" title="内容/编辑字号">
+                <span>字号</span>
+                <span class="v3-menu-k"></span>
+                <span class="v3-fs" @click="previewFontDec">A−</span>
+                <span class="v3-fs" @click="previewFontReset">{{ previewFont }}px</span>
+                <span class="v3-fs" @click="previewFontInc">A+</span>
+              </div>
+              <div class="v3-menu-sep"></div>
+              <div class="v3-menu-item" @click="menuCloseCurrent">✕ 关闭当前标签</div>
+              <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseOthers">✕ 关闭其他标签</div>
+              <div v-if="store.tabs.length > 1" class="v3-menu-item" @click="menuCloseAll">✕ 关闭全部标签</div>
+              <div class="v3-menu-sep"></div>
+              <div class="v3-menu-item" :title="activeTab.project + ' / ' + activeTab.path" @click="menuCopyPath">📋 复制文件位置<span class="v3-menu-k">{{ activeTab.project }}</span></div>
+            </div>
           </div>
           <div v-if="content.state === 'loading'" class="v3-loading">正在加载…</div>
           <div v-else-if="content.state === 'error'" class="v3-loading">{{ content.error }}</div>

@@ -9,6 +9,10 @@
   const token = localStorage.getItem('privhub_token') || ''
   const $ = (id) => document.getElementById(id)
 
+  /* 单独打开本页时才显示文件名——被 V3 内容区以 iframe 嵌入时，文件名由标签栏承担，
+   * 本页再显示一次就会形成重复（用户反馈的「三层顶栏、文件名三次」）。 */
+  if (window.self === window.top) document.body.classList.add('standalone')
+
   let locked = false
   let editing = false
   let heartbeat = null

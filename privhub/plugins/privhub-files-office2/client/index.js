@@ -18,9 +18,11 @@ const REPLACE_EXTS = ['.docx', '.xlsx']
 const styleEl = document.createElement('style')
 styleEl.textContent = `
 .v3-content:has(iframe.office2-frame) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
-.v3-content:has(iframe.office2-frame) .v3-content-head { flex-shrink:0; margin:0; padding:7px 14px; background:var(--panel); }
 .v3-content:has(iframe.office2-frame) iframe.office2-frame { flex:1 1 auto; min-height:0; }
 iframe.office2-frame { display:block; width:100%; height:100%; border:none; background:#fff; }
+/* 不要给 .v3-content-head 加 flex-shrink:0 / 背景 —— 它现在是右上角【悬浮】按钮组。
+   若在此处把它拉回成一行标题栏，office 预览就会出现
+   「标签栏 + 标题栏 + office 自身工具条」三层顶栏（用户反馈的问题）。 */
 `
 document.head.appendChild(styleEl)
 

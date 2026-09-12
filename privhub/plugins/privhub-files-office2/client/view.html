@@ -8,13 +8,16 @@
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; display: flex; flex-direction: column; height: 100vh; }
-  #bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; font-size: 13px; flex-shrink: 0; flex-wrap: wrap; }
-  #bar .fname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  /* 工具条压薄：文件名不在本页重复显示（标签栏已是文件名的唯一出处），只保留状态与操作 */
+  #bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: #fff; border-bottom: 1px solid #e2e4e8; font-size: 12.5px; flex-shrink: 0; flex-wrap: wrap; min-height: 34px; }
+  /* 文件名默认隐藏；仅当本页被单独打开（非 V3 内容区嵌入）时才显示，避免无标题可依 */
+  #bar .fname { display: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+  body.standalone #bar .fname { display: inline; }
   #bar .st { color: #888; font-size: 12px; }
   #bar .st.locked { color: #c0392b; }
   #bar .st.editing { color: #2b6cb0; }
   #bar .sp { flex: 1; }
-  #bar button { padding: 5px 14px; border-radius: 6px; border: 1px solid #c9cdd4; background: #fff; cursor: pointer; font-size: 12.5px; }
+  #bar button { padding: 3px 11px; border-radius: 6px; border: 1px solid #c9cdd4; background: #fff; cursor: pointer; font-size: 12.5px; }
   #bar button:hover { border-color: #2b6cb0; color: #2b6cb0; }
   #bar button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
   #bar button.primary:hover { filter: brightness(1.1); color: #fff; }
