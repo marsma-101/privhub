@@ -35,11 +35,11 @@ PrivHub — a LAN file hub center: a file management system built on a pure Cord
 4.  Create Pull Request
 
 
-#### Gitee Feature
+#### Repository
 
 1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+2.  The primary repository has moved to GitHub: [https://github.com/marsma-101/privhub](https://github.com/marsma-101/privhub) (Gitee updates paused)
+3.  GitHub Docs [docs.github.com](https://docs.github.com)
+4.  Explore open source projects [https://github.com/explore](https://github.com/explore)
+5.  Browse repositories by topic [GitHub Topics](https://github.com/topics)
+6.  GitHub Stars showcasing top developers [https://github.com/stars](https://github.com/stars)

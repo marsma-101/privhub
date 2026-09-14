@@ -1,7 +1,9 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.0.3**
+**当前版本：3.0.4**
+
+> 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.0.4`）。
 
 ## 版本号规则
 
