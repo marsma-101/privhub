@@ -1,9 +1,9 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.0.4**
+**当前版本：3.1.0**
 
-> 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.0.4`）。
+> 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
 ## 版本号规则
 
@@ -19,6 +19,116 @@
 `GET /privhub/api/health` 上报的就是它。改版本号只需改这一处。
 
 > 历史沿革：3.0.1 之前的提交记录见 `git log`，本文件自 3.0.1 起逐条记录。
+
+---
+
+## [3.1.0] — 2026-09-14
+
+### 新功能 · 管理控制台外壳（第一阶段：外壳统一、导航清晰、入口不丢）
+
+**动机**（用户要求）：进入管理相关页面时不再是一堆**全宽页面堆在一起**，
+而是一个职责清晰、导航稳定、布局一致的工作台。
+
+**范围**：本次只做**前端显示层与导航组织方式**——不改后端 API / 数据库 / 权限校验 /
+插件业务逻辑，不删除任何既有管理入口。既有管理页面先「嵌入」新外壳，内部 UI 暂时沿用，
+后续再逐页优化。
+
+**新增插件 `privhub-admin-console`**（纯前端，16 个模块 / 1980 行，全部在该插件目录内）：
+
+| 文件 | 职责 |
+|---|---|
+| `index.js` | 入口：只做装配 + slot 声明 |
+| `deps.js` | 对 `window.PrivHub` / `window.Vue` 的依赖收敛点 |
+| `routes.js` | 管理路由表（4 分组 13 条）+ 视图可用性判定 + hash 解析 |
+| `store.js` | 共享状态 `adminState`（activeSection / activeSubView / selectedId / filters / selection / loading / error / sidebarCollapsed） |
+| `action.js` | 导航动作（hash 读写 + 骨架 `nav` 协作，唯一出口） |
+| `panelbus.js` | 插件内「打开某管理页」总线（侧栏/概览卡片/详情都走它，避免组件互相 import 成环） |
+| `shell.js` | AdminShell：顶部栏 + 侧栏 + 内容区装配 |
+| `sidebar.js` / `topbar.js` / `breadcrumb.js` / `sectionheader.js` | 管理导航、顶部栏、面包屑、页面标题条 |
+| `ui.js` | `AdminEmptyState` / `AdminSkeleton` / `AdminErrorState` / `AdminConfirmDialog` / `AdminToast` / `AdminBulkBar` / `AdminDataTable` / `AdminListDetail` |
+| `panels.js` | 外壳自渲染的管理页：概览、项目权限（只读矩阵）、发布链接（**列表-详情主从布局**）、自动备份、水印配置（只读） |
+| `confirm.js` / `toast.js` / `styles.js` | 确认服务（Promise 式）、toast 队列、本插件全部样式 |
+
+**布局**：顶部栏固定 56px（面包屑 / 全局搜索 / 刷新 / 返回文件）；
+侧栏 240px 可折叠为 64px；内容区最大宽 1440px、浅灰底白卡片、行高 40px、圆角 8px。
+样式全部用 `--admin-*` 变量且值映射主题变量，**暗色模式自动跟随**。
+
+**左侧导航按「管理员职责」分四组**（不是按插件分）：
+
+| 分组 | 条目 → 承载视图 |
+|---|---|
+| 概览 | 管理概览（外壳自渲染统计卡） |
+| 用户与权限 | 用户管理 `admin` · 项目权限（外壳自渲染只读矩阵） · ACL 规则 `acl` · 智能体密钥 `agent` |
+| 内容治理 | 标签管理 `tags` · 模板管理 `template` · 发布链接（外壳自渲染） · 回收站 `trash` |
+| 系统运维 | 审计日志 `audit` · 系统设置 `settings` · 自动备份（外壳自渲染） · 水印配置（外壳自渲染只读） |
+
+**导航机制（本次的关键设计）**：
+
+- 管理路由走 **hash**：`#/admin/access/acl`、`#/admin/ops/audit`…，**刷新后保持位置**；
+  离开管理视图自动清掉管理 hash，「返回文件」后再进入回到**上次停留的管理页**（localStorage 记忆）。
+- 侧栏条目**只改 hash**，不回头调 `nav.setActiveView` —— 骨架的 `setActiveView` 对
+  「同一个视图再点一次」会 toggle 回文件页；为此给它加了 `noToggle` 选项，
+  **管理视图内不再触发回 files 的 toggle 行为**（文件视图原有 toggle 行为保持不变）。
+- 管理页内容由**其它插件**提供：各插件 manifest 新增 `admin-nav` barItem（进入控制台侧栏）
+  与 `admin-*` slot（内容区渲染同一份组件实现）。因此**卸载某插件后，对应条目自动变为
+  「待接入」**，而不是点进去空白；插件恢复即自动可用。
+- 图标栏底部管理组收敛为「🛠️ 管理控制台 + ⚙ 设置」两个入口
+  （用户管理 / 权限 / 审计三个图标移入控制台侧栏，**入口一个不少**）。
+
+**统一状态与交互**：列表用骨架屏（不整屏 spinner）、空状态含图标/标题/说明/主按钮、
+局部错误卡片带「重试」、危险操作用统一 `AdminConfirmDialog`（高风险操作要求**输入关键词**才能确认）、
+批量选择浮现 `AdminBulkBar`、所有操作经 `AdminToast` 反馈；`Esc` 关闭弹窗（**不再把人弹回文件页**）。
+
+**列表-详情主从布局**（需求 §4）已落地为 `AdminListDetail` 并提供参考实现：
+「内容治理 > 发布链接」页左侧列表 320px（可拖拽 280–480）、右侧详情自适应，
+列表项含主标题/副标题/状态徽章/最近更新，选中态为浅主色底 + 左侧 3px 主色条，
+支持列表内 `↑` / `↓` 切换选中、`Enter` 打开详情，危险操作（撤销链接）单独放在详情底部区域。
+其余管理页因内部仍是既有界面，暂用统一的全宽表格 + 统一筛选栏/批量栏样式，后续逐页改主从。
+
+**响应式**：≥1280px 侧栏展开；1024–1279px 侧栏折叠为图标；<1024px 侧栏变抽屉（汉堡菜单）；
+<768px 列表与详情二选一，并提供「← 列表 / 详情 →」切换。
+
+**入口保持**：`openAdmin` / `openAcl` / `openAudit` / `openSettings` / `openTags` /
+`openTemplate` / `openKg` / `openWiki` 全部保留（`openAdmin` 现进入管理控制台，
+其余入口直达对应视图，外壳会自动把它们纳入管理导航）。
+
+**既有插件改动（仅前端接线，无业务逻辑改动）**：`privhub-admin` · `privhub-admin-acl` ·
+`privhub-admin-audit-panel` · `privhub-files-tags` · `privhub-files-template` ·
+`privhub-trash-ui` · `privhub-shell-settings` · `privhub-shell-agent-console` 各加一条
+`admin-nav` 声明与一个 `admin-*` slot 别名（**同一份组件实现、两处入口**）；
+`privhub-shell` 图标栏不再渲染 `admin-nav` 条目、底部管理组收敛为 2 项；
+`frontend/index.html` 挂载 `admin-console` slot 并支持 `noToggle`。
+
+### 测试
+
+- 新增 `tests/admin-console.mjs`（**76 项**）：在 Node 里用最小 DOM 适配器**真实加载 Vue 与
+  本插件全部模块、真实编译并挂载 AdminShell**，覆盖路由解析、视图可用性（含「插件卸载后变待接入」）、
+  侧栏与顶栏渲染、概览卡片取数、视图缺失兜底、侧栏高亮唯一、
+  列表-详情主从布局（列表/详情并排、选中态唯一、`↑`/`↓` 切换、`Enter` 打开详情、危险操作区、空状态）、
+  hash 路由（刷新/前进后退等价）、**「管理视图内重复点击不 toggle 回文件页」**、
+  确认弹窗 Promise 语义、toast 队列，以及骨架接线契约（入口保留、slot 挂载、Esc 行为）
+- `run-all.mjs` 静态检查链加入 `admin-console.mjs`；`integrity.mjs` 的「前端模块化契约」由只盯
+  explorer-v3 改为**按清单对多个插件生效**（新插件照此声明必需模块），本次以 `admin-console`
+  16 个模块接入契约（入口 27 行装配、只引用同目录文件、依赖无环、职责模块齐全）
+- 回归：`frontend-templates`（60 个模板零错误/零警告，含新插件模板）、
+  `personal-ui` 39 项、`integrity` **50 项** 全部通过
+- 敏感性验证：把「卸载插件后条目变待接入」写成了真实用例（移除视图声明后断言条目变化），
+  非空断言
+
+### 备份
+
+改动前的 13 个管理相关插件与 `frontend/index.html` 已整份备份到
+`_archive/2026-09-14-admin-shell-phase1/`（55 个文件），可随时逐文件还原。
+
+### 说明（后续阶段）
+
+- 各管理页**内部 UI 仍沿用既有实现**（本阶段只换外壳）；用户管理 / ACL / 审计等页面
+  的列表-详情化改造在后续阶段进行。
+- 「全局搜索」本阶段**只做 UI**：提交时明确提示搜索范围与「后续阶段接入」，不做假交互。
+- 水印配置为**只读**（后端目前只提供水印下发，无配置接口）；自定义文案/透明度/开关
+  需后端补接口后再接入。
+- 项目权限页为**只读矩阵**（数据来自既有用户接口），修改归属仍走「用户管理」，
+  以避免本阶段新增任何后端接口。
 
 ---
 

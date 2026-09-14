@@ -3,8 +3,9 @@
   "title": "设置",
   "icon": "⚙",
   "description": "系统设置面板（D25）：主题 / 默认视图 / 上传限制",
-  "slots": ["settings"],
+  "slots": ["settings", "admin-settings"],
   "barItems": [
-    { "icon": "⚙", "title": "设置", "slot": "app-iconbar", "view": "settings" }
+    { "icon": "⚙", "title": "设置", "slot": "app-iconbar", "view": "settings" },
+    { "icon": "⚙", "title": "系统设置", "slot": "admin-nav", "view": "settings", "adminOnly": true }
   ]
 }

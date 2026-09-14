@@ -1,0 +1,7 @@
+{
+  "name": "privhub-admin-console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "统一管理控制台外壳（仅前端）：管理导航分组、顶部栏、列表-详情容器与统一状态。无 src/ 目录，故不参与服务端装配。"
+}

@@ -338,55 +338,76 @@ ok(/view === 'agent'/.test(feSrc), '骨架 barItem 分发包含 agent 视图')
 /* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
  * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现
  * 拆成若干职责单一的文件，且【全部留在该插件目录内】——卸载插件时它的前端
- * 一并消失；改哪块只碰哪个文件。 */
+ * 一并消失；改哪块只碰哪个文件。
+ *
+ * v3.1.0 起该契约对【多个插件】同时生效（不再只盯 explorer-v3），
+ * 新增插件照此声明自己的必需模块即可。 */
 console.log('\n── 前端模块化契约 ──')
 
-const EXP_DIR = join(ROOT, 'plugins', 'privhub-files-explorer-v3', 'client')
-const expFiles = readdirSync(EXP_DIR).filter((f) => f.endsWith('.js')).sort()
-const expEntrySrc = readFileSync(join(EXP_DIR, 'index.js'), 'utf8')
+/** 契约适用清单：插件目录 + 最少模块数 + 关键职责文件（防日后被合并回单文件）。 */
+const MODULAR_PLUGINS = [
+  {
+    dir: 'privhub-files-explorer-v3',
+    min: 10,
+    need: ['deps', 'utils', 'styles', 'store', 'treecache', 'content', 'tabs', 'ops', 'tree', 'panel', 'detail', 'fontzoom'],
+  },
+  {
+    dir: 'privhub-admin-console',
+    min: 10,
+    need: ['deps', 'styles', 'store', 'routes', 'action', 'shell', 'sidebar', 'topbar', 'breadcrumb', 'sectionheader', 'ui', 'panels', 'confirm', 'toast', 'panelbus'],
+  },
+]
 
-ok(expFiles.length >= 10, `explorer-v3 client 已按职责拆分（${expFiles.length} 个模块文件）`)
-ok(expEntrySrc.split('\n').length < 60, `入口只做装配（${expEntrySrc.split('\n').length} 行，不再堆实现）`)
-ok(!/template:\s*`/.test(expEntrySrc), '入口不含任何组件模板（界面实现都在各自模块里）')
-
-// ① 拆分产物必须全部留在插件目录内（不得引用插件之外的相对路径）
-const escapeHits = []
-for (const f of expFiles) {
-  const t = readFileSync(join(EXP_DIR, f), 'utf8')
-  for (const m of t.matchAll(/from\s+'([^']+)'/g)) {
-    const spec = m[1]
-    if (spec.startsWith('./') || spec.startsWith('node:')) continue
-    escapeHits.push(f + ' → ' + spec)
-  }
-}
-ok(escapeHits.length === 0,
-  `模块只引用同目录文件（拆出来的东西都留在插件内）${escapeHits.length ? '：' + escapeHits.slice(0, 3).join('; ') : ''}`)
-
-// ② 模块依赖必须单向无环（有环会让加载顺序变脆弱）
-const depGraph = new Map()
-for (const f of expFiles) {
-  const t = readFileSync(join(EXP_DIR, f), 'utf8')
+/** 抽出某个模块文件里的同目录依赖（`from './x.js'`）。 */
+function sameDirDeps(src) {
   const deps = new Set()
-  for (const m of t.matchAll(/from\s+'\.\/([\w-]+)\.js'/g)) deps.add(m[1] + '.js')
-  depGraph.set(f, deps)
+  for (const m of src.matchAll(/from\s+'\.\/([\w.-]+)\.js'/g)) deps.add(m[1] + '.js')
+  return deps
 }
-const cyc = []
-const state = new Map()
-const dfs = (n, path) => {
-  const st = state.get(n)
-  if (st === 1) return
-  if (st === 0) { cyc.push([...path, n].join(' → ')); return }
-  state.set(n, 0)
-  for (const d of depGraph.get(n) || []) if (depGraph.has(d)) dfs(d, [...path, n])
-  state.set(n, 1)
-}
-for (const n of expFiles) dfs(n, [])
-ok(cyc.length === 0, `模块依赖无环${cyc.length ? '：' + cyc.slice(0, 2).join(' | ') : ''}`)
 
-// ③ 模块划分要稳定：关键职责文件必须存在（防止日后被合并回单文件）
-const needMods = ['deps', 'utils', 'styles', 'store', 'treecache', 'content', 'tabs', 'ops', 'tree', 'panel', 'detail', 'fontzoom']
-const missingMods = needMods.filter((m) => !expFiles.includes(m + '.js'))
-ok(missingMods.length === 0, `职责模块齐全${missingMods.length ? '，缺：' + missingMods.join(', ') : '（' + needMods.length + ' 个）'}`)
+for (const spec of MODULAR_PLUGINS) {
+  const dir = join(ROOT, 'plugins', spec.dir, 'client')
+  const files = readdirSync(dir).filter((f) => f.endsWith('.js')).sort()
+  const entrySrc = readFileSync(join(dir, 'index.js'), 'utf8')
+
+  ok(files.length >= spec.min, `${spec.dir} client 已按职责拆分（${files.length} 个模块文件）`)
+  ok(entrySrc.split('\n').length < 60, `${spec.dir} 入口只做装配（${entrySrc.split('\n').length} 行，不再堆实现）`)
+  ok(!/template:\s*`/.test(entrySrc), `${spec.dir} 入口不含任何组件模板（界面实现都在各自模块里）`)
+
+  // ① 拆分产物必须全部留在插件目录内（不得引用插件之外的相对路径）
+  const escapeHits = []
+  for (const f of files) {
+    const t = readFileSync(join(dir, f), 'utf8')
+    for (const m of t.matchAll(/from\s+'([^']+)'/g)) {
+      const s = m[1]
+      if (s.startsWith('./') || s.startsWith('node:')) continue
+      escapeHits.push(f + ' → ' + s)
+    }
+  }
+  ok(escapeHits.length === 0,
+    `${spec.dir} 模块只引用同目录文件（拆出来的东西都留在插件内）${escapeHits.length ? '：' + escapeHits.slice(0, 3).join('; ') : ''}`)
+
+  // ② 模块依赖必须单向无环（有环会让加载顺序变脆弱）
+  const depGraph = new Map()
+  for (const f of files) depGraph.set(f, sameDirDeps(readFileSync(join(dir, f), 'utf8')))
+  const cyc = []
+  const state = new Map()
+  const dfs = (n, path) => {
+    const st = state.get(n)
+    if (st === 1) return
+    if (st === 0) { cyc.push([...path, n].join(' → ')); return }
+    state.set(n, 0)
+    for (const d of depGraph.get(n) || []) if (depGraph.has(d)) dfs(d, [...path, n])
+    state.set(n, 1)
+  }
+  for (const n of files) dfs(n, [])
+  ok(cyc.length === 0, `${spec.dir} 模块依赖无环${cyc.length ? '：' + cyc.slice(0, 2).join(' | ') : ''}`)
+
+  // ③ 模块划分要稳定：关键职责文件必须存在（防止日后被合并回单文件）
+  const missingMods = spec.need.filter((m) => !files.includes(m + '.js'))
+  ok(missingMods.length === 0,
+    `${spec.dir} 职责模块齐全${missingMods.length ? '，缺：' + missingMods.join(', ') : '（' + spec.need.length + ' 个）'}`)
+}
 
 // ④ 骨架仍是唯一主界面：插件不得自带整页 HTML（只能经 slot 挂组件）
 const pageHtml = []

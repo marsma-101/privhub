@@ -91,5 +91,7 @@ export default {
   id: 'privhub-trash-ui',
   slots: {
     'trash-view': TrashView,
+    /* 管理控制台「内容治理 > 回收站」用同一组件渲染（同一份实现、两处入口） */
+    'admin-trash': TrashView,
   },
 }

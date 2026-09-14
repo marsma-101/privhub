@@ -147,5 +147,8 @@ export default {
   drawerWidth: 480,
   slots: {
     tags: TagsAdmin,
+    /* 管理控制台（privhub-admin-console）的「内容治理 > 标签管理」用同一组件渲染：
+     * 同一份实现、两处入口。卸载本插件时该管理页自动变为「未装载」。 */
+    'admin-tags': TagsAdmin,
   },
 }

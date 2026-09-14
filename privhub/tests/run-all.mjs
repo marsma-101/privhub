@@ -94,8 +94,8 @@ async function main() {
   let pass = report(results)
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
-  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 审计可靠性 / 交付完整性 / 首次部署')
-  for (const script of ['frontend-templates.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs']) {
+  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署')
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }

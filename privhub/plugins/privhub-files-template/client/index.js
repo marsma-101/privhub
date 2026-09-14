@@ -357,5 +357,7 @@ export default {
   drawerWidth: 620,
   slots: {
     template: TemplateDoc,
+    /* 管理控制台「内容治理 > 模板管理」用同一组件渲染（同一份实现、两处入口） */
+    'admin-template': TemplateDoc,
   },
 }

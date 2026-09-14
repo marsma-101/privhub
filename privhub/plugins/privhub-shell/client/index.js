@@ -70,14 +70,15 @@ const AppIconbar = {
   name: 'shell-app-iconbar',
   data() { return { barItems, badges, nav } },
   computed: {
-    // 业务功能（上部）
+    // 业务功能（上部）：排除管理控制台底部组，以及「交给管理控制台侧栏渲染」的条目
+    // （admin-nav：仅作为管理控制台导航声明，不在图标栏占位）
     topItems() {
       const bottom = new Set(['settings', 'admin', 'acl', 'audit'])
-      return this.barItems.filter((bi) => !bottom.has(bi.view || bi.slot))
+      return this.barItems.filter((bi) => !bottom.has(bi.view || bi.slot) && bi.slot !== 'admin-nav')
     },
-    // 底部管理组（渲染顺序=自上而下：审计 → 权限管理 → 用户管理 → 设置，即设置在最底部）
+    // 底部管理组：只保留「管理控制台」一个入口（用户管理/权限/审计已收进控制台侧栏）
     bottomItems() {
-      const order = ['audit', 'acl', 'admin', 'settings']
+      const order = ['admin', 'settings']
       return order.map((v) => this.barItems.find((bi) => (bi.view || bi.slot) === v)).filter(Boolean)
     },
     // 图标高亮：视图型看 nav flag，功能面板看 nav.activeView（⑤ 单一状态源）

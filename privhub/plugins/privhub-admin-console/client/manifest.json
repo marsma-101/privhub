@@ -1,0 +1,10 @@
+{
+  "id": "privhub-admin-console",
+  "title": "管理控制台",
+  "icon": "🛠️",
+  "description": "统一管理控制台外壳：管理导航（概览/用户与权限/内容治理/系统运维）、顶部栏、列表-详情容器与统一状态",
+  "slots": ["admin-console"],
+  "barItems": [
+    { "icon": "🛠️", "title": "管理控制台", "slot": "admin-console", "view": "admin", "adminOnly": true }
+  ]
+}

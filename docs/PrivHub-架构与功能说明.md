@@ -20,9 +20,9 @@
 
 ## 二、总体架构
 
-### 2.1 插件全景（**49 个插件目录**，2026-09-11 v3.0.1 复核）
+### 2.1 插件全景（**50 个插件目录**，2026-09-14 v3.1.0 复核）
 
-`privhub/plugins/` 下非归档目录共 **49 个**（另有 `_retired-v2/` 3 个已退役目录，以 `_` 前缀排除，不参与装配）。
+`privhub/plugins/` 下非归档目录共 **50 个**（另有 `_retired-v2/` 3 个已退役目录，以 `_` 前缀排除，不参与装配）。
 
 **按装配方式拆解（权威依据 = `src/main.ts` + 启动日志）**：
 
@@ -30,11 +30,14 @@
 |---|---|---|
 | 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 17 项） | 17 | L2 能力 Service 10 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
 | L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 26 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2） |
-| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 6 | `admin-audit-panel` / `files-upload` / `files-upload-queue` / `files-wiki` / `shell-agent-console` / `trash-ui` |
+| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 7 | `admin-audit-panel` / `admin-console`※ / `files-upload` / `files-upload-queue` / `files-wiki` / `shell-agent-console` / `trash-ui` |
 
-→ **43 个含 `src/index.ts` + 6 个纯前端 = 49**。其中 **31 个插件带 `client/manifest.json`**（前端可挂载）；
+→ **43 个含 `src/index.ts` + 7 个纯前端 = 50**。其中 **32 个插件带 `client/manifest.json`**（前端可挂载）；
 43 个有 `src/` 的插件里，**31 个真正注册 HTTP 路由**，其余仅提供注入能力或纯前端。
 
+> ※ `admin-console`（v3.1.0 新增）是**纯前端插件**：无 `src/` 故不参与服务端装配，只提供
+> 管理控制台外壳与 `admin-nav` / `admin-*` slot 契约。
+>
 > `privhub-shell` 属特例：服务端代码在 `server/index.ts`（非 `src/index.ts`），故计入「纯前端」列的统计口径，
 > 但它实际提供 manifest 聚合路由。
 
@@ -72,20 +75,21 @@
 
 **最近一次启动日志实证**（`privhub/server-dev.log`，2026-09-06 09:39，晚于最后一次源码改动）：26 个 L3 插件全部发现并挂载成功，无失败项；唯一告警是 Node `fs.rmdir({recursive:true})` 的 DEP0147 弃用提示（`privhub/server-dev.err.log`）。
 
-### 2.2 前端骨架（frontend/index.html，955 行单文件 + Vue3 全局）
+### 2.2 前端骨架（frontend/index.html，1100 行单文件 + Vue3 全局）
 
-| 机制 | 实际现状（2026-09-11 复核） |
+| 机制 | 实际现状（2026-09-14 v3.1.0 复核） |
 |---|---|
-| `window.PrivHub` 桥 | **骨架 25 个键 + 插件运行时追加**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`；骨架扩展 13：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin` / `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`；插件运行时追加（实测 2 个）：`openRagDup` / `ragIntent`（svc-rag） |
+| `window.PrivHub` 桥 | **骨架 26 个键 + 插件运行时追加**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`；骨架扩展 14：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin`（=`openConsole`）/ `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`；插件运行时追加（实测 2 个）：`openRagDup` / `ragIntent`（svc-rag） |
 | `window.PrivHub` 第二层鉴权 | 插件前端代码经 `/privhub-plugins/<名>/<文件>` 加载，**需有效会话**（v3.0.1 起）。仅放行登录框自身（声明 `auth` slot 的插件，与 manifest 分级同判据）。会话经 `privhub_sid` Cookie 传递（HttpOnly + SameSite=Strict）——浏览器 `import()` 子资源无法附加 `Authorization` 头；`Bearer` 通道保持不变 |
-| slot 挂载 | 骨架按 `slots` 渲染；插件 client 导出 `export default { id, slots: { 槽名: Vue组件 } }`；**同 slot 可多组件**（数组累积，#L789）。实际并集 **25 个 slot**：`auth` `project-tabs` `user-area` `app-iconbar` `welcome` `tree` `panel` `preview` `tabs`※ `upload` `upload-queue` `trash-view` `search-view` `fav-view` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag-view` `md-editor` `office-editor` `watermark`（※ `tabs` 仅骨架渲染、已无插件声明：`shell-tabs` 已退役进 `_retired-v2/`） |
+| slot 挂载 | 骨架按 `slots` 渲染；插件 client 导出 `export default { id, slots: { 槽名: Vue组件 } }`；**同 slot 可多组件**（数组累积）。插件实际声明的 slot 并集 **31 个**：`auth` `project-tabs` `user-area` `app-iconbar` `welcome` `tree` `panel` `preview` `upload` `upload-queue` `trash-view` `search-view` `fav-view` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag-view` `md-editor` `office-editor` `watermark` `admin-console`（v3.1.0）`admin-tags` `admin-template` `admin-trash` `admin-settings`（v3.1.0，管理控制台内容区别名）；另有 `tabs` 仅骨架渲染、已无插件声明（`shell-tabs` 已退役进 `_retired-v2/`） |
 | 多组件 slot | `office-editor` 挂 8 个插件（comments / dataview / invite / mdpage / office-ui / office2 / publish / versions）；`user-area` 挂 3 个（explorer-v3 / shell / shell-recent）；`auth` 挂 2 个（auth / shell） |
-| `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式），`nav` 定义于 #L394。#L428 的 `setActiveView` 已内置「同视图再点即回 files」的 toggle 语义。实际 **13 个视图**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` |
-| manifest 加载链 | 骨架 `GET /privhub/api/shell/manifest`（shell 插件聚合，5s TTL 缓存 + A19 view 冲突检测）→ 逐插件 `import('/privhub-plugins/<目录名>/index.js')` → 按 slot 注册（#L775-797） |
+| `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式）。`setActiveView(v, opts)` 内置「同视图再点即回 files」的 toggle 语义，**`opts.noToggle` 可关闭该语义**（管理控制台专用：管理页之间切换不得被弹回文件页）。实际 **13 个视图**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` |
+| manifest 加载链 | 骨架 `GET /privhub/api/shell/manifest`（shell 插件聚合，5s TTL 缓存 + A19 view 冲突检测）→ 逐插件 `import('/privhub-plugins/<目录名>/index.js')` → 按 slot 注册 |
 | V3 布局 | explorer-v3 自带文件树（含文件 + ⋯ 菜单）+ 中央 VS Code 式标签页 + 右侧详情面板；md/txt 内嵌编辑 + office 浮层编辑；标签页软上限 **30**（超限从头部淘汰，见 `explorer-v3/client/tabs.js`） |
-| **插件前端模块化**（v3.0.4） | 插件前端按职责拆成同目录多文件，**全部留在该插件目录内**（卸载插件则其前端一并消失）。首个范例：`explorer-v3/client/` 由单文件 1628 行拆为 12 个模块，`index.js` 仅 40 行装配。依赖方向严格单向：`deps → utils → store → treecache → {content, tabs} → ops → tree → panel`。骨架 `frontend/` 只做容器与总线（唯一主界面），不承载业务 UI |
+| **插件前端模块化**（v3.0.4） | 插件前端按职责拆成同目录多文件，**全部留在该插件目录内**（卸载插件则其前端一并消失）。范例：`explorer-v3/client/` 单文件 1628 行 → 12 个模块；`admin-console/client/` 16 个模块 / 1980 行。依赖方向严格单向、无环。骨架 `frontend/` 只做容器与总线（唯一主界面），不承载业务 UI |
+| **管理控制台外壳**（v3.1.0） | `admin-console` slot + `#/admin/...` hash 路由；侧栏 240px（可折叠 64px）按职责分 4 组共 13 条；顶部栏 56px；内容区最大宽 1440px。`admin-nav` barItem = 进入控制台侧栏，`admin-*` slot = 内容区组件；**卸载插件 → 条目自动变「待接入」**。详见 §3.3 |
 | 项目上下文 | 选项目后搜索/收藏/回收站均限定当前项目（服务端 visibleProjects 白名单兜底） |
-| 持久化 | localStorage（token/主题/侧栏宽/字体档）、sessionStorage（标签，按用户名分 key） |
+| 持久化 | localStorage（token/主题/侧栏宽/字体档/**管理侧栏折叠态/管理详情列表宽/上次管理路由**）、sessionStorage（标签，按用户名分 key） |
 
 ### 2.3 后端路由面（**112 条路由 · 31 个插件**，v3.0.1）
 
@@ -170,12 +174,30 @@
 ### 3.3 管理能力
 | 功能 | 说明 |
 |---|---|
-| 用户管理 | 增删改查/角色/项目权限/重置密码 |
+| **管理控制台外壳**（v3.1.0） | 进入管理相关视图渲染统一外壳（顶部栏 56px + 左侧管理导航 + 内容区）。管理路由走 hash（`#/admin/access/acl` 等），**刷新保持位置**，「返回文件」后再进入回到上次管理页。侧栏按**管理员职责**分四组 13 条：概览 / 用户与权限（用户管理·项目权限·ACL·智能体密钥）/ 内容治理（标签·模板·发布链接·回收站）/ 系统运维（审计·系统设置·自动备份·水印）。统一空状态·骨架屏·错误重试·危险操作确认（高风险需输入关键词）·Toast·批量操作栏；响应式 1280 / 1024 / 768 三档。实现见 `plugins/privhub-admin-console/client/`（16 模块） |
+| 用户管理 | 增删改查/角色/项目权限/重置密码（既有界面，已嵌入控制台「用户与权限 > 用户管理」） |
 | 细粒度 ACL | 文件/目录级规则（继承/覆盖），管理 UI；守卫管辖 37 条文件路由 |
 | 审计面板 | 时间/操作/用户/项目四维筛选 + 实时刷新 + CSV |
 | 系统设置 | 主题（浅/深）/默认视图/上传限制（默认 `settings.json`：light / grid / 2048MB） |
-| 数字水印 | 预览叠加用户名+时间，防截屏外泄 |
-| 自动备份 | `git-backup`：把 `data-files/` 镜像为本地 git 裸仓（`data/git-backup/`），3 条路由 |
+| 数字水印 | 预览叠加用户名+时间，防截屏外泄（控制台内为**只读状态页**，无配置接口） |
+| 自动备份 | `git-backup`：把 `data-files/` 镜像为本地 git 裸仓（`data/git-backup/`），3 条路由；控制台「自动备份」页展示可用性并可手动触发一次提交 |
+| 发布链接管理 | 控制台「内容治理 > 发布链接」列出全部免登录分享链接并可复制/撤销（复用既有 publish 接口，**未新增后端**） |
+| 项目权限矩阵 | 控制台「用户与权限 > 项目权限」只读矩阵（谁能访问哪些项目）；修改归属仍走「用户管理」 |
+
+**管理入口映射（v3.1.0，既有入口一个不少）**：
+
+| 既有入口 | 进入方式 | 管理路由 |
+|---|---|---|
+| `openAdmin()` | 图标栏 🛠️ 管理控制台 | 上次停留位置（默认 `#/admin/overview`） |
+| `openAcl()` | 直达 ACL 视图（外壳自动高亮） | `#/admin/access/acl` |
+| `openAudit()` | 直达审计视图 | `#/admin/ops/audit` |
+| `openSettings()` | 直达设置视图 | `#/admin/ops/settings` |
+| `openTags()` / `openTemplate()` | 直达标签/模板视图 | `#/admin/content/tags` / `#/admin/content/templates` |
+| `shell-agent-console` | 侧栏「用户与权限 > 智能体密钥」 | `#/admin/access/agents` |
+| `trash-ui` | 侧栏「内容治理 > 回收站」 | `#/admin/content/trash` |
+
+> 图标栏底部管理组现为「🛠️ 管理控制台 + ⚙ 设置」两项；用户管理 / 权限 / 审计三个图标
+> 已收进控制台侧栏（功能入口未删除，只是不再重复占图标栏）。
 
 ### 3.4 交互体验（V2/V3 演进）
 | 项 | 说明 |
@@ -279,6 +301,7 @@ node --import tsx/esm src/main.ts --port 3181     # 或双击其中的 start.bat
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-14 | **v3.1.0 管理控制台外壳（第一阶段）**：新增纯前端插件 `privhub-admin-console`（16 模块）提供统一管理外壳；插件数 49→**50**、纯前端插件 6→**7**、插件声明的 slot 并集 25→**31**（新增 `admin-console` 与 4 个 `admin-*` 别名）、`window.PrivHub` 桥 25→**26** 键（新增 `openConsole` 别名）；`setActiveView` 新增 `noToggle`（管理视图内不 toggle 回 files）；图标栏管理组收敛为 2 项，管理入口统一到控制台侧栏（既有 `open*` 入口全部保留）；新增 §3.3「管理入口映射」。实现/测试/说明见 `CHANGELOG.md` 的 3.1.0 条 |
 | 2026-09-12 | **v3.0.4 前端模块化拆分**：`explorer-v3/client` 由单文件 1628 行拆为 12 个职责模块（入口仅 40 行装配）；新增「插件前端模块化」条目；确立约束「拆出来的东西必须留在所属插件目录内、骨架只做容器与总线」。完整变更见 `CHANGELOG.md` |
 | 2026-09-11 | **v3.0.1 个人空间批次**：新增 2.3b「项目 / 个人空间 / 智能体沙箱」核心概念；插件数 48→**49**（新增 `shell-agent-console`）；路由数 108→**112**（files-agent 18→20）；`window.PrivHub` 键口径改为「骨架 25 + 插件追加」；补静态资源鉴权说明；智能体写入落点由 `.agents/<用户>/` 改为**个人空间**。完整变更见仓库根 `CHANGELOG.md` |
 | 2026-09-11 | **三路审计后重建改进清单**：新建《PrivHub-改进建议.md》（42 项）；旧《改进需求清单》归档至 `v2/`；本文档索引与引用同步 |

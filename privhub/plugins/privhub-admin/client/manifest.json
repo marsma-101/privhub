@@ -5,6 +5,6 @@
   "description": "用户 / 角色 / 项目权限管理（权限系统）",
   "slots": ["admin"],
   "barItems": [
-    { "icon": "👥", "title": "用户管理", "slot": "admin", "adminOnly": true }
+    { "icon": "👥", "title": "用户管理", "slot": "admin-nav", "view": "admin", "adminOnly": true }
   ]
 }

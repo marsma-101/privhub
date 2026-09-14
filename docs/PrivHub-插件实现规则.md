@@ -7,14 +7,14 @@
 
 ---
 
-## 0. 已验证的实现现状（2026-09-11 · v3.0.1 代码核对）
+## 0. 已验证的实现现状（2026-09-14 · v3.1.0 代码核对）
 
 下表来自对 `privhub/plugins/` 的**实际扫描**，作为后续"现状"判定的唯一事实源。
 
 统计口径：插件 = `plugins/` 下非 `_` 开头目录；后端 ✅ = 存在 `src/index.ts` 或 `server/index.ts`；前端 ✅ = 存在 `client/manifest.json`（可被骨架挂载）。
 
-**总计 49 个插件目录**：43 个含 `src/index.ts`（17 核心清单手动挂载 + 26 L3 自动发现）+ 6 个纯前端。
-其中 **31 个真正注册 HTTP 路由**（共 112 条），31 个含前端。
+**总计 50 个插件目录**：43 个含 `src/index.ts`（17 核心清单手动挂载 + 26 L3 自动发现）+ 7 个纯前端。
+其中 **31 个真正注册 HTTP 路由**（共 112 条），32 个含前端。
 另存 `_retired-v2/`（3 个已退役目录：`files-explorer`、`files-preview`、`shell-tabs`），以 `_` 前缀排除，不参与装配。
 
 ### 0.1 L2 能力 Service（10 个，纯后端，main.ts 手动挂载）
@@ -43,13 +43,14 @@
 | privhub-admin | ✅ | ✅ `admin` | 用户 / 角色 / 项目权限管理（6 路由） |
 | privhub-shell | ✅(server) | ✅ | 骨架枢纽：manifest 聚合接口 + `project-tabs` / `user-area` / `app-iconbar` / `welcome` / `auth` 五组件 |
 
-### 0.3 L3 功能插件（32 个：26 自动发现 + 5 纯前端 + admin-acl 守卫）
+### 0.3 L3 功能插件（33 个：26 自动发现 + 6 纯前端 + admin-acl 守卫）
 
 | 插件 | 后端 | 前端 | slots | 说明 |
 | --- | --- | --- | --- | --- |
 | privhub-admin-acl | ✅ | ✅ | `acl` | 细粒度 ACL 守卫（F14）：包装 `svc.route`，白名单 `GUARD_PATHS` 管辖 **37 条**文件相关路由（per-method 裁决 view/upload/edit/delete），另提供规则管理 API（adminOnly） |
 | privhub-admin-audit | ✅ | — | — | 审计数据（F13/B13）：写操作落 JSONL + CSV 导出 |
 | privhub-admin-audit-panel | — | ✅ | `audit` | 审计日志可视化（F15）：时间线 + 四维筛选（时间/操作/用户/项目）+ CSV，仅管理员 |
+| **privhub-admin-console**（v3.1.0） | — | ✅ | `admin-console` | **管理控制台外壳**（纯前端，16 模块）：顶部栏 + 管理侧栏 + 内容区；`#/admin/...` hash 路由；契约见 §1.1 |
 | privhub-auth-watermark | ✅ | ✅ | `watermark` | 数字水印：预览时右下角叠加用户名+时间（防截屏外泄） |
 | privhub-files-agent | ✅ | — | — | Agent API 智能体接口网关（18 路由，全仓最多）：`pha_` 密钥 / 专属空间 / 配额限流 / 版本快照 / 幂等 |
 | privhub-files-comments | ✅ | ✅ | `office-editor` | md 文档位置锚定批注：选区评论、高亮锚点、回复线程、状态流转 |
@@ -113,7 +114,7 @@
 
 > ⚠️ `cordis.patch.yml` 已**不再参与装配**（`src/main.ts` 为纯代码装配）：全仓仍有 **27 个** 历史遗留文件，属待清理项（《改进建议》E5）。
 
-**slot 挂载点（实际并集 25 个）**：
+**slot 挂载点（插件实际声明并集 31 个；另有 `tabs` 仅骨架渲染）**：
 
 | 分类 | slot |
 | --- | --- |
@@ -121,6 +122,7 @@
 | 文件区（explorer-v3 声明） | `tree`（左面板目录树）· `panel`（中面板文件区）· `preview`（右侧详情面板） |
 | 功能面板 | `trash-view` · `search-view` · `fav-view` · `settings` · `admin` · `acl` · `audit` · `tags` · `template` · `kg` · `wiki` · `rag-view` |
 | 浮层 / 增强 | `upload` · `upload-queue` · `watermark` · `md-editor` · `office-editor` |
+| **管理控制台**（v3.1.0） | `admin-console`（外壳本体）· `admin-tags` · `admin-template` · `admin-trash` · `admin-settings`（**内容区别名**：同一组件实现、两处入口；由外壳按路由渲染） |
 | （闲置） | `tabs` —— 骨架仍在渲染，但已无插件声明（`shell-tabs` 已退役），可从骨架移除 |
 
 **同 slot 可多组件**（数组累积，#L789），实践中：
@@ -129,11 +131,44 @@
 
 **manifest 字段**：`id` / `title` / `icon` / `description` / `slots[]` / `entry`（由 shell 按目录名自动生成）/ `barItems[]`（图标栏项：`{ icon, title, slot, view, adminOnly }`）。
 `barItems[].view` 决定点击行为，当前实际 **13 个 view**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag`。
+（另有 `slot: "admin-nav"` 的管理导航声明，**不渲染进图标栏**，见 §1.1。）
 
 **client 默认导出形态（已验证）**：
 ```js
 export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component } }
 ```
+
+### 1.1 管理控制台契约（v3.1.0 起，新增管理页照此接入）
+
+管理相关界面**不再各自占满全宽**，而是统一渲染在 `admin-console` 外壳内（顶部栏 + 左侧管理导航 + 内容区）。
+两类插件参与其中，**都只需改自己插件目录内的 manifest 与 client，无需改骨架**：
+
+| 你要做的事 | 改哪里 | 怎么写 |
+| --- | --- | --- |
+| 让管理页出现在**左侧管理导航** | 自己插件的 `client/manifest.json` | `barItems` 加一项：`{ "icon": "...", "title": "...", "slot": "admin-nav", "view": "<视图名>", "adminOnly": true }` |
+| 让管理页在**内容区**渲染 | 自己插件的 `client/index.js` | `slots` 加别名：`'admin-<名>': 你的组件`（与既有 slot 同一个组件即可，一份实现两处入口） |
+| 路由与分组 | `privhub-admin-console/client/routes.js` | 在 `ROUTES` 加一条：`key`（= hash 路径，如 `content/tags`）、`label`、`section`（overview/access/content/ops）、`view`（切到骨架哪个 activeView）、`slot`（内容区 slot 名）、`entryOf`（对应 barItem 的 view，用于判可用性） |
+
+**必须遵守的三条**：
+
+1. `slot: "admin-nav"` 的 barItem **不会**渲染进图标栏（那是控制台侧栏的声明），
+   图标栏底部只保留「🛠️ 管理控制台 + ⚙ 设置」两个入口。
+2. 管理页内**不要再放自己的「关闭」按钮或页面级外壳**：导航由侧栏负责；
+   外壳已通过 `.ad-view .view-inner > .modal-foot { display: none }` 隐藏既有面板的关闭按钮
+   （插件内部结构与业务逻辑不动）。
+3. 管理路由走 **hash**（`#/admin/<key>`）；管理视图内切换**必须**只改 hash，
+   不得调用 `nav.setActiveView(同值)` —— 那会 toggle 回文件页。
+   需要用骨架切换视图时传 `{ noToggle: true }`。
+
+**可用性判定（卸载即失效）**：外壳用「视图名是否在骨架的 barItems 里」判断该管理页是否可用。
+因此**卸载承载插件后，侧栏条目自动变为「待接入」，点进去显示可见原因 + 重试**，而不是空白页；
+插件装回即自动恢复（未改控制台一行代码）。
+
+**外壳提供的复用件**（`privhub-admin-console/client/ui.js`，管理页应优先复用，勿各自造轮子）：
+`AdminEmptyState`（图标+标题+说明+主按钮）、`AdminSkeleton`（骨架屏，禁止整屏 spinner）、
+`AdminErrorState`（局部错误 + 重试）、`AdminConfirmDialog`（危险操作确认，可要求输入关键词）、
+`AdminToast`、`AdminBulkBar`（批量操作栏）、`AdminDataTable`（统一表头/行高/选中态）、
+`AdminListDetail`（列表-详情主从，列表 320px 可拖拽 280–480）。参考实现见 `panels.js` 的「发布链接」页。
 
 ---
 

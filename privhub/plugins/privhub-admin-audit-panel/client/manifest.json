@@ -5,6 +5,6 @@
   "description": "审计日志可视化（F15）：时间线 + 四维筛选（时间/操作/用户/项目）+ CSV 导出，仅管理员",
   "slots": ["audit"],
   "barItems": [
-    { "icon": "📋", "title": "审计", "slot": "panel", "view": "audit", "adminOnly": true }
+    { "icon": "📋", "title": "审计", "slot": "admin-nav", "view": "audit", "adminOnly": true }
   ]
 }

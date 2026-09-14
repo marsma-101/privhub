@@ -150,5 +150,7 @@ export default {
   drawerWidth: 420,
   slots: {
     settings: SettingsPanel,
+    /* 管理控制台「系统运维 > 系统设置」用同一组件渲染（同一份实现、两处入口） */
+    'admin-settings': SettingsPanel,
   },
 }

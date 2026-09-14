@@ -454,9 +454,12 @@
         nav.sidebarWidth = nav.sidebarWidth > 40 ? 0 : 220
         localStorage.setItem('privhub_sidebar_w', String(nav.sidebarWidth))
       },
-      /* ⑤ 视图切换（toggle）：点同一视图图标 = 回到文件视图；视图间互斥由单一状态保证 */
-      setActiveView(v) {
-        if (nav.activeView === v) v = 'files'
+      /* ⑤ 视图切换（toggle）：点同一视图图标 = 回到文件视图；视图间互斥由单一状态保证
+       * noToggle：管理控制台外壳专用。管理侧栏切换管理页时绝不能因为「点的是当前视图」
+       *           而 toggle 回文件页（需求：管理视图内不触发回 files 的 toggle 行为）。 */
+      setActiveView(v, opts) {
+        const noToggle = !!(opts && opts.noToggle)
+        if (!noToggle && nav.activeView === v) v = 'files'
         nav.activeView = v
         // 兼容镜像：视图型标志与 activeView 同步（回收站/搜索/收藏视图入口）
         nav.trashView = v === 'trash'
@@ -749,7 +752,11 @@
       else if (view === 'favorites') { nav.openFavorites() }
       else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
       // ⑤ 功能面板 = 视图（llm_wiki 范式）：图标点击切换 activeView，再点回文件视图
-      else if (view === 'admin' || view === 'settings' || view === 'acl' || view === 'audit' ||
+      //    例外：管理控制台不再 toggle —— 管理页之间来回切换时不该被弹回文件页。
+      else if (view === 'admin') {
+        if (nav.activeView !== 'admin') nav.setActiveView('admin', { noToggle: true })
+      }
+      else if (view === 'settings' || view === 'acl' || view === 'audit' ||
                view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki' ||
                view === 'rag' || view === 'agent') {
         nav.setActiveView(view)
@@ -936,8 +943,16 @@
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
           window.PrivHub.loadBarItems()
         }
-        /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用） */
-        window.PrivHub.openAdmin = () => nav.setActiveView('admin')
+        /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用）
+         *
+         * 管理入口（openAdmin 等）保持不变，只是「管理」现在统一渲染在管理控制台外壳里：
+         *   - openAdmin  → 管理控制台（外壳内部按 #/admin/... 路由决定打开哪一页；
+         *                  未带路由时回到上次停留的管理页）
+         *   - openAcl / openAudit / openSettings / openTags / openTemplate 等既有入口
+         *     仍然直达各自的视图，外壳会自动把它们纳入左侧管理导航（视图 ↔ 路由一一对应）。
+         * 传入 noToggle：管理入口重复点击不应把界面 toggle 回文件页。 */
+        window.PrivHub.openAdmin = () => { if (nav.activeView !== 'admin') nav.setActiveView('admin', { noToggle: true }) }
+        window.PrivHub.openConsole = window.PrivHub.openAdmin
         window.PrivHub.openSettings = () => nav.setActiveView('settings')
         window.PrivHub.openAcl = () => nav.setActiveView('acl')
         window.PrivHub.openAudit = () => nav.setActiveView('audit')
@@ -945,9 +960,10 @@
         window.PrivHub.openTemplate = () => nav.setActiveView('template')
         window.PrivHub.openKg = () => nav.setActiveView('kg')
         window.PrivHub.openWiki = () => nav.setActiveView('wiki')
-        /* Esc 回到文件视图 */
+        /* Esc 回到文件视图（管理控制台内不生效：那里的 Esc 属于弹窗/菜单，
+           否则关一个确认框就会把整个管理界面弹回文件页） */
         self._escClose = (ev) => {
-          if (ev.key === 'Escape' && nav.activeView !== 'files') nav.setActiveView('files')
+          if (ev.key === 'Escape' && nav.activeView !== 'files' && nav.activeView !== 'admin') nav.setActiveView('files')
         }
         document.addEventListener('keydown', self._escClose)
       },
@@ -1027,6 +1043,17 @@
               <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps['rag-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'rag' && slotComps['rag-view'] && slotComps['rag-view'].length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps['agent-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'agent' && slotComps['agent-view'] && slotComps['agent-view'].length" @close="nav.setActiveView('files')"></component>
+              <!-- 管理控制台（admin-console slot，privhub-admin-console 提供）：
+                   统一管理外壳 = 顶部栏 + 左侧管理导航 + 内容区。
+                   外壳通过 slot-comps 拿到全部插件组件，按当前管理路由渲染对应界面。 -->
+              <component v-for="c in slotComps['admin-console']" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps['admin-console'] && slotComps['admin-console'].length" :slot-comps="slotComps"></component>
+              <!-- 兼容兜底：管理外壳插件未装载时，仍渲染旧 admin slot（用户管理），
+                   保证 openAdmin 这个既有入口在任何情况下都不会变成白屏。 -->
+              <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
+              <div v-else-if="nav.activeView === 'admin'" class="main-welcome">
+                <div class="big">管理控制台加载中…</div>
+                <div style="font-size:12px">若长时间停留在此，说明管理外壳插件未装载：请检查 plugins/privhub-admin-console。</div>
+              </div>
               <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
               <!-- 欢迎页（未选项目：简单文案，选项目在左侧栏） -->
               <div v-else-if="nav.activeView === 'files' && nav.project === null" class="main-welcome">
