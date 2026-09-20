@@ -24,8 +24,46 @@ styleEl.textContent = `
 .v3-tab .v3-tab-x { width:16px; height:16px; border-radius:50%; text-align:center; line-height:15px; font-size:11px; flex-shrink:0; }
 .v3-tab .v3-tab-x:hover { background:var(--line); color:var(--danger); }
 .v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); }
-/* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏 */
-.v3-content:has(.md-inline-root) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+/* 有 viewer 上场时，内容区整块让给它（第二步 b）：去内边距、纵向铺满、不滚动，
+ * 宿主自己的只读预览（.v3-md / .v3-text）同时让位。
+ *
+ * 谁的地谁管：这条规则写在【宿主自己的样式】里、挂在【宿主自己的状态类】上
+ * （panel.js 的 contentClass 由 viewer 会话的返回值驱动）。
+ * 迁前它是 office2 注入的 .v3-content--office + iframe.office2-frame ——
+ * 插件按类名声称拥有别人的容器，正是硬约束 5 要治的那种写法。 */
+.v3-content--viewer { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.v3-content--viewer .v3-md, .v3-content--viewer .v3-text { display:none; }
+/* 图片 / PDF 铺满（本轮新增形态）：与 --viewer / --editor 同一范式 ——
+ * 状态由**宿主自己派生**（panel.js 的 fillLayout，写进响应式 data）、规则写在
+ * **宿主自己的样式**里、插件一个字节都不参与。
+ * 与 --viewer 的区别是「谁上场」：--viewer 是插件 viewer 上场、宿主让位；
+ * 这里是**宿主亲儿子**（img / iframe 由宿主模板直接渲染），语义不同，故另开一个状态类。
+ *
+ * 治的是什么（用户原话：「背景和背景大小别做限制，给 100%」「现在分好几层，大小还有的格式有限制」）：
+ *   ① 去掉 .v3-content 的内边距（迁前 16px 22px ⇒ 图片/PDF 四周一圈留白）；
+ *   ② 去掉 PDF 的写死高度（迁前 100vh 减 260px，与实际 chrome 高度无关，必然对不上）；
+ *   ③ 去掉装饰性边框与圆角（迁前给 PDF 套了个相框、给图片加了 8px 圆角）；
+ *   ④ 图片居中且不超出、可点开放大；PDF 的高度整个交给容器（让页面自己的背景当背景）。
+ * ⚠ 文本阅读排版一行不动：.v3-md 的 max-width:900px 是**有意**为阅读舒适设的，
+ *   这条状态类只作用于图片 / PDF 这两个宿主分支（office 走 viewer 契约，文本走只读排版）。
+ * ⚠ 这一大段是 CSS 模板串的内容：注释里一律不写反引号（会当场结束模板串，b 批踩过）。 */
+.v3-content--fill { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.v3-content--fill .v3-img-wrap { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; overflow:auto; }
+.v3-content--fill .v3-img { border-radius:0; }
+.v3-content--fill .v3-pdf { flex:1 1 auto; min-height:0; }
+/* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏。
+ *
+ * 第二步 c：状态来自**宿主自己的响应式状态**（panel.js 的 editorLayout，由插件经 bus 报
+ * 「编辑态开/关」后由宿主写进 data），不再用 .v3-content:has(.md-inline-root) ——
+ * 那是按**别人的后代**反查布局，等于让插件按类名声称拥有宿主的内容区（交底 §6-5）。
+ * 编辑器的落点也归宿主：.v3-editor-host 这个舱位由宿主创建与销毁，插件只往它里面放节点。
+ * ⚠ 这一大段是 CSS 模板串的**内容**：里面的反引号会当场结束模板串（第二步 b 在这里
+ *   留下过一次语法错误，整块样式模块因此不解析），所以 CSS 注释里一律不写反引号。 */
+.v3-content--editor { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.v3-content--editor .v3-md, .v3-content--editor .v3-text { display:none; }
+.v3-content--editor .v3-editor-host { flex:1 1 auto; min-height:0; display:flex; }
+.v3-content--editor .v3-editor-host .md-inline-root { flex:1 1 auto; min-height:0; }
+.v3-content--editor .v3-editor-host .md-src { font-size:var(--v3-preview-font, 13.5px) !important; }
 /*
  * 标签行 = 标签栏 + 右侧操作区（详情 / ⋯）。
  *
@@ -48,10 +86,8 @@ styleEl.textContent = `
 .v3-menu-row { display:flex; align-items:center; gap:2px; padding:5px 12px; font-size:12.5px; color:var(--muted); }
 .v3-menu-row .v3-fs { cursor:pointer; padding:1px 7px; border-radius:5px; }
 .v3-menu-row .v3-fs:hover { background:var(--panel); color:var(--accent); }
-/* 编辑期间隐藏只读预览（CSS 级，重渲染后依然生效） */
-.v3-content:has(.md-inline-root) .v3-md, .v3-content:has(.md-inline-root) .v3-text { display:none; }
-.v3-content:has(.md-inline-root) .md-inline-root { flex:1 1 auto; min-height:0; }
-.v3-content:has(.md-inline-root) .md-inline-root .md-src { font-size:var(--v3-preview-font, 13.5px) !important; }
+/* 编辑期间的只读预览隐藏 / 编辑区尺寸：规则本体已上移到 .v3-content--editor 那一组
+ * （宿主状态类旁边），这里不再重复。 */
 .v3-op-btn { font-size:12px; padding:4px 10px; border-radius:6px; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; }
 .v3-op-btn:hover { color:var(--accent); border-color:var(--accent); }
 .v3-md { font-size:var(--v3-preview-font, 13.5px); line-height:1.75; color:var(--text); max-width:900px; }
@@ -65,9 +101,22 @@ styleEl.textContent = `
 .v3-md blockquote { border-left:3px solid var(--accent); margin:8px 0; padding:2px 12px; color:var(--muted); }
 .v3-md a { color:var(--accent); }
 .v3-text { font-size:var(--v3-preview-font, 13.5px); white-space:pre-wrap; word-break:break-all; color:var(--text); font-family:Consolas,Menlo,monospace; }
-.v3-img { max-width:100%; border-radius:8px; }
-.v3-pdf { width:100%; height:calc(100vh - 260px); border:1px solid var(--line); border-radius:8px; }
+/* 图片：宿主亲儿子形态之一。这里只保留「不超出容器」这一条媒体自身约束 ——
+ * 装饰性的边框圆角与固定底色一律不加（让图片自己的背景当背景），
+ * 铺满时的高度与居中由下面的 .v3-content--fill 那一组决定。
+ * 迁前是 max-width:100% + border-radius:8px：只限宽不给高，外层又是内联 text-align:center，
+ * 加上 .v3-content 的 16px/22px 内边距 ⇒ 图片四周一圈留白、且高度没人管。 */
+.v3-img { max-width:100%; max-height:100%; }
+/* 图片外层：没有铺满形态时的兜底居中（与迁前那个内联 text-align:center 的 div 等价） */
+.v3-img-wrap { text-align:center; }
+/* PDF：宽高都交给容器，不加边框圆角。
+ * 迁前是 width:100% + height:calc(100vh - 260px) + 1px 边框 + 8px 圆角 ——
+ * 写死高度与实际 chrome 高度无关（标签行/顶栏一变就对不上），边框圆角等于给
+ * 浏览器内置 PDF 阅读器套了个相框，页面自己的背景反而显示不出来。 */
+.v3-pdf { width:100%; height:100%; border:0; display:block; }
 .v3-loading { color:var(--muted); font-size:13px; padding:60px 0; text-align:center; }
+/* 大文件只读说明：一行克制的提示（不占位改动布局，滚走即不可见） */
+.v3-readonly-hint { margin:0 0 12px; padding:6px 10px; border-left:3px solid var(--line); background:var(--panel); color:var(--muted); font-size:12.5px; line-height:1.6; border-radius:0 6px 6px 0; }
 .file-table-row .v3-row-dots { visibility:hidden; margin-left:auto; width:22px; height:22px; border-radius:5px; text-align:center; line-height:20px; font-size:13px; color:var(--muted); cursor:pointer; flex-shrink:0; }
 .file-table-row:hover .v3-row-dots { visibility:visible; }
 .file-table-row .v3-row-dots:hover { background:var(--panel); color:var(--accent); }

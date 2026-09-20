@@ -1,0 +1,82 @@
+﻿[d 批开工前 · 跨插件 DOM 认领现状快照]
+时间：2026-09-20 16:26:57
+
+== 全仓「插件前端」扫描：命中 .v3-content / .v3-md / .v3-text / v3-viewer-host / v3-editor-host / MutationObserver ==
+扫描文件数（排除 vendor / node_modules / _retired-v2）：63
+
+plugins\privhub-files-comments\client\index.js:112: mdEl() { return document.querySelector('.v3-content .v3-md') },
+plugins\privhub-files-comments\client\index.js:119: this._mo = new MutationObserver(() => {
+plugins\privhub-files-edit-md\client\index.js:16: *   inline —— 挂进宿主的**编辑舱位**（`.v3-editor-host`，由宿主创建与销毁）。
+plugins\privhub-files-edit-md\client\index.js:33: * 编辑器的落点是宿主的**编辑舱位** `.v3-editor-host`（与按扩展名上场的 viewer 用的
+plugins\privhub-files-edit-md\client\index.js:34: * `.v3-viewer-host` 不是一回事：编辑态不是某个 viewer 的能力）。舱位由宿主创建/销毁；
+plugins\privhub-files-edit-md\client\index.js:341: /* 只读预览的隐藏交给**宿主的编辑态布局**（styles.js 的 `.v3-content--editor`）：
+plugins\privhub-files-edit-md\client\index.js:347: // 报「编辑态已开」：宿主据此给内容区加上 `.v3-content--editor`（布局归宿主）
+plugins\privhub-files-edit-md\client\index.js:387: /** 报「编辑态开/关」给宿主（宿主据此切 `.v3-content--editor`）。 */
+plugins\privhub-files-edit-md\client\index.js:631: to 指向宿主创建/销毁的 .v3-editor-host（按扩展名上场的 viewer 另有 .v3-viewer-host，
+plugins\privhub-files-edit-md\client\index.js:633: <teleport v-if="open && mode === 'inline'" to=".v3-editor-host">
+plugins\privhub-files-explorer-v3\client\panel.js:29: * 布局规则本身写在宿主自己的样式里（styles.js 的 `.v3-content--viewer`）——
+plugins\privhub-files-explorer-v3\client\panel.js:46: * 与 `.v3-viewer-host` 是两件事，不能混：
+plugins\privhub-files-explorer-v3\client\panel.js:47: *   · `.v3-viewer-host` 是「按扩展名上场的 viewer」的地界（谁认领 .docx 谁上场）；
+plugins\privhub-files-explorer-v3\client\panel.js:48: *   · `.v3-editor-host` 是「**编辑态**」的地界（同一个 .md 文件，只读预览与编辑态是两种形态，
+plugins\privhub-files-explorer-v3\client\panel.js:65: * 布局同样归宿主：编辑态开启时内容区走 `.v3-content--editor`（styles.js 里宿主自己的规则），
+plugins\privhub-files-explorer-v3\client\panel.js:68: const EDITOR_SELECTOR = '.v3-editor-host'
+plugins\privhub-files-explorer-v3\client\panel.js:124: * 布局规则本身在 styles.js 的 .v3-content--viewer（宿主自己的地宿主管）。 */
+plugins\privhub-files-explorer-v3\client\panel.js:192: const content = this.$el && this.$el.querySelector ? this.$el.querySelector('.v3-content') : null
+plugins\privhub-files-explorer-v3\client\panel.js:203: // 宿主自己的 .v3-md/.v3-text 上：清场不还原的话，旧的隐藏会跟着节点一起
+plugins\privhub-files-explorer-v3\client\panel.js:205: for (const n of content.querySelectorAll('.v3-md, .v3-text')) {
+plugins\privhub-files-explorer-v3\client\panel.js:284: /** 插件报来的编辑态开/关（`v3:editor-state`）→ 写进响应式 data，驱动 `.v3-content--editor`。 */
+plugins\privhub-files-explorer-v3\client\panel.js:654: 插件只拿到这个 div，不再认 .v3-content；没有 viewer 上场时它保持为空，
+plugins\privhub-files-explorer-v3\client\panel.js:657: <div class="v3-viewer-host" data-viewer="none"></div>
+plugins\privhub-files-explorer-v3\client\panel.js:662: <div class="v3-editor-host"></div>
+plugins\privhub-files-explorer-v3\client\styles.js:26: .v3-content { flex:1; overflow:auto; padding:16px 22px; background:var(--bg); }
+plugins\privhub-files-explorer-v3\client\styles.js:28: * 宿主自己的只读预览（.v3-md / .v3-text）同时让位。
+plugins\privhub-files-explorer-v3\client\styles.js:32: * 迁前它是 office2 注入的 .v3-content--office + iframe.office2-frame ——
+plugins\privhub-files-explorer-v3\client\styles.js:34: .v3-content--viewer { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+plugins\privhub-files-explorer-v3\client\styles.js:35: .v3-content--viewer .v3-md, .v3-content--viewer .v3-text { display:none; }
+plugins\privhub-files-explorer-v3\client\styles.js:39: * 「编辑态开/关」后由宿主写进 data），不再用 .v3-content:has(.md-inline-root) ——
+plugins\privhub-files-explorer-v3\client\styles.js:41: * 编辑器的落点也归宿主：.v3-editor-host 这个舱位由宿主创建与销毁，插件只往它里面放节点。
+plugins\privhub-files-explorer-v3\client\styles.js:44: .v3-content--editor { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+plugins\privhub-files-explorer-v3\client\styles.js:45: .v3-content--editor .v3-md, .v3-content--editor .v3-text { display:none; }
+plugins\privhub-files-explorer-v3\client\styles.js:46: .v3-content--editor .v3-editor-host { flex:1 1 auto; min-height:0; display:flex; }
+plugins\privhub-files-explorer-v3\client\styles.js:47: .v3-content--editor .v3-editor-host .md-inline-root { flex:1 1 auto; min-height:0; }
+plugins\privhub-files-explorer-v3\client\styles.js:48: .v3-content--editor .v3-editor-host .md-src { font-size:var(--v3-preview-font, 13.5px) !important; }
+plugins\privhub-files-explorer-v3\client\styles.js:71: /* 编辑期间的只读预览隐藏 / 编辑区尺寸：规则本体已上移到 .v3-content--editor 那一组
+plugins\privhub-files-explorer-v3\client\styles.js:75: .v3-md { font-size:var(--v3-preview-font, 13.5px); line-height:1.75; color:var(--text); max-width:900px; }
+plugins\privhub-files-explorer-v3\client\styles.js:76: .v3-md h1,.v3-md h2,.v3-md h3 { margin:16px 0 8px; }
+plugins\privhub-files-explorer-v3\client\styles.js:77: .v3-md pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; font-size:12.5px; }
+plugins\privhub-files-explorer-v3\client\styles.js:78: .v3-md code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12.5px; }
+plugins\privhub-files-explorer-v3\client\styles.js:79: .v3-md pre code { background:transparent; padding:0; }
+plugins\privhub-files-explorer-v3\client\styles.js:80: .v3-md table { border-collapse:collapse; margin:8px 0; font-size:12.5px; }
+plugins\privhub-files-explorer-v3\client\styles.js:81: .v3-md th,.v3-md td { border:1px solid var(--line); padding:5px 10px; }
+plugins\privhub-files-explorer-v3\client\styles.js:82: .v3-md th { background:var(--panel); }
+plugins\privhub-files-explorer-v3\client\styles.js:83: .v3-md blockquote { border-left:3px solid var(--accent); margin:8px 0; padding:2px 12px; color:var(--muted); }
+plugins\privhub-files-explorer-v3\client\styles.js:84: .v3-md a { color:var(--accent); }
+plugins\privhub-files-explorer-v3\client\styles.js:85: .v3-text { font-size:var(--v3-preview-font, 13.5px); white-space:pre-wrap; word-break:break-all; color:var(--text); font-family:Consolas,Menlo,monospace; }
+plugins\privhub-files-explorer-v3\client\viewers.js:9: *   1. 只有宿主（privhub-files-explorer-v3）可以增删 `.v3-content` 的子节点。
+plugins\privhub-files-explorer-v3\client\viewers.js:10: *   2. 其它插件只能通过宿主发给它的**挂载点** `.v3-viewer-host` 工作；
+plugins\privhub-files-explorer-v3\client\viewers.js:11: *      插件的任何节点不得成为 `.v3-content` 的直接子节点。
+plugins\privhub-files-explorer-v3\client\viewers.js:12: *   3. 插件的 CSS 不得声称拥有 `.v3-content`（`.v3-content:has(…)` 一律视为越权）。
+plugins\privhub-files-explorer-v3\client\viewers.js:39: *   内容区模板里有一个稳定锚点 `<div class="v3-viewer-host" data-viewer="none"></div>`，
+plugins\privhub-files-explorer-v3\client\viewers.js:63: /** 宿主挂载点选择器：插件只认这个（不再认 `.v3-content`）。 */
+plugins\privhub-files-explorer-v3\client\viewers.js:64: const HOST_SELECTOR = '.v3-viewer-host'
+plugins\privhub-files-explorer-v3\client\viewers.js:315: /** 清空挂载点的子节点并把标签归位。**只动锚点内部，绝不碰 `.v3-content` 本身或别人的节点。** */
+plugins\privhub-files-office2\client\index.js:7: *         藏别人的 .v3-md、按类名声称内容区布局。
+plugins\privhub-files-office2\client\index.js:9: *         由宿主决定「现在该谁上场」，并把**宿主自己的挂载点** `.v3-viewer-host`
+plugins\privhub-files-office2\client\index.js:28: *   布局规则一律收敛到 `.v3-viewer-host[data-viewer="privhub-files-office2"]` 之下，
+plugins\privhub-files-office2\client\index.js:30: *   纵向 flex）由**宿主**写在宿主自己的样式里（`.v3-content--viewer`），
+plugins\privhub-files-office2\client\index.js:31: *   本插件一行都不碰 `.v3-content`。
+plugins\privhub-files-office2\client\index.js:55: * 注意：V3 的内容区已不再有 .v3-content-head（详情/⋯ 已移到标签行）。
+plugins\privhub-files-office2\client\index.js:60: .v3-viewer-host[data-viewer="${VIEWER_ID}"] { display:flex; flex:1 1 auto; min-height:0; }
+plugins\privhub-files-office2\client\index.js:61: .v3-viewer-host[data-viewer="${VIEWER_ID}"] iframe.office2-frame { display:block; flex:1 1 auto; min-height:0; width:100%; height:100%; border:none; background:#fff; }
+plugins\privhub-files-office2\client\index.js:77: * 只往宿主给的 hostEl 里建节点（绝不碰 .v3-content / 别人的节点），
+
+== comments 的跨插件 DOM 认领（本批主体） ==
+plugins/privhub-files-comments/client/index.js:46: root.querySelectorAll('mark.v3-cmt').forEach((m) => {
+plugins/privhub-files-comments/client/index.js:112: mdEl() { return document.querySelector('.v3-content .v3-md') },
+plugins/privhub-files-comments/client/index.js:119: this._mo = new MutationObserver(() => {
+plugins/privhub-files-comments/client/index.js:192: const mark = this.mdEl && this.mdEl.querySelector('mark.v3-cmt[data-id="' + id + '"]')
+== KNOWN_INJECTORS（personal-ui.mjs） ==
+  const KNOWN_INJECTORS = [
+    'plugins/privhub-files-comments/client/index.js',
+  ]
+  const injectors = new Set()

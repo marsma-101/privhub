@@ -23,13 +23,20 @@ import { join, extname, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { json } from '../../privhub-core/src/index'
+/* 【扩展名一处定义】本插件不再自己写文本扩展名清单，改为从 `privhub-core/src/file-exts` **显式派生**：
+ * 派生式 = `VERSION_TEXT_EXTS`（= 可预览的纯文本 − 配置族 `.env`），理由见该文件「逐用途派生」表：
+ * 「要不要进全文索引」与「能不能预览」不是同一个问题，配置族的密钥不该进索引。
+ * ⚠ **有意保持迁前范围**：本批**没有**把 `.tsx/.ps1/.conf/.vue/.go/.rs/.jsonl/.tsv/.ipynb`
+ * 拉进全文索引 —— 那是"扩权"，属另一件事（见该文件「故意不做的」）。
+ * 迁前这里是一份手写字面量数组（`md…sql, markdown`），与 core 预览清单各自维护且已不一致。 */
+import { VERSION_TEXT_EXTS } from '../../privhub-core/src/file-exts'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-files-fulltext'
 export const inject = ['privhub', 'storage', 'search', 'audit', 'eventBus']
 
-/** 参与全文索引的文本扩展名（与 core 预览文本集一致，另加常见文档类）。 */
-const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql', 'markdown'])
+/** 参与全文索引的文本扩展名（**派生**，不手写；取值与 `privhub-files-versions` 同一份）。 */
+const TEXT_EXTS = new Set(VERSION_TEXT_EXTS)
 /** 单文件大小上限（与 S4 maxIndexBytes 一致）。 */
 const MAX_BYTES = 512 * 1024
 

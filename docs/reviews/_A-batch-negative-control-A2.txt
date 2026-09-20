@@ -1,0 +1,85 @@
+# A2 阴性对照（只把「摄取队列」改回修复前的写法）
+
+## 这次到底改了什么（只此一处 + 一处）
+- `privhub/plugins/privhub-svc-rag/src/index.ts`：把队列改回**修复前**的
+  `queue = queue.then(fn, fn)`（链尾裸 Promise、无 catch）。
+  为了让失败可复现，临时在该文件里加了一个**只在隔离测试根生效、一次性**的注入钩子
+  （读环境变量 `PRIVHUB_INJECT_FILE` 指向的标记文件）；测完已整份还原。
+- `privhub/src/main.ts`：**整份回到基线**（即去掉新增的进程级
+  `unhandledRejection` / `uncaughtException` 兜底），因为新兜底会兜住这个崩溃、
+  掩盖阴性对照。测完已整份还原。
+
+## 跑的命令
+```
+cd G:\program\dsh-SQL\privhub
+node --import tsx/esm tests/rag-resilience.mjs
+```
+
+## 实测输出（原文）
+```
+══ A 批修复常驻断言（A1/A2/A3/A4/A5，隔离实例，不碰真实数据）══
+  ✅ 隔离实例就绪（端口 3195，640ms）
+  ✅ 管理员登录成功（取会话令牌）
+
+── A1 RAG 检索/问答入口可用（不再抛 Cannot access）──
+  ❌ 检索接口正常作答（HTTP 500 {"ok":false,"error":"Cannot access 'manifest' before initialization"}）
+  ❌ 检索响应不含“Cannot access 'manifest' before initialization”
+  ❌ 检索返回结构化结果 ok=true 且 hits 是数组（空库时为空数组，不是报错）
+  ❌ 问答接口返回 200（修复前是必现 400，实际 400 {"ok":false,"error":"Cannot access 'manifest' before initialization"}）
+  ❌ 问答返回 answer 字段（空语料时给出“未找到资料”的明确答复，而不是报错）
+  ❌ 问答响应不含 TDZ 错误字符串
+
+── A3 点开头名字：建不成（而不是建成了看不见）──
+  ✅ 上传 .A3隐藏.txt 被明确拒绝（实际 400 "文件名无效"）
+  ✅ 新建 .A3隐藏目录 被明确拒绝（实际 400）
+  ✅ 普通名字仍可正常上传（拒绝点开头没有误伤正常名）
+  ✅ 普通文件在列表里可见（证明“建得成”与“看得见”仍一致）
+  ✅ 点开头名字没有出现在列表里（拒绝在前，不会产生“看不见的文件”）
+
+── A4 同名上传不再静默覆盖（明确失败 + 原文件不被改动）──
+  ✅ 首次上传成功
+  ✅ 同名第二次上传被明确拒绝（实际 409 "同名文件已存在：A4同名.txt（为避免覆盖，请改名后重新上传）"）
+  ✅ 原文件内容未被改动（仍是 FIRST-VERSION，实际 "FIRST-VERSION"）
+
+── A2 摄取队列抛错后：服务不死 / 日志有记录 / 队列继续工作 ──
+  ✅ 故障注入前：普通上传正常（队列原本可用）
+  ✅ 注入开关期间：上传接口本身仍成功（摄取是异步的，不该拖住上传）
+  ❌ 注入标记已被消费（一次性语义成立）
+     [诊断] 语料 manifest 是否存在：true
+  ❌ 摄取抛错后服务仍存活（进程未退出，HTTP 仍能答）
+  ❌ 摄取异常已落进系统日志（data/logs/privhub-YYYY-MM-DD.log）
+node : 测试异常： [TypeError: fetch failed] {
+At line:4 char:1
++ node --import tsx/esm tests/rag-resilience.mjs 2>&1 | Out-File -FileP ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (测试异常： [TypeError: fetch failed] {:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  [cause]: Error: connect ECONNREFUSED 127.0.0.1:3195
+      at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2021:16) {
+    errno: -4078,
+    code: 'ECONNREFUSED',
+    syscall: 'connect',
+    address: '127.0.0.1',
+    port: 3195
+  }
+}
+EXITCODE=1
+```
+
+## 怎么读这份输出（逐条）
+1. **A2 那一组由绿转红** —— 修复版下这 3 条全是 ✅（见 `_A-batch-newtest-1.txt`）。
+2. **服务是真的死了**：注入后测试连 `127.0.0.1:3195` 得到 `ECONNREFUSED`，
+   即进程已经不在了。这正是评审说的「一次异常打死整个服务」。
+3. **标记文件没被删掉**（`❌ 注入标记已被消费`）+ 测试进程随后整份退出：
+   说明队列链尾的 rejection 无人接手，Node v24 默认 `--unhandled-rejections=throw`
+   直接终止了进程，连 `unlinkSync` 之后的诊断都来不及打完。
+4. **A1 那 6 条同时变红**是预期的：这次阴性对照把整个 `svc-rag/src/index.ts`
+   退回了基线，TDZ 缺陷随之回来（`Cannot access 'manifest' before initialization`）。
+   换言之，这一份对照顺带把 A1 的判定也验了一遍。
+5. A3 / A4 / A5 的断言在本轮仍是绿的 —— 它们不在这次回退范围内，符合预期
+   （A5 的阴性对照见 `_A-batch-negative-control-full.txt`）。
+
+## 收尾状态
+本轮结束后，`svc-rag/src/index.ts` 与 `main.ts` 已整份还原为修复版；
+还原后重跑 `node --import tsx/esm tests/rag-resilience.mjs` = **27 通过 / 0 失败，退出码 0**。

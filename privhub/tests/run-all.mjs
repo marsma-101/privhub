@@ -94,8 +94,8 @@ async function main() {
   let pass = report(results)
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
-  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs']) {
+  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言')
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'preview-limits.mjs', 'file-exts.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -107,7 +107,14 @@ async function main() {
 /** 运行一个独立测试脚本（继承 stdio，返回是否全部通过）。 */
 function runChild(script) {
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [script], { cwd: ROOT, stdio: 'inherit' })
+    /* 需要读 TS 源码（并以 `import()` 直接装载 .ts）的脚本，自身必须以 tsx 转译运行：
+     *   · rag-resilience.mjs  —— 读 `src/web-server.ts` 的源码文本；
+     *   · file-exts.mjs       —— 动态 `import()` 共享定义 `plugins/privhub-core/src/file-exts.ts`
+     *                            （本机 Node 24 本身也能剥类型，但走 tsx 与全仓口径一致、更稳）。
+     * 其余静态脚本不需要，保持原样调用。 */
+    const needsTsx = /(rag-resilience|file-exts)\.mjs$/.test(script)
+    const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
+    const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))
     p.on('error', () => resolve(false))
   })

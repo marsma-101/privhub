@@ -25,6 +25,8 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+/* 【扩展名一处定义】全仓的扩展名分类都取自本模块（详见该文件头：一处定义 + 各处显式派生）。 */
+import { isImageExt, isPreviewTextExt } from './file-exts'
 
 export const name = 'privhub-core'
 export const inject = ['webServer', 'storage']
@@ -59,6 +61,15 @@ export interface TrashRecord {
 
 /** 单文件上传大小上限（2GB，受 Node Buffer 上限约束）。 */
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
+/** 文本在线预览的体积上限（10 MB）。
+ *
+ *  来历：原为 512 KB，用户要求「抬到 10 MB」（覆盖 `AI小说研究/参考文/` 下的 5 本书，
+ *  实测最大 2.4 MB）。上限的作用是**不让整份文件被读进内存并塞进 JSON 响应**，
+ *  不是「能不能看」——超限仍如实回带 size 与 limit，由界面说清「多大、超了多少」。
+ *  注意：这是**本服务（预览）自己的**阈值，与 files-export / files-fulltext /
+ *  svc-search / files-kg 等插件各自的阈值无关，那些一律不动。 */
+export const MAX_TEXT_PREVIEW_BYTES = 10 * 1024 * 1024
 
 export interface Config {
   usersFile: string
@@ -723,16 +734,33 @@ export class PrivHubStore extends Service {
     return out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
   }
 
-  /** 读取文件内容用于预览（仅允许数据根内部） */
-  async readFileForPreview(project: string, relPath: string): Promise<{ data: string; type: string } | null> {
+  /** 读取文件内容用于预览（仅允许数据根内部）
+   *
+   *  返回的 `type` 是【互斥的原因】，不是「能不能看」：
+   *  `text` 文本可读 / `image` / `pdf` 走原始字节流 / `too-large` 类型支持但体积超上限 /
+   *  `unknown` 确实不支持预览。前端据此分别给话，不再把「超限」说成「类型不支持」。 */
+  async readFileForPreview(project: string, relPath: string): Promise<{ data: string; type: string; size?: number; limit?: number } | null> {
     const target = this.resolveInProject(project, relPath)
     if (target === null || !existsSync(target)) return null
     const s = await stat(target)
     if (s.isDirectory()) return null
     const ext = extname(target).slice(1).toLowerCase()
-    const textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql']
-    const maxTextBytes = 512 * 1024
-    if (textExts.includes(ext) && s.size <= maxTextBytes + 20) {
+    /* 【扩展名一处定义】文本清单与图片清单都不再写在这里，统一取自 `./file-exts`：
+     *   · `isPreviewTextExt` = 最宽的那份（纯文本即可预览，不要求可编辑）；
+     *   · `isImageExt`       = 与前端 `kindOf` 的图片清单**同一份取值**（`.ico` 的分裂由此根除）。
+     * 迁前这里是两份手写字面量数组，与 fulltext / rag / versions / agent / 前端各自一份，
+     * 且已经不一致（见 `file-exts.ts` 文件头那张表）。 */
+    const isTextExt = isPreviewTextExt(ext)
+    const maxTextBytes = MAX_TEXT_PREVIEW_BYTES
+    /* 文本格式超出体积上限：与「类型不支持」是两件事，必须能区分。
+     * 这里【不返回文件内容】（上限本身就是挡「把几百 MB 文本读进内存」），
+     * 但如实回带体积与上限，让界面能说清「多大、超了多少」。
+     * 注意：判定要放在图片/PDF 分支之前——图片/PDF 本来就不读进 JSON，
+     * 不受此上限约束，不能被这条抢走。 */
+    if (isTextExt && s.size > maxTextBytes + 20) {
+      return { data: '', type: 'too-large', size: s.size, limit: maxTextBytes }
+    }
+    if (isTextExt && s.size <= maxTextBytes + 20) {
       // S7：文本预览走解密读（密文/明文自动识别）
       const buf = await this.ctx.storage.readBuffer(target)
       // 智能编码检测：UTF-8 合法 → utf8；否则回退 GBK（中文 Windows 常见 txt）
@@ -745,9 +773,10 @@ export class PrivHubStore extends Service {
       }
       return { data, type: 'text' }
     }
-    const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']
-    if (imgExts.includes(ext)) return { data: '', type: 'image' }
+    if (isImageExt(ext)) return { data: '', type: 'image' }
     if (ext === 'pdf') return { data: '', type: 'pdf' }
+    /* 语义收敛：走到这里只可能是【真的不支持在线预览的扩展名】。
+     * 文本格式的「体积超限」已在上面的 too-large 分支返回，不再落到这里。 */
     return { data: '', type: 'unknown' }
   }
 
@@ -798,9 +827,21 @@ export class PrivHubStore extends Service {
     await rename(target, dest)
     return true
   }
-  /** 较宽松的文件/文件夹名校验（允许中文与常见符号，禁止路径分隔符） */
+  /** 较宽松的文件/文件夹名校验（允许中文与常见符号，禁止路径分隔符）
+   *
+   *  A3 修复：禁止【首字符为点】的名字。
+   *  为什么二选一里选「拒绝创建」而不是「取消隐藏」：
+   *  ① 点开头条目是被有意隐藏的——core.listFiles 过滤 `name.startsWith('.')`，
+   *     目的是不把 回收站 `data-files/.trash/`（内部实现）与历史遗留的
+   *     `data-files/.agents/` 旧个人空间暴露到文件列表里；
+   *  ② 而全文搜索是递归调用 listFiles 的 ⇒ 点开头目录的【整棵子树】都是搜索盲区；
+   *  ③ 于是「新建 .合同」表现为：上传成功、列表看不见、搜索搜不到 —— 用户以为数据丢了。
+   *  取消隐藏（另一种改法）会把 ① 里的内部目录一并放出来，风险更大；故选择在入口拒绝。
+   *  影响面：只拦【新建/上传/改名】；已存在的历史点开头条目（.trash/.agents 及其内容）
+   *  保持原状、不受影响，仍按既有的隐藏语义处理（不动任何既有数据）。 */
   isValidName(name: string): boolean {
     return name !== '' && name !== '.' && name !== '..'
+      && !name.startsWith('.')
       && !name.includes('/') && !name.includes('\\') && !name.includes(':') && !name.includes('*')
       && !name.includes('?') && !name.includes('"') && !name.includes('<') && !name.includes('>') && !name.includes('|')
   }

@@ -6,6 +6,28 @@
  *   - 锚点高亮渲染（mark.v3-cmt），点击高亮 → 打开评论面板并定位
  *   - 评论面板（office-editor slot）：列表/回复/状态流转/删除
  *
+ * ── 锚点根从哪来（第二步 d：最后一次跨插件 DOM 认领的迁移） ────────────────
+ * 迁前本插件做两件越权的事（`08-连线契约.md` §5.3 记的就是这两条）：
+ *   ① 自己去整个 document 里按“宿主容器 + 渲染根”两个类名串起来查渲染根；
+ *   ② 在那个节点上挂 `MutationObserver`（childList + subtree + characterData）——
+ *      靠"盯着别人的 DOM 变了"来重建锚点。
+ * 两条都已删除。现在改成**宿主在渲染完成后把渲染根的节点引用直接交给本插件**：
+ *
+ *   bus.on('v3:md-root', ({ el, project, key, reason }) => …)
+ *     el = 宿主内容区里那个 md 渲染根（没有渲染根时是 null）
+ *     key = 这一刻内容区承载的文件 key（宿主自己的口径）
+ *
+ * 于是本插件的全部 DOM 动作只发生在**宿主交过来的那个节点内部**：
+ *   · 挂锚点（`mark.v3-cmt`）—— 只往 el 里面插，不碰 el 之外的任何东西；
+ *   · 清锚点 —— 换文件 / 没有渲染根时（el 为 null）由调用方把旧节点连同锚点一起丢掉，
+ *     本插件同时**放弃旧引用**（只认最新一次交接的节点，不攥着已销毁的目标）。
+ *
+ * ⚠ 因此本文件里不得再出现对 `.v3-content` / `.v3-md` 的 `querySelector`，也不得再出现
+ *   `MutationObserver`（`tests/personal-ui.mjs` 的 M 段有源码级断言，含剥注释）。
+ *
+ * ⚠ 也不得复用两个「舱位」的类名：`.v3-viewer-host`（viewer 的地界）与
+ *   `.v3-editor-host`（编辑态的地界）都不是本插件的落点 —— 需要新形态要请宿主再开舱位。
+ *
  * @module privhub-files-comments/client
  */
 
@@ -41,14 +63,15 @@ function buildSegments(root) {
   }
   return { segs, total: acc }
 }
-/* 渲染锚点：清除旧 mark → 按评论偏移插入 */
+/* 渲染锚点：**先清后画** —— 清除旧 mark → 按评论偏移插入。
+ * 空评论数组是合法输入：那就是"清空锚点"（调用方 `_render()` 靠它把上一个文件留下的锚点清掉）。 */
 function renderMarks(root, comments) {
   root.querySelectorAll('mark.v3-cmt').forEach((m) => {
     const t = document.createTextNode(m.textContent)
     m.replaceWith(t)
   })
   root.normalize()
-  if (!comments.length) return
+  if (!comments || !comments.length) return
   const { segs } = buildSegments(root)
   const textLen = segs.length ? segs[segs.length - 1].end : 0
   for (const c of comments) {
@@ -106,23 +129,24 @@ const CommentsCtrl = {
       busy: false,
       btnPos: null,
       activeId: '',
+      /* md 渲染根：**只由宿主经 bus `v3:md-root` 交进来**（null = 此刻没有渲染根）。
+       * 迁前这里是「computed 里现查宿主内容区里那个渲染根节点」—— 自己去别人的容器里找节点。
+       * 现在节点所有权清楚：宿主给的，宿主收回。 */
+      mdRoot: null,
     }
   },
   computed: {
-    mdEl() { return document.querySelector('.v3-content .v3-md') },
     openCount() { return this.comments.filter((c) => c.status !== '已解决').length },
+    /* 锚点根的读写入口就是宿主交来的那个引用（保留 mdEl 这个名字，下面各处用法一字未改）。 */
+    mdEl() { return this.mdRoot },
   },
   watch: {
-    mdEl(el) {
-      this._render()
-      if (el) {
-        this._mo = new MutationObserver(() => {
-          clearTimeout(this._deb)
-          this._deb = setTimeout(() => this._render(), 300)
-        })
-        this._mo.observe(el, { childList: true, subtree: true, characterData: true })
-      }
-    },
+    /* 锚点根换了（宿主交来新节点，或收回成 null）→ 重建锚点高亮。
+     * 迁前这里是「watch 一个现查 DOM 的 computed + 在新节点上挂 MutationObserver」。
+     * 现在：换根这个动作本身由宿主在渲染后通知，**不再有人盯别人的 DOM**。
+     * `el` 为 null（内容区没有 md 渲染根 / 换文件 / 内容区消失）时不渲染 —— 旧节点连同
+     * 旧锚点一起作废，锚点不可能残留。 */
+    mdRoot(el) { if (el) this._render() },
   },
   methods: {
     /* ---- 数据 ---- */
@@ -133,9 +157,36 @@ const CommentsCtrl = {
         if (r.ok) { this.comments = r.comments || []; this._render() }
       } catch { /* 忽略 */ }
     },
+    /**
+     * 在当前锚点根里重建锚点高亮。**先清后画**，且**必须连空评论也清**：
+     *   · 根被换成一个新节点时，那个节点里可能有别人（或上一次渲染）留下的同款锚点 ——
+     *     `renderMarks` 开头会把 `mark.v3-cmt` 全部还原成纯文本；
+     *   · 更要紧的是"切换到的文件没有评论"这条路径：迁前这里是 `if (el && this.comments.length)`，
+     *     评论为空时**什么都不做** ⇒ 新节点里若已有锚点就留下去了。
+     *     这不是假设：宿主交接根、插件取数（异步）之间，面板里可能还挂着上一个文件的数据，
+     *     那一次渲染就会把上一个文件的锚点画进新根里，而随后"评论为空"又不会去清 ——
+     *     **旧锚点残留**就是这么来的。所以这里改成"有根就清、有评论就画"。
+     */
     _render() {
       const el = this.mdEl
-      if (el && this.comments.length) renderMarks(el, this.comments)
+      if (!el) return
+      renderMarks(el, this.comments)
+    },
+    /**
+     * 宿主交来渲染根（`v3:md-root`）。**本插件唯一的 DOM 入口**。
+     *
+     * 两件事，顺序不能倒：
+     *   ① 先认根（`mdRoot = el`）—— `null` 表示"此刻没有 md 渲染根"（换文件 / 只读文本 /
+     *      图片 PDF / 内容区消失），旧节点作废，旧锚点随之不可能残留；
+     *   ② 根在就重载评论（面板开着也用新文件的数据），加载完成后由 `mdRoot` 的 watcher 重建锚点。
+     *
+     * 为什么根在才 load：没有渲染根时加载评论毫无用处（没处挂锚点），只会白打一次接口。
+     */
+    onMdRoot(p) {
+      const el = (p && p.el) || null
+      this.mdRoot = el
+      if (!el) return
+      if (this.project && this.path) void this.load()
     },
     /* ---- 选区浮动按钮 ---- */
     onSelectionChange() {
@@ -227,7 +278,10 @@ const CommentsCtrl = {
   },
   mounted() {
     this._offPanel = bus.on('file:comments', (payload) => { this.openPanel(payload) })
-    this._offRender = bus.on('v3:md-rendered', () => { this.load() })
+    /* 渲染根交接（第二步 d）：宿主在渲染完成后把 md 预览根的节点引用交出来（`el`），
+     * 没有渲染根时交 null。本插件不再自己查 `.v3-content .v3-md`、也不再挂 MutationObserver。
+     * 拿到根（或根换了一个）就重载评论并重建锚点；换文件时宿主交 null ⇒ 锚点随旧节点作废。 */
+    this._offRoot = bus.on('v3:md-root', (p) => { this.onMdRoot(p) })
     this._onSel = () => this.onSelectionChange()
     document.addEventListener('selectionchange', this._onSel)
     this._onClick = (ev) => { if (ev.target.closest && ev.target.closest('mark.v3-cmt')) this.onMarkClick(ev) }
@@ -235,10 +289,10 @@ const CommentsCtrl = {
   },
   beforeUnmount() {
     if (this._offPanel) this._offPanel()
-    if (this._offRender) this._offRender()
+    if (this._offRoot) this._offRoot()
     document.removeEventListener('selectionchange', this._onSel)
     document.removeEventListener('click', this._onClick)
-    if (this._mo) this._mo.disconnect()
+    this.mdRoot = null
   },
   template: `
     <div style="display:contents">

@@ -1,7 +1,7 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.1.0**
+**当前版本：3.1.1**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -19,6 +19,731 @@
 `GET /privhub/api/health` 上报的就是它。改版本号只需改这一处。
 
 > 历史沿革：3.0.1 之前的提交记录见 `git log`，本文件自 3.0.1 起逐条记录。
+
+---
+
+## [3.1.1] — 2026-09-17
+
+### 缺陷修复 · A 批：后端致命 bug（5 条，只改行为、不做结构改造）
+
+**动机**：七角度交叉评审（`docs/reviews/00-总览-七角度交叉结论.md`）确认这个项目
+「块切得没错，病在缝上」——**出错没有出口**。本批只修其中最凶的 5 条后端缺陷，
+不改数据格式、不改接口契约、不重命名、不删死代码（结构类的活留给 B/C 批）。
+
+| # | 缺陷 | 修法 | 证据 |
+|---|---|---|---|
+| **A1** | **RAG 检索/问答入口是死的，每次必挂** —— `ragSearch()` 内在 :851/:853 使用 `manifest`，而 `const manifest` 声明在 :888，同一函数体内构成暂时性死区（TDZ），检索固定 500、问答固定 400 | 把 `const manifest = await loadManifest(ctx)` **上移到首次使用之前**（位置在 collection 校验之后，保留「无权限直接返回、不读盘」的原有短路顺序）；不改 `var`、不用可选链绕过 | `plugins/privhub-svc-rag/src/index.ts:846-849`（上移后） |
+| **A2** | **一次摄取异常可能打死整个服务** —— `queue = queue.then(fn, fn)` 把上一次的失败当函数再跑，链尾是裸 Promise；全仓 `unhandledRejection` 零处理器，Node 24 默认 `--unhandled-rejections=throw` ⇒ 整进程退出 | ① 队列加错误出口：`queue.then(task).catch(...)`，异常落日志、链永不 reject；② `src/main.ts` 增进程级 `unhandledRejection` / `uncaughtException` 兜底（**只记录不退出**）；③ 队列失败计数暴露到 `/privhub/api/rag/status.ingestQueue.errors` | `plugins/privhub-svc-rag/src/index.ts:1098-1133`、`src/main.ts:134-158,169` |
+| **A3** | **点开头名字「建得成、看不见」** —— `isValidName` 不拦首字符点，而 `listFiles` 静默过滤 `name.startsWith('.')`；且全文搜索是递归 `listFiles` ⇒ 点开头目录**整棵子树是搜索盲区** | 在 `isValidName` 里**拒绝首字符点**（不选「取消隐藏」：那会把回收站 `data-files/.trash/` 与历史遗留 `data-files/.agents/` 一并暴露）。只拦新建/上传/改名，**历史数据保持原样** | `plugins/privhub-core/src/index.ts:801-818` |
+| **A4** | **同名上传静默覆盖**（覆盖后版本历史为空，已实测） | 只做「不再静默」这一步：同目录**同名文件已存在时明确失败**（HTTP 409 + 中文原因），校验在读取请求体之前完成。**不改写入语义、不做备份/版本历史**——覆盖会动数据，按 Shape Up 硬约束属另一批需单独设计 | `plugins/privhub-files/src/index.ts:116-127` |
+| **A5** | **全站唯一兜底 catch 静默吞异常** —— `web-server.ts` 的 catch 里 `e` 未被使用、无任何日志 | 把异常写进系统日志（`console.error` 已被 `main.ts` 的 `installFileLogger` 接到 `data/logs/`），**响应行为保持 500 不变** | `src/web-server.ts:300-307` |
+
+**同时新增常驻断言**（原先 A1/A2 所在的 RAG 路径与「异常是否落日志」**零覆盖**，
+「改前改后失败清单逐条同名」这道闸门对它们是瞎的）：
+
+- 新增 `privhub/tests/rag-resilience.mjs`（27 条断言，自带隔离实例端口 3195、
+  独立测试根 `tests/.testroot-rag/`，**不碰 data/ 与 data-files/**）：
+  A1 检索/问答正常作答、A3 点开头名字被拒且普通名字不受影响、
+  A4 同名上传返回 409 且原文件内容未变、A2 注入一次摄取异常后
+  **服务仍存活 / 日志有记录 / 后续上传照常**、A5 必抛错路由仍返回 500 且日志留痕。
+- `privhub/tests/run-all.mjs` 脚本清单**追加**一项（原顺序未动），
+  并让该脚本以 `--import tsx/esm` 启动（它要读 `src/web-server.ts`）。
+- A2 的断言配了**阴性对照**：把队列改回 `queue.then(fn, fn)` 时，
+  服务在注入后**当场死亡**（后续请求 `ECONNREFUSED`），断言由绿转红。
+
+**已知影响面（有意为之的行为变化）**：
+
+- 同目录重名上传由「静默覆盖成功」变为「明确失败」——用户会看到
+  「同名文件已存在：xxx（为避免覆盖，请改名后重新上传）」。依赖覆盖语义的用法需改名上传。
+- 点开头的文件名（例如 `.合同`）现在**不允许创建**；此前可以创建、但列表与搜索都看不到。
+
+**回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败），退出码 0；改动前基线 `docs/reviews/_baseline-A.txt`、
+改动后 `docs/reviews/_after-A.txt`。
+
+### 缺陷修复 · 文本文件超过 512 KB 时谎报「该文件类型不支持在线查看」
+
+| 项 | 内容 |
+|---|---|
+| **缺陷** | 文本格式（`md`/`txt`/`json`/`csv`/`log`/`html` 等 22 种）**超过 512 KB 就报成「未知类型」**，界面照念「该文件类型不支持在线查看」——**类型明明是支持的，是体积超了**，用户据此以为「md 不能看了」。实测：`参考文/冰与火之歌I权力的游戏.md`（1,636,165 字节）预览返回 `{"ok":true,"type":"unknown","data":""}` |
+| **修法（后端）** | `readFileForPreview` 把「超限」从「不支持」里拆出来：超限返回 `type:'too-large'` 并**如实带回 `size` 与 `limit`**；`unknown` 只留给**真的不支持在线预览的扩展名**（语义收敛）。判定放在图片/PDF 分支之前，避免把本来走字节流的类型抢走。**512 KB 上限原样保留**（它挡的是「把几百 MB 文本读进内存」） |
+| **修法（路由）** | `/privhub/api/preview` 把 `size` / `limit` 原样透给前端；其余类型的响应形状不变（仅在超限时多两个可选字段） |
+| **修法（前端）** | `content.js` 把两种情形**分两句说**：超限时给「文件过大（1.6 MB），超出在线查看上限 512 KB；请在文件列表里右键该文件，选「⬇ 下载」后用本地编辑器查看」，大小按 MB/KB 显示；真正的「类型不支持」**保留原话**。只改这一条文案与降级呈现，**不动交互结构、不加入口、不改布局** |
+| **证据** | `plugins/privhub-core/src/index.ts:726-766`、`plugins/privhub-files/src/index.ts:65-75`、`plugins/privhub-files-explorer-v3/client/content.js:38-46,56-62` |
+| **兼容性勘查** | `preview` 的 `type` 消费方全仓 3 处：`content.js:28-46`（本次改的）、`frontend/index.html:565`（只把失败归一成 `unknown`，读 `type/data`，未消费新值）、`plugins/_retired-v2/privhub-files-preview`（**已退役，不在装配清单**）。`edit-md` 不读 `type`，行为未变。无历史回归项依赖「超限 = unknown」 |
+
+**同时新增常驻断言**（原先这条路径**零覆盖**，「改前改后失败清单逐条同名」这道闸门对它同样是瞎的）：
+
+- 新增 `privhub/tests/preview-limits.mjs`（**20 条断言**，自带隔离实例端口 3196、
+  独立测试根 `tests/.testroot-preview/`，探针文件直写测试根，**不碰 `data/` 与 `data-files/`**，跑完自清）：
+  ① 超限文本给出可区分的超限原因（并回带真实的 `size`/`limit`）、
+  ② 限内小文本仍返回可正常渲染的类型且内容照返、
+  ③ 真正不支持的扩展名仍是明确的「不支持」、
+  ④ 界面上指向的那条出路（`/privhub/api/download`）对超限文件照常可用。
+  断言**指向行为不指向实现**：只断言「两种情形给出不同原因」，不断言具体中文句子、不断言字段名。
+- `privhub/tests/run-all.mjs` 脚本清单**追加**一项（列在 A 批的 `rag-resilience.mjs` 之后，原顺序未动）。
+
+**阴性对照（已做，做完整份还原）**：把后端那一处改回 `{ data:'', type:'unknown' }`，
+断言**由 20 通过 / 0 失败 变为 15 通过 / 5 失败**（退出码 1），其中失败含核心那条
+「超限与不支持给出【不同】的 type（unknown ≠ unknown）」；同一次运行里
+「限内小文本照常」「不支持仍是不支持」「下载通道可用」共 15 条**保持绿**，
+说明变红的不是环境也不是探针，正是被修的那一处行为。原始输出见
+`docs/reviews/_negative-control-oversize.txt`。
+
+**回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败），退出码 0；断言行 315 → 335，**差值 20 = 新增断言的条数**，
+无既有断言改名或消失。改动前基线 `docs/reviews/_baseline-oversize.txt`、
+改动后 `docs/reviews/_after-oversize.txt`。
+
+**已知边界（本批未动，留给后续）**：内嵌编辑器（`privhub-files-edit-md`）读的是同一接口
+但不看 `type`（`client/index.js:225-229`），超限文本在它那里会落成**空白编辑区**；
+本批只让内容区说清原因，**未动编辑器**。
+
+### 改进 · 文本在线查看上限 512 KB → 10 MB（并加一道大文件只读闸）
+
+**动机**（用户原话「抬到 10 MB」）：要覆盖 `AI小说研究/参考文/` 下的 5 本书
+（实测最大 2.4 MB）；原上限 512 KB 下这些书一律只能下载后看。
+
+| 项 | 内容 |
+|---|---|
+| **上限新值** | **10 MB**（`10 * 1024 * 1024` = 10485760 字节），由新导出的具名常量 `MAX_TEXT_PREVIEW_BYTES` 承载，`limit` 字段如实反映它（前端文案自动跟着变，无需改句子） |
+| **改了哪一处** | 只改 `readFileForPreview` 里那一个文本预览阈值。`files-export` / `files-fulltext` / `svc-search` / `files-kg` 里各自的 512 KB 类阈值是**各自独立**的，一律未动 |
+| **保留不动的语义** | ① 新增的 `too-large` 与「类型不支持」分离；② 前端「超限」与「不支持」两句分说；③ 超限时仍如实回带 `size` 与 `limit`（说清「多大、超了多少」）；④ 超限时不把整份文件塞进 JSON |
+| **证据** | `plugins/privhub-core/src/index.ts:63-70`（常量与来历注释）、`:747-757`（判定分支） |
+
+**必须一起做的保险 · 大文件不自动进编辑器**（否则抬上限就等于白抬）：
+
+- **风险**：`content.js` 打开文本后无条件 `bus.emit('md:auto-edit')`，edit-md 随即把
+  **整份内容**灌进内嵌编辑器并同步渲染 —— 一本 2.4 MB 的书一打开就可能把浏览器卡死。
+- **做法**：加**具名常量**体积闸 `AUTO_EDIT_MAX_BYTES = 1024 * 1024`（1 MB，
+  `plugins/privhub-files-explorer-v3/client/content.js:10-24`，注释写明「超过这个体积
+  自动编辑会拖垮浏览器」及其来历）：
+  - 小于闸值 → **照旧自动进编辑态**（既有体验不变）；
+  - 大于闸值 → **只读呈现**，并在内容区顶部给一句克制的说明
+    （`panel.js:404-406` + `styles.js:71-72`，**不弹窗、不加按钮、不改布局**）。
+- **为什么取 1 MB**：改动前实际上限就是 512 KB，即**所有原本能在线打开的文件都不超过 1 MB**，
+  故闸值取 1 MB ⇒ 既有体验零变化，只有本轮新放开的「大书稿」走只读。留有余量、便于以后调。
+- **界面上看到的话（原文）**：
+  「文件较大（1.3 MB），已以只读方式打开；需要编辑请先在文件列表里右键该文件，选「⬇ 下载」后用本地编辑器打开」
+
+**顺手修掉上一轮标出的相邻缺陷 · 空白编辑区**（02 号评审反复点名的「静默」类）：
+
+- **缺陷**：`plugins/privhub-files-edit-md/client/index.js:225-229` 读同一个 `/api/preview`
+  却**不看 `type`**：超限时接口正常作答 `{ok:true,type:'too-large',data:''}`，
+  编辑器把空串当正文 ⇒ 开出**空白编辑区**；更糟的是此时点保存会把**空内容写回磁盘**。
+- **修法**：尊重接口给出的类型/体积 —— 拿不到可编辑文本就**不开编辑器**，并明确说明原因与出路
+  （非 md 文本：`too-large` 与非 `text` 分别给话，且仅在「自动进入」时用一次性提示补上原因，
+  避免「点了没反应」；正文非字符串的异常形状另有兜底，**空串仍视为合法可编辑**）。
+- **证据**：`plugins/privhub-files-edit-md/client/index.js:235-263`（类型/体积判定与兜底）、
+  `:119-124`（`fmtBytes`，与 explorer-v3 的 `fmtSize` 同口径）。
+
+**同时扩常驻断言**（同一个文件，不新建第二个）：`privhub/tests/preview-limits.mjs`
+**20 条 → 39 条**，新增 19 条：
+
+1. **上限绝对下限**：「在线查看上限 ≥ 10 MB」（把上限翻回 512 KB 时这一条必红）；
+2. **只读闸存在且小于上限**；
+3. **边界两侧**：略小于 10 MB（9.6 MB）→ `text` 可查看且内容照返；略大于 10 MB → `too-large`
+   且 `limit` 等于当前上限（并断言回带的 `limit` 与源码常量一致）；
+4. **只读闸行为**：把 `content.js` **真身** import 进 Node（只桩掉 `window.PrivHub` / `window.Vue`
+   两个外部依赖，**不开浏览器**），喂**接口现在真正回带的响应形状**（正文本不带 `size`，
+   由前端按 UTF-8 自算体积），观察「自动进编辑态」事件发没发 ——
+   越闸大文本发 **0 次**、闸内小文本发 **1 次**、超限文本仍是错误态且不发。
+   断行为（事件次数），不断言中文句子。
+5. **真实样本书体积**：读 `data-files/AI小说研究/参考文/` 里 3 本最大 `.md` 的**真实字节数**
+   （只读体积，不读内容、不写回），按同体积造探针过一遍接口 —— 3 本全部 `text` 可查看
+   （旧 512 KB 上限下它们全部超限）。**为什么不直接复制真书进来**：真实数据是 AES-256-GCM
+   密文（`PHENC1`），密钥属于真实实例，复制进隔离实例只会解密失败（HTTP 500）。
+6. 原有 20 条**全部保留**（只把探针体积按新阈值重设，断言本身未改）。
+
+**阴性对照（两条，各做完即整份还原）**：
+
+| 对照 | 做法 | 结果 | 原始输出 |
+|---|---|---|---|
+| A · 上限翻回 512 KB | 把 `MAX_TEXT_PREVIEW_BYTES` 改回 `512 * 1024` | 39 通过 / 0 失败 → **35 通过 / 4 失败**，退出码 1 | `docs/reviews/_negative-control-10m-limit.txt` |
+| B · 去掉只读闸 | 把 `if (!readonlyHint)` 改成 `if (true)`（无条件自动进编辑） | 39 通过 / 0 失败 → **38 通过 / 1 失败**，退出码 1 | `docs/reviews/_negative-control-10m-gate.txt` |
+
+对照 A 里变红的第 1 条是**故意写死的绝对下限**（不是按阈值参数化算出来的）——
+否则「边界两侧」那几条会跟着旧阈值一起缩，反而测不出「用户要的能力被拿掉了」。
+
+**回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败，前后都无 ❌），退出码 0；各套件 86/12/76/39/16/50/3 + A批27 + 预览上限
+20 → 39，**总通过数 348**（其中预览上限由 20 涨到 39）；
+**无既有断言改名、消失或转红**。
+改动前基线 `docs/reviews/_baseline-10m.txt`、改动后 `docs/reviews/_after-10m.txt`。
+
+**[未实测·如实标注]** 10 MB 文本在**真实浏览器**里的渲染与传输开销（Vue 把 ~10 MB 内容
+交给 `v-html` / `<pre>` 的那一下）本批**无法实测**：现有回归没有一条开过浏览器。
+本批只保证「不会自动把大文件灌进编辑器」，不保证「只读渲染 10 MB 一定不卡」。
+另：`ops.js:269-273` 的「显式编辑」（entry:open，force）**不走**只读闸 ——
+用户手动点编辑仍会进编辑器（本批未动，属既有能力）。
+
+### 说明（本批没做的）
+
+- **不是**「结构性改造」：没删死代码、没重命名、没重排文件、没动 `data/` 与 `data-files/`。
+- **没有** git commit / push：等人工确认。
+- A2 那条「一次异常打死服务」的**端到端**复现需要测试专用注入点
+  （`PRIVHUB_TEST_ROOT` 存在时才生效的一次性标记文件），生产环境该分支恒不触发。
+
+### 缺陷修复 · 内容区残留（打开 docx 后切别的文件会闪出旧 docx）—— 两步走的第一步·止血
+
+**动机**（用户反馈）：打开过 docx 之后，再打开任何别的文件，内容区会先弹出上一个 docx 的
+界面「闪一下」。已确诊的机制是：`privhub-files-office2` 往宿主内容区
+（`explorer-v3` 的 `.v3-content`）里 `prepend` 了一个 iframe，而**全仓无一处移除它**
+（旧代码在“扩展名不是 docx/xlsx”时直接 `return`，什么都不清理）；office2 的 CSS 又用
+`.v3-content:has(iframe.office2-frame)` 反查这个外来节点来决定内容区布局 —— 只要它还在，
+内容区就一直是 office 布局，旧 docx 因此铺满可见区、把新内容挤出，直到内容区被整体重建
+才恢复。**根治（所有权 + 声明式 viewer）是第二步，本批只止血。**
+
+| # | 改动 | 位置 |
+|---|---|---|
+| **1** | **宿主加「交接清理」**：切标签 / 换文件的那一刻，先清掉**带归属标记**的注入残留 | `plugins/privhub-files-explorer-v3/client/panel.js:95-107`（两处 watch）、`:116-135`（`clearInjected()`） |
+| **2** | **office2 自我收尾**：注入时给自己那个 iframe 打归属标记；打开非 docx/xlsx 时**它自己把 frame 收掉**（不留给宿主善后） | `plugins/privhub-files-office2/client/index.js:17-21`（标记）、`:47-59`（`clearOwnFrame()` + 收尾分支）、`:66-71`（不再复用旧 frame） |
+| **3** | **布局不再依赖外来节点**：office 布局改由宿主状态类 `.v3-content--office` 驱动（宿主按当前标签类型自己加），office2 的 CSS 不再反查自己插入的 iframe | `panel.js:67-80`（`contentClass`）、`:449`（`:class="contentClass"`）；`office2/client/index.js:23-33`（CSS） |
+| **4** | **顺带治掉次要触发点**：换文件时**不再复用旧 iframe 只改 `src`**（iframe 导航期间浏览器会保留上一次已绘制的画面，这就是“切回来又闪一下”的来源），改成「先摘旧的、再造新的」 | `office2/client/index.js:63-76` |
+
+**认人方式（守住硬约束 5）**：宿主的清理**按归属标记 `data-v3-injected` 认人**，
+不用类名、不用标签名猜。带标记的才清，`edit-md` 的 `.md-inline-root`、`comments` 的
+`mark` 锚点都不带标记 ⇒ **一个都不碰**（这三家的节点结构本批一律未动）。
+
+**改了一条既有断言（原先锁的是实现写法）**：`privhub/tests/personal-ui.mjs` 里
+`office2 以 prepend 插入 iframe` 断言的是 `content.prepend(frame)` 这个 **DOM API 写法**，
+与项目自定规矩「优先断言行为，而非行号或实现细节」相悖，已改写为行为向断言
+（打开 docx 有带标记的 viewer / 切走后不再有 / 不复用旧 frame），并**补齐常驻断言**：
+
+- 新增 **G 内容区所有权契约**（15 条）：注入者必须打归属标记、注入者清单与预期一致、
+  没有别家往内容区插节点、宿主存在交接清理且**两个交接入口都走到它**、
+  插件 CSS 不得用“反查他人后代”的写法绑架布局、布局类由宿主状态驱动。
+- 新增 **H/H2 DOM 级行为**（8 条）：把 office2 **真身**放进最小 DOM 桩里真跑
+  `replace()`，断言「打开 docx → 内容区出现 1 个已标记 viewer；切到非 docx（.md/.png）→
+  **数量为 0**；再次打开 docx → 换的是新节点」。
+- 新增 **I 宿主清场行为**（9 条）：把宿主 `clearInjected()` 真身放在 DOM 桩里真跑，
+  断言「清场后 `.v3-content > iframe.office2-frame` 数量为 0」、**edit-md / comments /
+  宿主自己的 `.v3-pdf` 节点全部保留**、上一次 office 预览留下的内联隐藏被还原。
+- 顺带修正 `personal-ui.mjs` 里一处**已经失效的切片边界**：标签行断言原本用
+  `indexOf('v3-content')` 当边界，而内容区的类现在是宿主状态绑定（模板里不再有该字面量），
+  边界取不到会让切片一路吃到内容区、把图片 `alt` 里的 `activeTab.name` 误判成
+  “标签行里重复渲染文件名”。已改为按「内容区起始注释」切，并**加一条断言守住这个边界**。
+- 测试文件内 `o2Src`（office2 入口源码）由 F 段块内声明**上提为模块级**，供 G 段复用
+  （纯测试装配，不改任何断言口径）。
+
+**阴性对照（已做，做完逐项还原）**：见下表，每一行都是把本次新增的**一处**清理逻辑去掉后
+真实跑出来的红字（`privhub/tests/personal-ui.mjs`）：
+
+| 对照 | 去掉什么 | 真实输出 |
+|---|---|---|
+| ① | office2 的自我收尾 `this.clearOwnFrame()` | `个人空间界面回归：64 通过 / 4 失败` —— ❌ 非 docx/xlsx 时 office2 自己收掉 viewer；❌ 切到非 docx（.md）后内容区不再有 office2 viewer（**实际 1，判据要求 0**）；❌ 容器里没有任何带归属标记的残留节点（**实际 1**）；❌ 切到图片后内容区不再有 office2 viewer（**实际 1**） |
+| ② | 宿主 `store.activeKey` 处的交接清理 | `67 通过 / 1 失败` —— ❌ 切标签（store.activeKey 变化）时执行交接清理 |
+| ③ | viewer 的归属标记赋值 | `65 通过 / 3 失败` —— ❌ 带归属标记；❌ 打开 docx 后出现 1 个已标记 viewer（**实际 0**）；❌ 再次打开 docx 时换了新 viewer |
+| ④ | 把 office2 的 CSS 改回“反查外来节点”的写法 | `66 通过 / 2 失败` —— ❌ 没有任何插件用“反查他人后代”的写法绑架布局；❌ 布局规则不再反查自己插入的 iframe |
+
+**回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败），退出码 0；各套件 86/12/76/**39→77**/16/50/3 + A批27 + 预览上限39
+（**个人空间界面回归的增量是本次新增断言**，前 39 条断言逐条同名且全绿）。
+改动前基线 `docs/reviews/_baseline-inject.txt`、改动后 `docs/reviews/_after-inject.txt`。
+
+**[未实测·如实标注]** **「闪烁」本身是浏览器的绘制时序现象，Node 里既没有浏览器也没有
+合成层**，本批**没有**在真实浏览器里用绘制录制复现或验证过：
+
+- 无法实测「改完还闪不闪」、无法实测切换手感与 office 预览页自身表现；
+- 判据② `getComputedStyle(.v3-content).display` 的**计算值**同理拿不到（本机无浏览器、
+  项目也没有 jsdom/happy-dom 这类可做 CSS 级联的依赖），只做到静态证明：office 布局规则
+  现在只挂在宿主状态类上，而非 office 布局时宿主返回的类名里不含它；
+- 「iframe 导航期间保留上一次画面」这一条是按代码顺序的**推断**，不是录像证据。
+  ⇒ 仍需按方案 §9.1 的 8 步**手工验收**（控制台两条命令是硬判据）。
+
+**本批没有做的事（边界）**：不建 `window.PrivHub.viewers` 契约、不改 manifest 字段、
+不动插槽与骨架、不做四家注入者迁移（第二步）；不动交互结构、不新增入口、不改布局
+（功能入口保持在左侧图标栏）；**未改 `edit-md` 与 `comments` 的任何逻辑**；
+未动 `data/` 与 `data-files/`；未做 git commit / push / stash。
+
+### 结构契约 · 第二步 a：viewer 契约 + 挂载锚点 + 挂/卸生命周期（只立规矩，不迁移任何插件）
+
+**动机**：第一步止了血（残留消失），但没有解决「谁有权动内容区」这个根——
+第二个注入者出现时同样的病会再犯。本批按 `docs/reviews/10-内容区所有权与docx残留-方案.md`
+§6/§7 立契约：**宿主当老板，插件递名片**。
+
+**形状（已定案，不许改）**：viewer 落在**标签自己的容器内**，由宿主
+`explorer-v3` 按当前标签的格式**按需挂载与卸载**——不常驻、不新增插件、骨架一字不动。
+常驻一块 office 视图就会退化成第一步刚修掉的那个残留 bug。
+
+| 项 | 落点 |
+|---|---|
+| 契约 | **新增** `plugins/privhub-files-explorer-v3/client/viewers.js`（本插件自己目录内，硬约束 3）。`window.PrivHub.viewers = { register / unregister / resolve / list / subscribe / lifecycle }` |
+| 声明形状 | `{ id, exts, priority=100, mount(hostEl, ctx), update?(hostEl, ctx), cleanup?(hostEl, ctx) }`；`mount` 返回的函数即卸载时的清理函数。**校验不过一律抛错**（缺 id/exts/mount、priority 非数字、id 重复），不静默降级 |
+| 解析 | 同一扩展名多家声明：`priority` 大的先赢；同分**先注册先赢**（显式定序，不给文件系统顺序留后门） |
+| 挂载锚点 | `panel.js` 内容区模板里新增 `<div class="v3-viewer-host" data-viewer="none"></div>`，**由宿主创建与销毁**且位置固定；插件只拿这个 div，**不再认 `.v3-content`**。空锚点不占位、不加任何 CSS ⇒ 现有布局零变化 |
+| 生命周期 | `activeKey` / `content` 变化 → 解析 viewer：异类 → **先卸旧的、再挂新的**；同类换文件 → **复用**（走 `update()`，挂载点不重建、viewer 身份不变）；同文件重复同步 → **完全不动**；无任何声明 → **回退老路** |
+| 顺序准绳 | **卸载 viewer 必须晚于「切标签前的静默保存」**（`tabs.js` 先同步 emit `md:interrupt` 再改 `activeKey`；宿主 watcher 用默认 pre flush）。本批**只立钩子点、不改既有保存时序** |
+| 宿主清场 | `clearInjected()` 现在**跳过挂载点内部**——那是 viewer 的私有财产，由它自己的 `cleanup` 收 |
+
+**为什么不走 manifest 新字段**：`privhub-shell/server/index.ts:55` 只认 `id` 与 `slots`；
+`frontend/index.html:832/894` 会把 `window.PrivHub.manifests` **整体替换**，插件侧可能是旧引用。
+让能力清单依赖一个会被整体替换的引用 = 给未来埋雷。
+
+**本批一个插件都没迁移**：`office2` / `edit-md` / `comments` / 图片 / PDF **一律未动**，
+老路（md/text 内联渲染、image/pdf 走 `preview-raw`、office2 现有注入）**原样照跑**。
+双轨兼容，应用仍完全可用。
+
+**新增断言**（`privhub/tests/personal-ui.mjs` 段 J，48 条；跑 `viewers.js` 与 `tabs.js` 的**真身**）：
+契约形状与校验（含「id 重复必须抛错」）、priority / 先注册先赢、**无声明回退老路**（假 viewer
+注册→注销后老路必须恢复）、**同类切换复用 / 异类切换换 viewer / 同文件零动作**、
+**「卸载晚于保存」的可验证性**（源码级 + 真跑 `tabs.js` 用**同步观察者**看顺序）、
+运行时倒挂自检、锚点由宿主创建、`index.html` 一字未动。
+
+**阴性对照（已做，做完逐项还原，SHA256 校验一致）**：
+
+| # | 去掉/改坏哪一环 | 真实输出 |
+|---|---|---|
+| ① | `viewers.js` 异类切换分支「只挂不卸」（`if (cur) unmount('switch')` → `if (false)`） | `个人空间界面回归：122 通过 / 3 失败` —— ❌ 异类切换 = 换 viewer（锚点里只剩新 viewer 一个）；❌ 先卸旧的、再挂新的（**实测：B.mount:P\|c.md**）；❌ 再切回去同样先卸后挂 |
+| ② | `tabs.js` `activateTab` 把 `md:interrupt` 挪到 `store.activeKey` 之后 | `123 通过 / 2 失败` —— ❌ 三个切换入口都在改 activeKey 之前 emit md:interrupt；❌ 真跑 activateTab（**实测顺序：activeKey变更 → md:interrupt**） |
+
+对照原始输出存 `docs/reviews/_negative-control-viewer-NC1.txt` / `-NC2.txt`。
+
+**回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败），退出码 0；个人空间界面回归 **77 → 125**（增量全部是本次新增断言，
+原有 77 条逐条同名且全绿）。
+改动前基线 `docs/reviews/_baseline-viewer.txt`、改动后 `docs/reviews/_after-viewer.txt`。
+
+**[未实测·如实标注]** **「同类切换复用不白闪」的肉眼观感，本批证明不了**：Node 里没有
+浏览器、没有合成层，只有 DOM 桩。本批能证的是「不该重建的没重建、不该留的没留、
+锚点元素自始至终是同一个」，**证不了「用户眼睛看不到闪」**。仍需按方案 §9.1 手工验收。
+
+**本批没有做的事（边界）**：不迁移任何插件（`office2` 改声明式属 b 批，`edit-md` 属 c 批，
+`comments` 属 d 批）；不动 manifest、不动插槽、不新增插件、不引入打包链；
+不动 `frontend/index.html`（骨架一字未动）；不改交互结构与布局；不动 `data/` 与 `data-files/`；
+**未做 git commit / push / stash**；版本号仍为 3.1.1（本轮条目追加在 3.1.1 段内）。
+
+---
+
+### 结构契约 · 第二步 b：office2 迁到 viewer 契约（"宿主当老板，插件递名片" 真正落地）
+
+**动机**：第二步 a 立好了规矩（`window.PrivHub.viewers` + 挂载锚点 + 挂/卸生命周期），
+但**一个插件都没迁**。最痛的那家 —— `privhub-files-office2`，唯一「只进不出」的注入者、
+也是本次「打开 docx 后切任何文件都闪一下旧 docx」的当事人 —— 还在自己
+`document.querySelector('.v3-content')` 往里 prepend iframe。本批把它按契约迁走：
+**删掉那一次跨插件 DOM 认领，内容区的所有权才真正归宿主**（交底 §6-5 的正解）。
+
+**迁移前后对照**
+
+| 项 | 迁前 | 迁后 |
+|---|---|---|
+| 触发 | `bus.on('v3:md-rendered')` 自己监听 | 不监听任何事件：向契约登记一次即可 |
+| 找容器 | `document.querySelector('.v3-content')` | **不用找** —— 宿主把挂载点 `.v3-viewer-host` 交给它 |
+| 插入 | `content.prepend(fresh)` | `hostEl.appendChild(frame)`（只往自己那块地里放） |
+| 卸载 | `clearOwnFrame()` 自己扫全文档摘 frame | `mount` 返回清理函数，**谁挂的谁收** |
+| 换文件 | 自己先摘旧的再造新的 | 不声明 `update` ⇒ 宿主在同一锚点里「先收后建」 |
+| 布局 | 注入 `.v3-content--office` + 全局 `iframe.office2-frame` | 只写 `.v3-viewer-host[data-viewer="…"]` 之下的规则 |
+| 组件卸载 | 只摘监听器，节点留在别人容器里 | `beforeUnmount` → `stop()` → 声明消失 → 零残留 |
+| 归属标记 `data-v3-injected` | 宿主清场据此认人 | **保留但已无代码读取**（宿主清场跳过锚点内部） |
+
+**落点（4 个文件 + 测试）**
+
+| 文件 | 行区间 | 做了什么 |
+|---|---|---|
+| `plugins/privhub-files-office2/client/index.js` | 全文件重写（96 → 118 行）；要点 `:40-52` 常量、`:58-63` 挂载点内 CSS、`:66-73` `frameUrl`、`:80-92` viewer 声明、`:94-111` 组件（`mounted` 注册 / `beforeUnmount` 注销） | 只声明「我能开 `.docx` / `.xlsx`」；`mount` 只往 `hostEl` 里放 iframe |
+| `plugins/privhub-files-explorer-v3/client/panel.js` | `:20-42` 新增 `VIEWER_ON_STAGE_ACTIONS` + `layoutForAction`；`:47` data 增 `viewerLayout`；`:88-101` 重写 `contentClass`；`:206` `syncViewer` 写布局状态；`:748` 导出 `layoutForAction` | 宿主不再自带插件能力清单 |
+| `plugins/privhub-files-explorer-v3/client/styles.js` | `:27-35` 新增 `.v3-content--viewer`（让位布局 + 隐藏自己的只读预览） | 让位布局回到宿主自己的样式里 |
+| `privhub/tests/personal-ui.mjs` | F 段 ⑤、G 段、H 段（整段重写）、I 段、J6/J7 | 断言改写 + 新增（见下） |
+| `frontend/index.html` | **一字未动** | 骨架仍只做容器与总线 |
+
+**三个已由父级拍定的选择，照此执行**
+
+1. **同类切换不声明 `update`**：旧写法「有 frame 就只换 `src`」会让浏览器在导航期间继续显示
+   上一个文件已画好的画面（原始 bug 的次要触发点）。不声明 `update`，宿主走「先收后建」，
+   两步在同一同步批次内完成，中间不给浏览器绘制机会。**不回退。**
+2. **布局状态改为「谁上场谁给」**：迁前 `panel.js` 硬编码 `['.docx','.xlsx']`（宿主不知道插件能力，
+   是残留耦合），规则本体却写在 office2 的 CSS 里（插件声称拥有别人的容器）。
+   迁后宿主**读 viewer 会话的返回值**：`mount / update / reuse` ⇒ 内容区整块让给 viewer
+   （`.v3-content--viewer`），`fallback / unmount / no-host / mount-error` ⇒ 普通布局、老路照跑。
+   ⚠ 实现上刻意**没有**给声明加新字段（那等于扩契约，需另批授权）：布局只由「有没有 viewer 在场上」
+   这一个事实上派生，注册表与会话模块 `viewers.js` **一个字节都没改**。
+3. **测试断言同步改写**（父级已同意）：5 条盯 office2 老写法（`content.prepend(fresh)` /
+   `fresh.dataset.v3Injected` / `clearOwnFrame` / 不复用旧 frame）的断言改为**行为向**；
+   `KNOWN_INJECTORS` 白名单里的 office2 摘掉。
+
+**CSS 归还领地**：office2 的样式全部收敛到自己挂载点上的选择器
+（`.v3-viewer-host[data-viewer="privhub-files-office2"] …`）；按类名声称拥有内容区的
+`.v3-content--office` / 全局 `iframe.office2-frame` 规则**整组删除**。
+
+**新增/改写的断言**（`privhub/tests/personal-ui.mjs`，个人空间界面回归 125 → **153** 条）
+
+- **F 段 ⑤**：office2 向契约登记（id / exts / priority）、**源码里不再出现 `.v3-content`**（先剥注释再判）、
+  **加严一条：整个文件（含注释）grep 不到 `querySelector('.v3-content')`——0 命中**、
+  声明里不写 `update`、`beforeUnmount` 调 `stop()`。
+- **G 段**：注入者判据改为只看「以 `.v3-content` 为目标的注入写法」（删掉 `office2-frame` 那条会误报的兜底判据，
+  判据①本来就覆盖 office2 迁前的写法）；新增「office2 已不在注入者名单里」；布局断言改为
+  `.v3-content--viewer` + 「宿主不再硬编码扩展名清单」+ 「布局状态由会话返回值派生」+「contentClass 直读 viewerLayout」。
+- **H 段（整段重写，跑 office2 真身）**：沙箱里真跑 `mounted()` 递名片；`mount` 只往挂载点里放 1 个 iframe、
+  iframe 父节点就是挂载点、URL 三个参数正确编码、返回清理函数、**mount 全程没按 `.v3-content` 查过任何东西**
+  （桩里给选择器留痕：实测查询 0 次）、卸载后节点与 DOM 断开、每次 mount 现造新节点、`beforeUnmount` 后声明消失。
+- **I 段**：给 DOM 桩补 `closest()`，新增「锚点内部带标记的 viewer 被保留」——护住「宿主清场不误杀在岗 viewer」。
+- **J6（新增）**：把 H 段跑出来的 **office2 真声明**注册进**真注册表**、喂给**真会话**，实测
+  「打开 docx → 锚点出现 1 个 iframe」「docx→docx 换的是**新节点**」「切到 md → iframe 0 个、锚点为净」
+  「切到 png → 回退老路」「插件注销 → 老路恢复」。
+- **J7（新增）**：把 `panel.js` 的 `layoutForAction` 真身取出来跑，断「让位 / 不让位」两侧的映射。
+
+**阴性对照（已做，做完逐项还原，SHA256 校验一致）**
+
+| # | 去掉/改坏哪一环 | 真实输出 | 对照原始输出 |
+|---|---|---|---|
+| ① | office2 的 `mount` 改回「自己去认领 `.v3-content`」（`const content = document.querySelector('.v3-content'); content.prepend(frame)`） | `个人空间界面回归：139 通过 / 15 失败` —— ❌【要害】office2 源码里不再出现 .v3-content；❌【要害·加严】整个文件 grep 不到 querySelector(".v3-content")；❌ 多出注入者 office2；❌ office2 已不在注入者名单里；❌ mount 只往挂载点里放了 1 个 iframe（实测 0 个）；❌【要害】mount 全程没有按 .v3-content 查过任何东西（**实测查过：.v3-content**）；❌ 那个「别人的容器」一个节点都没多；❌ 打开 docx → 锚点出现 1 个 iframe（实测 0 个）等 | `docs/reviews/_negative-control-office2-NC1.txt` |
+| ② | 布局改回宿主硬编码 `['.docx','.xlsx']` 能力清单（`contentClass` + `viewerLayout` 两处一起回退） | `个人空间界面回归：149 通过 / 4 失败` —— ❌ office 专属的硬编码布局分支已彻底消失；❌ 宿主源码里不再硬编码扩展名能力清单；❌ 布局状态由 viewer 会话的返回值派生；❌ contentClass 直接读 viewerLayout | `docs/reviews/_negative-control-office2-NC2.txt` |
+
+> 对照②的一个如实说明：J7 是**孤立地**测 `layoutForAction` 这个映射函数，把调用点改坏时它不会红；
+> 把它钉在实现上的是 G 段那条 `this.viewerLayout = layoutForAction(res.action)`（对照②里红了）。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败）；个人空间界面回归 **125 → 153**（增量全部是本次新增/改写的断言）。
+改动前基线 `docs/reviews/_baseline-office2.txt`、改动后 `docs/reviews/_after-office2.txt`。
+契约模块 `viewers.js`、骨架 `frontend/index.html`、manifest、插槽、打包链**均未改动**；
+`data/` 与 `data-files/` 只读。
+
+**[未实测·如实标注]** **「同类切换不露旧画面」的肉眼观感，本批同样证明不了**：Node 里没有浏览器、
+没有合成层，桩里也只有节点树。本批能证的是「换的是新节点、中间没有第二次挂载、锚点里同一时刻只有 1 个 iframe」，
+**证不了「用户眼睛看不到闪」**。另有一条**只能实机看**的风险：office2 的 iframe 从「内容区的直接子节点」
+搬进了挂载点，尺寸链变成 `.v3-content--viewer`(flex 列) → `.v3-viewer-host`(flex 行) → iframe，
+**这套 flex 尺寸在真实浏览器里的表现（有没有 1px 白边、有没有高度塌陷）我没有浏览器，验不了**，
+必须由主子按 `docs/reviews/10-内容区所有权与docx残留-方案.md` §9.1 的步骤 1~8 手工过一遍。
+
+**本批没有做的事（边界）**：不迁移 `edit-md`（c 批）、不动 `comments`（d 批）；
+不改交互结构、不新增界面入口、不改布局；不动 manifest / 插槽 / 打包链；**未做 git commit / push / stash**；
+版本号仍为 3.1.1（本轮条目追加在 3.1.1 段内）。
+
+---
+
+### 结构契约 · 第二步 c：edit-md 迁到「编辑舱位」契约（并把「丢内容」那条路堵死）
+
+**动机**：第二步 a 立了 viewer 契约、b 批把 office2 迁走之后，剩下最刺眼的一家是
+`privhub-files-edit-md`：它有**四处**伸手进宿主的内容区 —— 查别人的容器判断「能不能内嵌」、
+隐藏别人的只读预览、清理别人的节点、`<teleport to=".v3-content">` 把自己整块编辑器塞进别人的容器。
+更要紧的是 b 批查出来的**一条可能丢内容的路**：切标签时的静默保存是异步的
+（`void this.save().finally(() => { this.open = false })`），**「保存意图」在前、「保存完成」可能落在
+编辑器卸载之后**，而现有顺序准绳只保证**意图**不倒挂。本批两件事一起做：
+**迁到宿主给的编辑舱位** + **把「数据在卸载前已被捕获并发出保存」变成可断言的事实**。
+
+**一、编辑舱位（第二步 3b）：宿主再给一块地，编辑器不再伸手**
+
+| 项 | 迁前 | 迁后 |
+|---|---|---|
+| 能不能内嵌 | 插件 `document.querySelector('.v3-content')` —— 拿「别人的容器在不在」当判据 | 插件经 bus 问宿主（`v3:editor-host-ask`），宿主**同步**答 `v3:editor-host { available, key, selector }` |
+| 判据本身 | 别人的 DOM 非空 ⇒ 可内嵌（内容区显示 A、却给 B 开编辑器也判「可以」，编辑器就贴到别人的画面上） | 宿主**自己的状态**：内容区在 **且** 承载的正是这个文件（`contentLiveKey()`）——一次都不查 DOM |
+| 编辑器落点 | `<teleport to=".v3-content">`（成为别人容器的子节点） | `<teleport to=".v3-editor-host">`（宿主创建/销毁的**编辑舱位**，与 viewer 的 `.v3-viewer-host` 分开：编辑态不是某个 viewer 的能力） |
+| 隐藏只读预览 | 插件去写别人的 `.v3-md` / `.v3-text` 的内联 `display`，退出时再还原 | 宿主自己的编辑态布局负责（`.v3-content--editor .v3-md { display:none }`） |
+| 退出编辑 | 插件 `querySelectorAll('.md-inline-root').remove()` 自己摘别人的节点 | Vue 拆 teleport 即收干净；插件只报「编辑态已关」（`v3:editor-state`） |
+| 布局状态（3a） | 宿主 CSS `.v3-content:has(.md-inline-root)` —— 按**别人的后代**反查自己的布局 | 宿主响应式 data `editorLayout`（插件经 bus 报开/关）→ `.v3-content--editor`；`:has(` 在宿主样式里归零 |
+| 舱位消失 | 没有这个概念：编辑器会攥着已销毁的目标（再打开同一文件时「编辑器打不开、正文还在里面」） | 宿主推 `v3:editor-host { available:false }` 请插件退场 —— 退场前照样先捕获、先发出保存 |
+
+**二、丢内容那条路（本批第一优先）**
+
+`md:interrupt` 的处理顺序钉成六步，**全部同步**到「请求已上网络」为止：
+
+> ① 同步捕获快照（正文 + 文件身份 + 基线 mtime + 会话号）→ ② 记流水 `save-capture`
+> → ③ **同步发出保存**（async 函数体在第一个 `await` 之前是同步执行的）
+> → ④ 报编辑态已关 → ⑤ `open=false`（Vue 下一帧才真拆）→ ⑥ 记流水 `editor-close`。
+
+- **为什么不等保存回包再卸**：数据已经捕获、请求已经在网上，等回包只会让编辑器多挂一帧 ——
+  而这一帧里内容区已经换成了别的文件（等于把 A 的编辑器贴到 B 的画面上）。
+- **凭什么说不会丢**：捕获与 PUT 都在**同一个同步块**内完成，且都排在 `open=false` 之前；
+  这不是只写在注释里 —— 捕获与退场都记进宿主的顺序流水（`viewers.lifecycle`），
+  测试直接断「**捕获早于退场**」并配阴性对照（把保存挪到卸载之后 → 三条断言当场变红）。
+- **顺手堵掉一条更凶的静默丢字**（b 批未发现，本批实测复现）：切到 B 之后，A 的保存回包若写回组件状态，
+  编辑器里就变成 **A 的正文 + B 的路径**，下一次保存把 A 的内容写进 B 的文件。
+  现在回包只写给「发起它的那一轮编辑」（会话号闸 `_session`），并加了兜底：
+  绕开中断入口直接开另一个文件时，先把上一轮捕获并存掉再开新的。
+- **失败不静默**：静默路径（编辑器随即关闭、状态行没人看得见）的保存失败与「冲突取消」会 toast 告警。
+- **三条不许**（逐条守住）：不给宿主 watcher 加 `flush:'sync'`；不把中断处理挪进 `$nextTick`/`setTimeout`；
+  不把 `confirm()` 带进静默保存路径（唯一带 confirm 的退场入口仍是「✕ 只读」按钮）。
+
+**三、落点**
+
+| 文件 | 做了什么 |
+|---|---|
+| `plugins/privhub-files-explorer-v3/client/panel.js` | 新增编辑舱位：`EDITOR_SELECTOR` + `contentLiveKey / editorHostInfo / syncEditorHost / setEditorLayout / noteEditorLifecycle`、`data.editorLayout`、`contentClass` 派生、模板里的 `.v3-editor-host`、`mounted/beforeUnmount` 的三条接线 |
+| `plugins/privhub-files-explorer-v3/client/styles.js` | `:has(.md-inline-root)` 四条 → `.v3-content--editor`；**并修掉一个「整块打不开」的语法错**（见下） |
+| `plugins/privhub-files-edit-md/client/index.js` | 契约助手（ask / 记流水）+ 快照保存 + `leaveInline` 六步 + 舱位消失退场 + teleport 换目标 |
+| `privhub/tests/personal-ui.mjs` | G 段改写（`:has` 归零、edit-md 移出注入者名单）+ 新增 K 段 + 新增 L 段 |
+| `frontend/index.html`、`viewers.js`、manifest、插槽、打包链 | **均未改动**（编辑舱位不进 viewer 契约，它是宿主的第二个锚点） |
+
+**四、⚠ 一并修掉的既有缺陷：整套 explorer-v3 前端当时是打不开的**
+
+第二步 b 在 `styles.js` 的 **CSS 模板串**里留了一对反引号（在注释里写 CSS 类名时带了反引号），
+模板串当场被结束 ⇒ **该模块解析失败** ⇒ `import './styles.js'` 拉垮 explorer-v3 的整条前端装配
+（`panel` / `tree` / `preview` 三个插槽全在它身上）⇒ **主界面整块打不开**。
+当时的 462 条断言**全绿**：没有任何一条会去解析这些文件。本批**已修**（CSS 注释里不再用反引号），
+并新增 **L 段「前端模块语法体检」**：剥掉 import/export 后逐个解析 **65 个**插件前端文件，
+这类「整块打不开」的语法错今后当场拦住（阴性对照见下）。
+
+**五、断言（个人空间界面回归 153 → 215）**
+
+- **K1 源码级（20 条）**：edit-md 里**不得再出现**宿主的容器（剥注释 0 命中）；
+  **加严两条**：整个文件（含注释）grep 不到 `querySelector(".v3-content")`、
+  也 grep 不到 `teleport to=".v3-content"`（各 0 命中）；teleport 目标是 `.v3-editor-host`；
+  不再从整个 document 查任何东西；不再按类名隐藏宿主的 `.v3-md`/`.v3-text`；
+  「能不能内嵌」由宿主经 bus 作答且判据取自宿主自己的状态；宿主模板创建/销毁舱位；
+  `editorLayout` 写进响应式 data、`contentClass` 由它派生；宿主样式 `:has(` 归零；
+  顺序流水用 `viewers.lifecycle` 那一份；编辑舱位**不进** `viewers.js` 契约。
+- **K2 行为级（跑真身，同一条沙箱）**：`edit-md` 真身 + `panel.js` 六个真身方法 +
+  **真的 `viewers.js` 注册表** + 宿主 relay 全放进一个 vm 沙箱，驱动真实的 `md:interrupt`：
+  内嵌可用 → 切标签时**实测顺序**为
+  `save-intent → save-capture → PUT → open=false → editor-close`（捕获/保存都早于退场）；
+  流水号递增可复核；PUT 的 path 与正文取自快照；退场后布局状态归位；
+  上一轮回包落在下一轮编辑之后**不污染**新一轮（正文/基线/脏标记都不被改写）；
+  舱位被收走时先捕获保存再退场；「回答问题」不误关编辑器；静默失败有 toast。
+- **K2-6 宿主的「要害」判据**：舱位在、但内容区显示的是**别的文件** ⇒ 答 `available:false`
+  （旧判据在这里会给 true —— 这正是编辑器贴错画面的那条路）。
+- **G 段**：`KNOWN_INJECTORS` 白名单只剩 d 批待迁的 `comments`（**注入者从 4 家收到 1 家**）；
+  新增「edit-md 已不在注入者名单里」；宿主样式 `:has` 断言由「保留」改为「归零」。
+- **L 段（2 条）**：65 个前端模块逐个解析通过。
+
+**阴性对照（已做，做完逐项还原，SHA256 校验一致）**
+
+| # | 改坏哪一环 | 真实输出 | 对照文件 |
+|---|---|---|---|
+| ① | edit-md 改回「查别人的容器 + teleport 到别人的容器」（`document.querySelector('.v3-content')` / `to=".v3-content"`） | `个人空间界面回归：181 通过 / 14 失败` —— ❌ 要害：teleport 目标不是舱位；❌ 要害：代码里仍在认领别人的容器；❌ 加严两条（含注释 0 命中）变红；❌ 不再从整个文档查任何东西；❌ 打开 md 没进内嵌编辑态（实测 mode 落到浮层）；❌ 捕获/保存/退场的整条流水缺失…… | `docs/reviews/_negative-control-editmd-NC1.txt` |
+| ② | 把「捕获 + 发出保存」挪到 `open=false` **之后**（先卸后存） | `212 通过 / 3 失败` —— ❌【第一优先·丢内容】实测顺序 `open=false → api:PUT`；❌ 流水 kind 顺序 `save-intent → editor-close → save-capture`；❌ 流水号捕获 seq=3、退场 seq=2（倒挂） | `docs/reviews/_negative-control-editmd-NC2.txt` |
+| ③ | 拆掉会话闸（`mine()` 恒真，回包无条件写回） | `212 通过 / 3 失败` —— ❌ 上一轮回包把 **A 的正文**写进了正在编辑 B 的编辑器（实测 `doc="---\ntitle: a\n...\n# A v2 又改了"`、`path=b.md`、`baseMtime=999`、`dirty=false`）；❌ 脏标记被清；❌ 静默失败不再告警 | `docs/reviews/_negative-control-editmd-NC3.txt` |
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败）；九套断言 86 / 12 / 76 / **215** / 16 / 50 / 3 / 27 / 39。
+改动前基线 `docs/reviews/_baseline-editmd.txt`、改动后 `docs/reviews/_after-editmd.txt`。
+`data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
+
+**[未实测·如实标注]** **浏览器里的事一件都没验**：`teleport` 是否真的把编辑器挂进了舱位、
+光标位置、`Ctrl+S` 手感、**编辑区滚动同步到预览区**（顺带说明：这段 `syncScroll()` 走的是
+`this.$el.querySelector('textarea.md-src')`，而 teleport 出去的节点**不在 `$el` 子树里**，
+我判断它一直是静默失效的 —— **没有浏览器，我证不了**，也没在本次改动它）、
+`.v3-content--editor` 那套 flex 尺寸在真实浏览器里的表现（有没有塌陷/白边）。
+这些必须由主子按 `docs/reviews/10-内容区所有权与docx残留-方案.md` §9.1 手工过一遍。
+
+**本批没有做的事（边界）**：不动 `comments`（d 批）；不改交互结构、不新增界面入口、不改布局；
+不动 manifest / 插槽 / 打包链。
+
+---
+
+### 结构契约 · 第二步 d：comments 迁到「宿主交渲染根」，**跨插件 DOM 认领归零**
+
+**动机**：第二步 a 立 viewer 契约、b 批把 `office2` 迁走、c 批把 `edit-md` 迁到编辑舱位之后，
+全仓还剩**最后一处跨插件 DOM 认领**——`privhub-files-comments` 干了两件越权的事：
+
+| 项 | 迁前 | 问题 |
+|---|---|---|
+| 找渲染根 | `:112` `document.querySelector('.v3-content .v3-md')` | 自己去**别人的容器**里按类名找渲染根 |
+| 盯渲染根 | `:119-123` `new MutationObserver(...)` + `observe(el, { childList, subtree, characterData })` | 靠**盯着别人的 DOM 变了**来重建批注锚点 |
+
+**迁后：宿主在渲染完成时把渲染根的节点引用直接交出去，插件不再自己查、也不再盯**
+
+| 项 | 迁后 |
+|---|---|
+| 节点从哪来 | 宿主内容区模板里那个 `ref="mdRoot"` 的 div —— **宿主自己的节点**（不查别人的、不新建） |
+| 什么时候交 | `panel.js` 的 `noticeMdRoot()` 在 **`$nextTick`**（= Vue 渲染完成、`v-html` 已换过内容的确切时点）发出 `bus 'v3:md-root'`，payload `{ el, project, key, reason }` |
+| 什么时候收 | 没有 md 渲染根时（loading / error / text / 图片 / PDF / 内容区整体消失 / 换文件）发 **`el: null`**，插件据此清锚点并**放弃旧引用** |
+| 插件的落点 | 全部 DOM 动作只发生在**交来的那个节点内部**（挂 `mark.v3-cmt` / 清锚点），不再碰 `el` 之外的任何东西 |
+| 旧事件 | **`v3:md-rendered` 作废**：它原来由 `content.js` 发在 `store.content` 赋值之后、**Vue 渲染之前** —— 那一刻新节点根本不存在，监听方只能看到上一次渲染的旧节点（这正是「锚点认错根」的由来）。两发都删了，全仓 emit/on 各 1 处换成了 `v3:md-root` |
+
+**顺带堵掉一条真实的「旧锚点残留」路径（本批实测复现）**：迁前 `_render()` 是
+`if (el && this.comments.length)` —— **切换到的文件没有评论时它什么都不做**。而"根已换、取数还在路上"的那一帧里，
+面板里可能还挂着上一个文件的数据，那一次渲染就会把**上一个文件的锚点画进新根**，随后"评论为空"又不会去清。
+现在改成「**有根就清、有评论就画**」（`_render()` 只判根在不在；`renderMarks` 接受空数组 = 清空）。
+断言：M3 的「b.md 没有评论 → 新根里 0 个锚点」；阴性对照 NC2 之外的那条路也一并覆盖。
+
+**收尾核查（本批第二个价值）**
+
+| 核查项 | 结果 |
+|---|---|
+| `KNOWN_INJECTORS` 白名单 | **收敛为空数组**；两条守它的断言（「没有冒出来的新注入者」/「除已知注入者外…」）保持绿，并新增一条「注入者集合与白名单**同时**为空」 |
+| 6 个「只读引用者」逐个核 | `office-ui`(1 文件) / `dataview`(2) / `mdpage`(1) / `versions`(1) / `publish`(1) / `invite`(1) —— **全部干净**（既不查宿主内容区、也不往里写）；每家一条独立断言，将来谁变脏一眼看出是哪家 |
+| 图片 / PDF | 宿主自己的 `img.v3-img` / `iframe.v3-pdf` 分支是**宿主亲儿子**，不迁移；断言「没有任何插件去查 `.v3-img` / `.v3-pdf`」（实测 0 家） |
+| 两个舱位 + 两个状态类 | `.v3-viewer-host`（viewer 的地界）与 `.v3-editor-host`（编辑态的地界）**都没被复用**；`--viewer` / `--editor` 两个状态类也不复用；两个舱位各自仍只被它的正主使用（office2 / edit-md） |
+| 骨架 `frontend/index.html` | **一字未动**（不新增插槽、不改布局、不动图标栏） |
+
+**落点**
+
+| 文件 | 做了什么 |
+|---|---|
+| `plugins/privhub-files-explorer-v3/client/panel.js` | 新增渲染根交接：模板两个 md 分支挂 `ref="mdRoot"`、`mdRootOf()` 单一出口、`contentKeyOf()`、`noticeMdRoot()`（在 `$nextTick` 里发 `v3:md-root`）、两个内容切换 watcher 都接到它 |
+| `plugins/privhub-files-explorer-v3/client/content.js` | 删掉两处 `emit('v3:md-rendered')`（含末尾那一发），改成讲清来历的注释 |
+| `plugins/privhub-files-comments/client/index.js` | 删掉 `document.querySelector('.v3-content .v3-md')` 与 `MutationObserver`；改为 `data.mdRoot` + `mdEl()` 只读它 + `onMdRoot(p)` + `watch.mdRoot`；`_render()` 改成「有根就清、有评论就画」 |
+| `privhub/tests/personal-ui.mjs` | G 段白名单收敛为空 + 新增「归零」断言；新增 **M 段**（22 条）；K/J 两条 watcher 正则放宽以容纳新增的 `(n)` 形参；L 段编号顺延为 14 |
+| `docs/reviews/08-连线契约.md` | §4.1 事件表加 `v3:md-root`（并注明 `v3:md-rendered` 过时）；§5.3 加 d 批增量（3 家「真 querySelector 别家容器」全部归零） |
+| `frontend/index.html`、`viewers.js`、manifest、插槽、打包链 | **均未改动**（本批不扩 viewer 契约形状：渲染根交接是宿主的第二个「交出节点引用」的用法，不进 `viewers.js`） |
+
+**断言（个人空间界面回归 215 → 258）**
+
+- **M1 源码级（16 条）**：comments 里 0 处 `.v3-content` / 0 处按类名查 `.v3-md`/`.v3-text`
+  （**先剥注释**，再拿原始源码加严一条）；不再 `document.querySelector` 任何东西；
+  **0 处 `MutationObserver`**；锚点根是 `data.mdRoot`（不是 computed 现查）；
+  宿主侧：模板 2 处 `ref="mdRoot"`、`mdRootOf()` 单一出口、`noticeMdRoot()` 在 `$nextTick` 里、
+  payload 就是节点引用、两个切换入口都走到它、`content.js` 两发旧事件已删。
+- **M2 收尾核查（11 条）**：6 个只读引用者逐个 + 图片/PDF 归属 + 舱位/状态类不复用 + 两个舱位正主未变。
+- **M3 行为级（7 条，跑 comments 真身）**：最小 DOM 桩里建**真树**（真子树遍历 + 按 Range 规范实现
+  `extractContents/insertNode`），驱动真 `bus`：宿主发根 → **锚点出现且落在正确字符偏移上**
+  （start=2/end=5 → 实测文本 `"cde"`）；宿主收根（`el:null`，换文件）→ 插件放弃旧引用、
+  **旧节点不再被写**；新文件无评论 → **新根 0 个锚点**；切回 → 在**新节点**里重建；
+  `beforeUnmount` 摘掉两条线、不再持有根引用。
+
+**阴性对照（已做，做完逐项还原，SHA256 校验一致）**
+
+| # | 改坏哪一环 | 真实输出 | 对照文件 |
+|---|---|---|---|
+| ① | comments 改回**自己查别人的容器**（`mdEl(){ return document.querySelector('.v3-content .v3-md') }`） | `254 通过 / 4 失败` —— ❌【要害】代码里不再出现 `.v3-content`（剥注释后 0 命中）；❌【要害·加严】整个文件（含注释）0 命中；❌ 不再从整个 document 查任何东西；❌ 锚点根改成宿主交进来的引用 | `docs/reviews/_negative-control-comments-NC1.txt` |
+| ② | 把那个 `MutationObserver` 加回去（盯别人的 DOM） | `256 通过 / 2 失败` —— ❌【要害·本批的第二个要害】剥注释后仍有 `MutationObserver` 命中；❌ 根被收回（el 为 null）时不渲染 | `docs/reviews/_negative-control-comments-NC2.txt` |
+| ③ | 宿主不再等渲染完成（把 `noticeMdRoot` 从 `$nextTick` 里挪出来，发在渲染**之前**） | `257 通过 / 1 失败` —— ❌ 宿主在 `$nextTick` 之后才发根（实测发早了）—— 这正是迁前 `v3:md-rendered` 的病根 | `docs/reviews/_negative-control-comments-NC3.txt` |
+
+> 阴性对照②的第一版**当场崩**在 `ReferenceError: MutationObserver is not defined`（沙箱里没有这个全局）——
+> 那本身也是一条证据（新代码路径里它确实一次都不需要），但**崩掉就测不出行为**，
+> 所以在沙箱里补了一个 observer 桩，让"改回去"能跑完并**看见后果**（上面这两条红）。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
+（0 条失败）；九套断言 86 / 12 / 76 / **258** / 16 / 50 / 3 / 27 / 39。
+改动前基线 `docs/reviews/_baseline-comments.txt`、改动后 `docs/reviews/_after-comments.txt`；
+开工前的跨插件认领现状快照 `docs/reviews/_d-before-scan.txt`。
+`data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
+
+**[未实测·如实标注]** **浏览器里的事一件都没验**（本批尤其要紧，因为改的正是"渲染完成后"的时序）：
+① 批注高亮的**视觉位置与观感**（`mark.v3-cmt` 的底色/边框、跨段落锚点的观感）；
+② `$nextTick` 这个时点在真实浏览器里是否**每一次**都落在 `v-html` patch 之后
+（代码顺序上成立，但**没有实测**）；③ 选区浮动按钮的定位（`getBoundingClientRect` + `html zoom` 换算）
+在真机上的表现；④ 「选中文字 → 💬 评论 → 提交」这条交互全链路。
+这四条**必须由主子按 `docs/reviews/10-内容区所有权与docx残留-方案.md` §9.1 手工过一遍**。
+
+**[残留尾巴·如实标注]** ① 契约里 `v3:md-root` 是**宿主的第二个"交出节点引用"用法**，
+`viewers.js` 里没有它的位置（本批不扩契约形状，故未动）；若将来第三个插件也要渲染根，
+应当**先定形状再动手**（这是已知的设计欠账）。② `shell-agent-console` 仍在自己模板里
+借宿主的 `class="v3-loading"` 样式——**只掉样式、不掉功能**，不算认领容器，本批未动。
+③ `08-连线契约.md` §5.3 与 §4.1 里被本批改写成历史的那几行是**留档不改**的，反查以增量段为准。
+
+### 布局修复 · 非文本文件（图片 / PDF）铺满内容区 + 格式支持矩阵实测（同批两件）
+
+**动机（用户原话）**：「除了直接在中间栏阅读的文件，其他格式的能打开的文件的**背景和背景大小别做限制，给 100%**……
+**现在分好几层，大小还有的格式有限制**」；另：「**有些文件无法打开**，这个应该是格式兼容性有关」。
+
+#### 一、铺满修复（只改宿主 explorer-v3，插件与契约零改动）
+
+| # | 迁前（病因，带行号） | 迁后 |
+|---|---|---|
+| ① | `styles.js:26` `.v3-content { padding:16px 22px }` ⇒ 图片/PDF 四周留白（"分好几层"的中间那层） | 铺满形态下 `padding:0`（`styles.js:50`） |
+| ② | `styles.js:87` `.v3-pdf { height:calc(100vh - 260px); border:1px solid; border-radius:8px }` —— 写死"视口高度减常数"、与实际 chrome 高度无关，边框圆角等于给 PDF 套相框 | `styles.js:116` `width:100%; height:100%; border:0; display:block` + `styles.js:53` `flex:1 1 auto; min-height:0`（高度整个交给容器） |
+| ③ | `styles.js:86` `.v3-img { max-width:100%; border-radius:8px }` —— 只限宽不给高、加装饰圆角 | `styles.js:109` `max-width:100%; max-height:100%`（不超出、不拉伸、居中；可点开放大照旧） |
+| ④ | `panel.js:709` 图片外层是内联 `style="text-align:center"` 的裸 div | `panel.js:766` 改宿主自己的类 `class="v3-img-wrap"`（**仍是宿主自己的节点**） |
+
+**实现路线＝与第二步 b/c 同一范式**：**状态写进宿主自己的响应式 data**（`panel.js:142` 的 `fillLayout`）→
+由**宿主自己派生**（`panel.js:78-81` 纯函数 `fillStateFor`、`panel.js:323-326` `syncFillLayout()`、
+在 `syncViewer()` 末尾调用——顺序有意义：判据之一是"没有 viewer 在场"）→ **规则写在宿主自己的样式里**
+（`styles.js:36-53` 的 `.v3-content--fill`）。**插件不参与、无新增跨插件 DOM 认领、`viewers.js` 契约形状一字节未动、骨架一字未动。**
+
+**判据**（全取自宿主自己的状态，不查 DOM）：内容区在场且承载的正是当前标签 + `state==='ready'` 且**拿到原始字节 url**
++ 当前没有 viewer 在场上（真有插件认领同一扩展名时以插件为准，两者互斥）。
+**刻意不按扩展名/kind 判**——依据是本次实测：`.ico` 被后端认成 image（`privhub-core/src/index.ts:769`）而前端 `kindOf` 的图片清单没有它
+（`utils.js:11`），于是它 kind=text、模板走的是 **iframe 分支**；按 kind 判会漏掉这个形态。
+**明确不动的**：`.v3-md { max-width:900px }`（`styles.js:93`）是**有意**为阅读舒适设的，用户说的是"除了直接阅读的文件"，一字未改。
+
+**新增 21 条常驻断言**（`tests/personal-ui.mjs:1562-1667`，第 12b 段）：跑 `panel.js` **真身**（`fillStateFor` + `contentClass` 切进 vm 执行）
++ 样式层（写死高度与装饰边框真的消失、阅读排版未动）+ 模板层（外层改类、lightbox 未坏），含"**不许误伤**"三条（md / 纯文本 / `.v3-md` 阅读宽度）。
+
+**阴性对照（已做，做完逐项还原、两个文件哈希一致）**
+
+| # | 改坏哪一环 | 真实输出 |
+|---|---|---|
+| ① | 把派生改回去（`contentClass` 里那半行停掉） | `276 通过 / 2 失败` —— ❌【判据】图片（ready+url）→ 类含 v3-content--fill；❌【判据】PDF → 同上 |
+| ② | 把样式改回去（`.v3-pdf` 恢复 `calc(100vh - 260px)` + 边框圆角） | `276 通过 / 2 失败` —— ❌【样式】写死高度已消失；❌【样式】PDF 三件装饰/限制已从基础规则去掉 |
+| 还原后 | — | `279 通过 / 0 失败`（`panel.js` 29B9525…、`styles.js` 2040D4E… 与改前一致） |
+
+#### 二、格式支持矩阵（**真文件实测**，不是读代码猜）
+
+新增一次性探针 `tests/format-matrix.mjs`（**不在** `run-all.mjs` 清单里，不拖慢常规回归）：
+自带隔离实例（根 `tests/.matrixroot`、端口 **3193**，**硬拒 3180/3181**，不碰真实 `data/`、`data-files/`），
+现场生成 **63 个真样本**（`docx`/`exceljs`/`pptxgenjs`/`pdfkit`/`jszip` 生成 + 手工造 + 3 个真身样本：mammoth 的 docx、
+pdf-parse 的 pdf、jpeg-exif 的**真 TIFF**），全部经 `/api/upload` 真实入库，再逐条驱动
+`/api/list`、`/api/preview`、`/api/preview-raw`、`/api/office/read`、`/api/office-preview`、`/api/office2/raw`；
+**"前端会显示什么"不靠猜**：把前端真身（`utils.js` 的 `kindOf` + `content.js` 的 `loadContent`）装进 vm，
+`api` 桩逐字对齐骨架 `frontend/index.html:364-385` 打真 HTTP。
+产物：`docs/reviews/_matrix-format.txt`（63 行全表）与 `_matrix-format.json`；分析报告 `docs/reviews/11-格式支持矩阵与铺满修复.md`。
+
+**实测结论**：✅能开 **29** ／ ⚠️降级 **4**／ ❌打不开 **30**。三条实测发现：
+
+1. **`OFFICE_EXTS` 根本没有 `.xls` / `.ppt`**（`privhub-svc-office/src/index.ts:22`）⇒ 两者一律报「不支持的 Office 类型」，界面只给一行错误。
+2. **`.doc` 解析失败却返回 `ok:true`**，界面把**兜底提示句**当正文显示（实测两例：提取正文 42 字＝
+   「[无法提取 DOC 文本]（请用 Word/WPS 打开后另存为 docx 再上传）」）；且**本机 `python.exe` 只是 Microsoft Store 的占位别名**，
+   `office-lib.mjs:31-66` 的第三级 Python 兜底在这台机器上**永远不会工作**——这就是用户数据里那 41 个 `.doc` 全都打不开的机制。
+3. **`.ico` 前后端两张图片清单不一致**（见上），图片走了 iframe 分支 ⇒ 没有点击放大（修法是一行，本批未改：属格式能力改动，不属布局改动）。
+
+**与真实语料对照【实证·只读扫一遍，未读任何内容】**：真实 `data-files/` 共 536 个文件 / 16.3 MB，**只有 8 种扩展名**
+（`.txt` 228 / `.md` 196 / **`.doc` 42** / `.docx` 24 / `.xlsx` 23 / `.html` 21 / `.pdf` 1 / `.pptx` 1）
+⇒ 矩阵里那 30 条 ❌ **绝大多数还没出现在真实语料里**；真正会撞到的是 `.doc`（41 个测试文件 + 1 个真文档）、
+`.html`（只出源码）与 `.pptx`（只出文本）。
+
+**可补的库（体积与许可证为实测值）**：本轮给出候选对比表（fflate 33,044 B/MIT、utif 58,271 B/MIT、
+postal-mime/MIT-0、zip.js 166,445 B/BSD-3、epubjs 223,875 B/BSD-2、pptx-preview 137,080 B/ISC、
+heic2any 1,351,840 B/MIT 但内含 libheif 上游 **LGPL-3.0**、libarchive.js 1.0MB wasm 覆盖 7z/rar、
+pdfjs-dist 34.8MB）与**性价比排序**：先做 **① 收敛并补齐纯文本白名单（0 字节，消掉 14 条 ❌）
+② 音视频走原生标签（0 字节，复用本轮刚立的铺满形态）③ fflate 做容器类预览（33KB，覆盖 zip/odt/ods/epub）**。
+**不建议做**：自建 pdf.js 阅读器（浏览器内置查看器零字节）、为 pptx 重打 10.5MB Univer bundle（等于引入构建链）、
+`.ppt` 真渲染（生态里没有可用 JS 渲染器）、7z/rar（wasm + 许可）、HEIC（LGPL 链）、给 `.html`/`.svg` 解禁脚本（安全议题）。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（0 条失败）；
+九套断言 86 / 12 / 76 / **258 → 279**（+21 为本批新增断言）/ 16 / 50 / 3 / 27 / 39。
+基线 `docs/reviews/_baseline-fill.txt`、收工 `docs/reviews/_after-fill.txt`。
+⚠️ **退出码口径**：用 `2>&1 | Tee-Object` 写法时 PowerShell 会把服务端 stderr（两条已知告警）算成 `NativeCommandError`，
+`$LASTEXITCODE` 会报 1 —— **不是测试失败**；用 `*> 文件` 写法实测 `run-all` 本体 **exit=0**。
+`data/` 与 `data-files/` 只读（仅扫过扩展名分布）；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
+
+**[未实测·如实标注]** **浏览器里的事一件都没验**（仓库里没有任何浏览器测试），必须由主子实机过一遍：
+① 图片在竖图/横图/超宽图/超长图下的"居中且不超出"；② **PDF 在真机上的高度**——浏览器内置阅读器在受限 iframe 里
+是否正好铺满、内外滚动条是否打架、`overflow:hidden` 会不会裁掉自带工具条；③ 深色主题下"白页 + 深色留白"的观感；
+④ 切换瞬间是否有一帧布局跳动；⑤ lightbox 与新尺寸规则是否互相干扰。
+另：真实 `data-files/` 里的 42 个 `.doc` **全部是密文（PHENC1，已核）**，换密钥后搬进隔离实例读不出来，
+且本批**故意没有解密真实数据** ⇒ "真 .doc 能出正文"是**【推断】**（依据是代码路径 `office-lib.mjs:31-37`），不是实测。
+
+---
+
+### 缺陷修复 · 纯文本扩展名白名单「一处定义 + 各处显式派生」并补齐 11 条（消掉矩阵 A 类 ❌）
+
+**动机**：上一批（本段内「格式支持矩阵」）把一个病查清楚了 —— 同一个「纯文本扩展名」概念
+**全仓至少 7 份各写各的，且已经不一致**：`.markdown` 在 fulltext/rag 有、**preview 没有**；
+`.toml/.htm/.java/.c/.cpp` 在 preview 有、**versions 没有**；`ico` 在后端图片清单里有、前端 `kindOf` 里没有。
+后果就是用户看到的那批「明明是纯文本却打不开」。
+
+| 项 | 内容 |
+|---|---|
+| **一处定义** | 新增 `privhub/plugins/privhub-core/src/file-exts.ts`：基础集合 `TEXT_EXTS` / `IMAGE_EXTS` / `MARKDOWN_EXTS` / `OFFICE_EXTS` 只在这里写一次；判定入口 `kindOfExt` / `isPreviewTextExt` / `isImageExt` / `extOfName` 也在这里 |
+| **显式派生**（**不合并成一个大集合**，因为各用途语义不同） | 预览 `PREVIEW_TEXT_EXTS` = 基础 ∪ 可编辑；**索引/快照** `VERSION_TEXT_EXTS` = 预览 − 配置族 `.env`；**向量化** `RAG_TEXT_EXTS` = 预览 −（`.env` ∪ `.jsonl/.tsv/.ipynb`）；**智能体读写** = `TEXT_EXTS − SENSITIVE_EXTS`（敏感族自己的清单仍在 `files-agent` 内）；**智能体覆盖前快照** = `AGENT_SNAPSHOT_EXTS`（= 可编辑集，与迁前 17 项手写清单只差 `html`，**不扩权**） |
+| **前端** | 浏览器取不到 `plugins/privhub-core/src/`（静态映射只到 `client/`），且 `tests/integrity.mjs` 既有硬断言要求插件 client 模块**只引用同目录文件** ⇒ 前端是「**每侧一份单点定义 + 一致性由断言钉住**」：`explorer-v3/client/utils.js` 的 `EXT`（唯一出处）与 `edit-md/client/index.js` 的 `EDITABLE_TEXT_EXTS`，两者与后端取值**逐项同值**由断言守着（详见 `file-exts.ts` 的「前端怎么办」一节） |
+| **补齐（本批该补的 11 条）** | `tsx` `ps1` `conf` `vue` `go` `rs` `env` `jsonl` `tsv` `markdown` `ipynb` —— 全部进【预览】。矩阵里它们原本一律走 `type=unknown`、界面显示「该文件类型不支持在线查看」 |
+| **同时收敛的 `.ico` 不一致** | 图片清单前后端现为同一份取值：`.ico` 的界面 `kind` 从 `text`（走 iframe、无放大）变成 `image`（走 `img`、放大可用）；`privhub-files` 的 `preview-raw` mime 表与 `IMAGE_EXTS` 加了一条**集合相等**断言（漏一个即红） |
+| **顺手收敛的前端 Office 清单** | `panel.js` 的 `isOfficeFile` 与 `ops.js` 的右键编辑分支原本各写一串 Office 扩展名（含后端并不支持的 `xls`/`ppt`），现统一走 `EXT.OFFICE_KINDS` / `EXT.OFFICE_EXTS` |
+| **无扩展名文件** | **明确不做二进制嗅探**：一律不当文本（不把二进制读成乱码）。理由（无既有触点需要它、每次预览多一次读字节、乱码比"打不开"更坏）写在 `file-exts.ts` 的「故意不做的」一节 |
+| **判不了的一律保持现状** | `.env` / `.jsonl` / `.tsv` / `.ipynb` **本批不进**索引、快照、向量库（迁前也不在）——那属产品判断，不替用户决定；`.eml` / `.avif` / `.tiff` / 音视频本批不做 |
+
+**防漂移断言**：新增 `privhub/tests/file-exts.mjs`（**59 条**，自带隔离实例端口 **3197**、独立测试根 `tests/.testroot-exts/`，
+**不碰 `data/` 与 `data-files/`**），五组：
+
+1. **编译期集合关系**：每条派生式成立 + 三份「逐项同值」活标本（把"本批有意保持的范围"钉死，谁顺手扩权即红）；
+2. **行为口径**：`kindOfExt` / `extOfName` 对 24 组真名字与**无扩展名/隐藏文件/末尾带点**的判定；
+3. **前端与后端逐项一致**：把 `utils.js` **真身**装进 `node:vm` 取 `EXT` 与 `file-exts.ts` 比对（含 `md` 必须留在可编辑集里这条防误伤）；
+4. **反漂移源码扫描**：全仓 116 个源码文件里，凡「≥4 个字面量且 ≥70% 像扩展名」的数组/Set，只允许出现在 **8 个有备案的出处**
+   （3 个是本批成果，5 个是本批扫出、判为出本批范围的 Office/敏感族清单，已加注释指向共享出处并写进报告）；
+   自带**阳性对照**（植入一段手写副本必须被命中）与**阴性对照**（Cordis 服务名数组不得被误报）；
+   另有一组直接读 `privhub-files` 的 `preview-raw` mime 表、断言其**键集 = `IMAGE_EXTS` ∪ {pdf}**（`.ico` 那次前后端不一致的后端一侧防复发）；
+5. **端到端**：为 11 个新扩展名各造真文件走 `/privhub/api/preview` 验「现在真能打开」，并复验无扩展名/`.bin` 仍是不支持、`.ico` 的 kind 已是 image。
+
+同批给 `tests/preview-limits.mjs` 加了第 ⑦ 组（**+3 条**）：**从 `file-exts.ts` 读**补齐清单、逐个造探针走真接口验证
+（清单被拿掉一项也会红），实测 11/11 全部 `type=text`。
+`tests/run-all.mjs` 脚本清单**追加** `file-exts.mjs`（原顺序未动），并让它以 `--import tsx/esm` 启动（它要 `import()` 那份 `.ts`）。
+
+**阴性对照（已做，做完整份还原并核 SHA256）**：把 `explorer-v3/client/utils.js` 的 `EXT` 改回手写副本 ⇒
+**②③ 组变红**（前端 5 份清单与后端比对失败、`.ico` kind 回落到 text）；把 `privhub-files-versions` 的派生改回一份少几项的手写清单 ⇒
+**⓪ 组变红**（索引/快照集逐项同值失败）。原始输出见 `docs/reviews/_negative-control-exts-NC1.txt` / `-NC2.txt`。
+另把版本文件里那份手写副本**故意留在原地时**扫描器也能直接抓到（`[越界] …`），这条同样贴了真实输出。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（0 条失败）；
+九套断言 86 / 12 / 76 / 279 / 16 / 50 / 3 / 27 / **39 → 42**，合计 **588 → 591**（+3 为 `preview-limits` 第 ⑦ 组），
+另有新增静态套件 `file-exts.mjs` **59 条**（run-all 汇总里以独立脚本行打印）。
+基线 `docs/reviews/_baseline-exts.txt`、收工 `docs/reviews/_after-exts.txt`（后附一次同命令复跑 `_after-exts-round2.txt`，两轮断言数字逐行一致）。
+口径说明：基线跑的是**旧代码**（`preview-limits` 还是 39），但 `file-exts.mjs` 在基线跑完前已落盘，故基线文件里也能看到它（当时 56 条，0 失败）。
+
+**纪律留痕**：`frontend/index.html` **一字未动**；不动 manifest / 插槽 / 打包链 / `viewers.js`；无新增界面入口、不改布局；
+`data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 **3.1.1**（条目追加在 3.1.1 段内）。
+报告：`docs/reviews/12-扩展名白名单收敛与补齐.md`。
 
 ---
 

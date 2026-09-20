@@ -24,7 +24,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHash } from 'node:crypto'
 import { join, extname, basename, dirname } from 'node:path'
 import { readdir, stat, mkdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { VectorStore, docKeyOf } from './vec'
 
@@ -40,9 +40,15 @@ const VEC_DB_FILE = join(CORPUS_DIR, 'vectors.db')
 /** 问答检索块上限 */
 const ASK_TOPK = 6
 
-/* 文本类（与预览/全文索引同集 + html） */
-const TEXT_EXTS = new Set(['md', 'markdown', 'txt', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql'])
-const OFFICE_EXTS = new Set(['doc', 'docx', 'xlsx', 'pptx', 'pdf'])
+/* 【扩展名一处定义】本插件不再自己写文本 / Office 清单，改为从 `privhub-core/src/file-exts` **显式派生**：
+ *   · `RAG_TEXT_EXTS` = 可索引的纯文本 −（配置族 `.env` ∪ `RAG_EXCLUDED_EXTS` 的 `.jsonl/.tsv/.ipynb`）；
+ *   · `OFFICE_EXTS`   = 基础集合里的 Office 那一份，与 `privhub-svc-office` 同值。
+ * 为什么"要不要向量化"要单独派生而**不是**直接用可预览那套：「进向量库」比「能打开」代价高得多
+ * （切块 + 远程 embed + 落库），且错的进库会污染问答召回 —— 见 `file-exts.ts` 的「逐用途派生」表。
+ * ⚠ **有意保持迁前范围**：`.jsonl/.tsv/.ipynb/.env` 本批**不进** RAG（迁前也不在），属"不扩权"。 */
+import { RAG_TEXT_EXTS, OFFICE_EXTS as SHARED_OFFICE_EXTS } from '../../privhub-core/src/file-exts'
+const TEXT_EXTS = new Set(RAG_TEXT_EXTS)
+const OFFICE_EXTS = new Set(SHARED_OFFICE_EXTS)
 /** 单文档解析上限（Office 由 svc-office 自身 32MB 限制拦截） */
 const MAX_PARSE_BYTES = 8 * 1024 * 1024
 /** 分块目标（中文场景 ~400-600 token 对应字符量） */
@@ -845,6 +851,15 @@ async function ragSearch(ctx: Context, user: { username: string; role: string },
     const hits = await ctx.search.searchFulltext(q, collection && collection !== 'all' ? { project: collection } : {}, visible)
     for (const h of hits) if (!h.isDir) bmHits.push(h)
   } catch { /* BM25 不可用不影响向量通道 */ }
+  // D9 修复补充：manifest 必须在此处【首次使用之前】取得。
+  // 原先 const manifest 声明在函数尾部（权限裁决那一段），而本段（向量命中反查 = 第一处
+  // 使用者）在它之前执行 —— 同一函数体内 const 存在暂时性死区（TDZ），
+  // 每次调用都会抛 `Cannot access 'manifest' before initialization`，
+  // 表现为检索接口 500、问答接口 400，RAG 入口整体不可用。
+  // 这里只是把「读取 + 赋值」的时机提前到首次使用之前，语义与调用顺序不变：
+  //   · loadManifest 是纯读（失败返回空对象），不依赖本段任何变量；
+  //   · 位置在 collection 校验之后，与原先一样「无权限直接返回、不读盘」的短路顺序得以保留。
+  const manifest = await loadManifest(ctx)
   // 源2：向量（全库 topK×6 → 按 scope 过滤）
   // D9：向量表内的 chunk_id 是 docId 的摘要，需经 manifest 反查回真实 docId。
   const keyToDocId = new Map<string, string>()
@@ -885,7 +900,6 @@ async function ragSearch(ctx: Context, user: { username: string; role: string },
     .sort((a, b) => b.rrf - a.rrf)
     .slice(0, topK)
   // 权限：ACL view 裁决（manifest 校验 + 文件存在）
-  const manifest = await loadManifest(ctx)
   const sources: RagSource[] = []
   for (const { docId } of scored) {
     const doc = manifest[docId]
@@ -1087,10 +1101,43 @@ export function apply(ctx: Context): void {
   ctx.eventBus.declareListen('personal:renamed', 'privhub-svc-rag', '个人空间改名 → 清理旧目录名语料（防私人文档路径残留）')
   ctx.eventBus.declareEmit('audit:logged', 'privhub-svc-rag', '写操作成功审计广播（S1 闭环）')
 
-  /* 摄取串行队列（防并发风暴） */
+  /* 摄取串行队列（防并发风暴）
+   *
+   * ⚠ 错误出口（必读，别改回 queue.then(fn, fn)）：
+   * 旧写法是 `queue = queue.then(fn, fn)`——把【上一个任务的失败】原样当作
+   * 【下一个任务的执行函数】再跑一遍，且链尾是裸 Promise：任何一次摄取抛出异常，
+   * 若此后没有新事件进来接手，链尾就变成「无人处理的 rejection」。
+   * Node 24 默认 --unhandled-rejections=throw ⇒ 整进程退出。
+   * 也就是说：一次上传解析失败，可能把整个服务打死（全站不可用），
+   * 而日志里什么都没有（实测该链尾不做任何记录）。
+   *
+   * 现在的语义：
+   *   ① 队列自身吞掉异常并落日志，链永不 reject —— 后续事件照常处理（一次失败只损失一条语料）；
+   *   ② 不再把失败当函数执行（旧写法会让同一异常反复重放，且丢掉本次等待的处理逻辑）；
+   *   ③ 失败计数暴露给 /privhub/api/rag/status，供运维看见「有文档没进语料」。
+   */
   let queue: Promise<unknown> = Promise.resolve()
+  let queueErrors = 0
+  /* 测试专用故障注入（默认不生效）：让「一次摄取抛错后服务是否仍存活」成为一条
+   * 可复跑的常驻断言（见 tests/rag-resilience.mjs）。
+   * 生效条件有两个，缺一不可：① 运行在隔离测试根（PRIVHUB_TEST_ROOT 存在）；
+   * ② 数据目录下出现一次性标记文件 data/rag-test-inject-queue-error（由测试写入）。
+   * 生产环境没有 PRIVHUB_TEST_ROOT，本函数恒返回 null —— 只是多一次 existsSync 判定。 */
+  const TEST_INJECT_FILE = join(rootDir, 'data', 'rag-test-inject-queue-error')
+  const takeTestInject = (): Error | null => {
+    if (!process.env.PRIVHUB_TEST_ROOT) return null
+    if (!existsSync(TEST_INJECT_FILE)) return null
+    let msg = '测试注入的摄取失败'
+    try { msg = readFileSync(TEST_INJECT_FILE, 'utf8').trim() || msg } catch { /* 用默认文案 */ }
+    try { unlinkSync(TEST_INJECT_FILE) } catch { /* 一次性：删不掉就下次再来 */ }
+    return new Error(msg)
+  }
   const enqueue = (fn: () => Promise<void>): void => {
-    queue = queue.then(fn, fn)
+    const inject = takeTestInject()
+    queue = queue.then(inject ? () => Promise.reject(inject) : fn).catch((e: unknown) => {
+      queueErrors++
+      console.error('[rag] 语料摄取失败（队列继续，不影响服务）: ' + (e instanceof Error ? e.message : String(e)))
+    })
   }
 
   /* 文件事件订阅（跳过 .agents 专属空间） */
@@ -1163,6 +1210,7 @@ export function apply(ctx: Context): void {
         merged: docs.filter((d) => d.mergedInto !== null).length,
       },
       pending,
+      ingestQueue: { errors: queueErrors },
     }
   }
 

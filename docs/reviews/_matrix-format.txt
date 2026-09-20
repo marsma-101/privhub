@@ -1,0 +1,145 @@
+
+# 格式支持矩阵（真文件实测 · 隔离实例 127.0.0.1:3193 · 根 G:\program\dsh-SQL\privhub\tests\.matrixroot）
+# 样本数 63；样本文件本身不落进仓库，由本脚本现场生成
+# kindOf() 与前端状态两列跑的是前端**真身**（utils.js / content.js 装进 vm，api 桩打真 HTTP）
+
+| # | 文件 | 扩展名 | kindOf() | /preview type | /office/read | office 提取量 | 提取正文开头 | /office-preview | /preview-raw | /office2/raw | 前端状态 | 前端正文 | 前端渲染分支 | 判定 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | gen-docx.docx | .docx | office | unknown | ok kind=docx | text 47 字 | __PrivHub 样本 · 中文标题__ 这是用于格式支持矩阵实测的 doc | ok | 200 application/octet-stream 8624B | 200 8624B | ready |  | office → v3-md 文本 | ✅能开 |
+| 2 | gen-xlsx.xlsx | .xlsx | office | unknown | ok kind=xlsx | sheets 1 |  | ok | 200 application/octet-stream 6493B | 200 6493B | ready |  | office → v3-md 文本 | ✅能开 |
+| 3 | gen-pptx.pptx | .pptx | office | unknown | ok kind=pptx | slides 1 |  | ok | 200 application/octet-stream 44752B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | office → v3-md 文本 | ⚠️降级（只出提取文本，无排版） |
+| 4 | gen-pdf.pdf | .pdf | pdf | pdf | fail: 解析失败: bad XRef entry |  |  | fail: 不支持的 Office 类型: .pdf | 200 application/pdf 1333B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | iframe.v3-pdf（本轮起铺满） | ✅能开 |
+| 5 | gen-zip.zip | .zip | text | unknown | fail: 不支持的 Office 类型: .zip |  |  | fail: 不支持的 Office 类型: .zip | 200 application/octet-stream 341B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 6 | hand-odt.odt | .odt | text | unknown | fail: 不支持的 Office 类型: .odt |  |  | fail: 不支持的 Office 类型: .odt | 200 application/octet-stream 528B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 7 | hand-ods.ods | .ods | text | unknown | fail: 不支持的 Office 类型: .ods |  |  | fail: 不支持的 Office 类型: .ods | 200 application/octet-stream 369B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 8 | hand-book.epub | .epub | text | unknown | fail: 不支持的 Office 类型: .epub |  |  | fail: 不支持的 Office 类型: .epub | 200 application/octet-stream 844B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 9 | real-mammoth.docx | .docx | office | unknown | ok kind=docx | text 25 字 | Walking on imported air  | ok | 200 application/octet-stream 12773B | 200 12773B | ready |  | office → v3-md 文本 | ✅能开 |
+| 10 | real-pdfparse.pdf | .pdf | pdf | pdf | ok kind=pdf | text 20213 字 |  Turk J Med Sci 2009; 39 (3): 361-365 © | fail: 不支持的 Office 类型: .pdf | 200 application/pdf 80953B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | iframe.v3-pdf（本轮起铺满） | ✅能开 |
+| 11 | real-jpegexif.tiff | .tiff | text | unknown | fail: 不支持的 Office 类型: .tiff |  |  | fail: 不支持的 Office 类型: .tiff | 200 application/octet-stream 6925B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 12 | hand-a.txt | .txt | text | text | fail: 不支持的 Office 类型: .txt |  |  | fail: 不支持的 Office 类型: .txt | 200 application/octet-stream 38B | fail: 仅支持 docx/xlsx 原始字节 | ready | 18 字 | v3-text（纯文本只读） | ✅能开 |
+| 13 | hand-b.md | .md | md | text | fail: 不支持的 Office 类型: .md |  |  | fail: 不支持的 Office 类型: .md | 200 application/octet-stream 37B | fail: 仅支持 docx/xlsx 原始字节 | ready | 21 字 | v3-md（Markdown 渲染） | ✅能开 |
+| 14 | hand-c.csv | .csv | text | text | fail: 不支持的 Office 类型: .csv |  |  | fail: 不支持的 Office 类型: .csv | 200 application/octet-stream 29B | fail: 仅支持 docx/xlsx 原始字节 | ready | 15 字 | v3-text（纯文本只读） | ✅能开 |
+| 15 | hand-d.tsv | .tsv | text | unknown | fail: 不支持的 Office 类型: .tsv |  |  | fail: 不支持的 Office 类型: .tsv | 200 application/octet-stream 23B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 16 | hand-e.json | .json | text | text | fail: 不支持的 Office 类型: .json |  |  | fail: 不支持的 Office 类型: .json | 200 application/octet-stream 31B | fail: 仅支持 docx/xlsx 原始字节 | ready | 19 字 | v3-text（纯文本只读） | ✅能开 |
+| 17 | hand-f.xml | .xml | text | text | fail: 不支持的 Office 类型: .xml |  |  | fail: 不支持的 Office 类型: .xml | 200 application/octet-stream 64B | fail: 仅支持 docx/xlsx 原始字节 | ready | 54 字 | v3-text（纯文本只读） | ✅能开 |
+| 18 | hand-g.html | .html | text | text | fail: 不支持的 Office 类型: .html |  |  | fail: 不支持的 Office 类型: .html | 200 application/octet-stream 86B | fail: 仅支持 docx/xlsx 原始字节 | ready | 82 字 | v3-text（纯文本只读） | ⚠️降级（出源码不渲染） |
+| 19 | hand-h.svg | .svg | image | image | fail: 不支持的 Office 类型: .svg |  |  | fail: 不支持的 Office 类型: .svg | 200 image/svg+xml 155B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 20 | hand-i.png | .png | image | image | fail: 不支持的 Office 类型: .png |  |  | fail: 不支持的 Office 类型: .png | 200 image/png 67B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 21 | hand-j.jpg | .jpg | image | image | fail: 不支持的 Office 类型: .jpg |  |  | fail: 不支持的 Office 类型: .jpg | 200 image/jpeg 326B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 22 | hand-k.gif | .gif | image | image | fail: 不支持的 Office 类型: .gif |  |  | fail: 不支持的 Office 类型: .gif | 200 image/gif 43B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 23 | hand-l.bmp | .bmp | image | image | fail: 不支持的 Office 类型: .bmp |  |  | fail: 不支持的 Office 类型: .bmp | 200 image/bmp 58B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 24 | hand-m.webp | .webp | image | image | fail: 不支持的 Office 类型: .webp |  |  | fail: 不支持的 Office 类型: .webp | 200 image/webp 36B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | img.v3-img（本轮起铺满） | ✅能开 |
+| 25 | hand-n.ico | .ico | text | image | fail: 不支持的 Office 类型: .ico |  |  | fail: 不支持的 Office 类型: .ico | 200 image/x-icon 48B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | iframe.v3-pdf（本轮起铺满） | ✅能开 |
+| 26 | hand-o.tiff | .tiff | text | unknown | fail: 不支持的 Office 类型: .tiff |  |  | fail: 不支持的 Office 类型: .tiff | 200 application/octet-stream 72B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 27 | hand-p.heic | .heic | text | unknown | fail: 不支持的 Office 类型: .heic |  |  | fail: 不支持的 Office 类型: .heic | 200 application/octet-stream 80B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 28 | hand-q.avif | .avif | text | unknown | fail: 不支持的 Office 类型: .avif |  |  | fail: 不支持的 Office 类型: .avif | 200 application/octet-stream 88B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 29 | hand-r.rtf | .rtf | text | unknown | fail: 不支持的 Office 类型: .rtf |  |  | fail: 不支持的 Office 类型: .rtf | 200 application/octet-stream 66B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 30 | hand-rtf伪装.doc | .doc | office | unknown | ok kind=doc | text 42 字 | [无法提取 DOC 文本]（请用 Word/WPS 打开后另存为 docx 再上 | fail: 不支持的 Office 类型: .doc | 200 application/octet-stream 43B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | office → v3-md 文本 | ⚠️降级（解析不出正文，界面显示兜底提示） |
+| 31 | hand-s.doc | .doc | office | unknown | ok kind=doc | text 42 字 | [无法提取 DOC 文本]（请用 Word/WPS 打开后另存为 docx 再上 | fail: 不支持的 Office 类型: .doc | 200 application/octet-stream 512B | fail: 仅支持 docx/xlsx 原始字节 | ready |  | office → v3-md 文本 | ⚠️降级（解析不出正文，界面显示兜底提示） |
+| 32 | hand-t.xls | .xls | office | unknown | fail: 不支持的 Office 类型: .xls |  |  | fail: 解析失败: Unsupported ZIP encryption | 200 application/octet-stream 512B | fail: 仅支持 docx/xlsx 原始字节 | error（不支持的 Office 类型: .xls） |  | 错误提示行 | ❌打不开 |
+| 33 | hand-u.ppt | .ppt | office | unknown | fail: 不支持的 Office 类型: .ppt |  |  | fail: 不支持的 Office 类型: .ppt | 200 application/octet-stream 512B | fail: 仅支持 docx/xlsx 原始字节 | error（不支持的 Office 类型: .ppt） |  | 错误提示行 | ❌打不开 |
+| 34 | hand-v.mp3 | .mp3 | text | unknown | fail: 不支持的 Office 类型: .mp3 |  |  | fail: 不支持的 Office 类型: .mp3 | 200 application/octet-stream 42B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 35 | hand-w.mp4 | .mp4 | text | unknown | fail: 不支持的 Office 类型: .mp4 |  |  | fail: 不支持的 Office 类型: .mp4 | 200 application/octet-stream 76B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 36 | hand-x.wav | .wav | text | unknown | fail: 不支持的 Office 类型: .wav |  |  | fail: 不支持的 Office 类型: .wav | 200 application/octet-stream 48B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 37 | hand-y.eml | .eml | text | unknown | fail: 不支持的 Office 类型: .eml |  |  | fail: 不支持的 Office 类型: .eml | 200 application/octet-stream 73B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 38 | hand-z.msg | .msg | text | unknown | fail: 不支持的 Office 类型: .msg |  |  | fail: 不支持的 Office 类型: .msg | 200 application/octet-stream 512B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 39 | hand-aa.ipynb | .ipynb | text | unknown | fail: 不支持的 Office 类型: .ipynb |  |  | fail: 不支持的 Office 类型: .ipynb | 200 application/octet-stream 59B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 40 | hand-ab.log | .log | text | text | fail: 不支持的 Office 类型: .log |  |  | fail: 不支持的 Office 类型: .log | 200 application/octet-stream 35B | fail: 仅支持 docx/xlsx 原始字节 | ready | 27 字 | v3-text（纯文本只读） | ✅能开 |
+| 41 | hand-ac.yaml | .yaml | text | text | fail: 不支持的 Office 类型: .yaml |  |  | fail: 不支持的 Office 类型: .yaml | 200 application/octet-stream 25B | fail: 仅支持 docx/xlsx 原始字节 | ready | 13 字 | v3-text（纯文本只读） | ✅能开 |
+| 42 | hand-ad.yml | .yml | text | text | fail: 不支持的 Office 类型: .yml |  |  | fail: 不支持的 Office 类型: .yml | 200 application/octet-stream 11B | fail: 仅支持 docx/xlsx 原始字节 | ready | 11 字 | v3-text（纯文本只读） | ✅能开 |
+| 43 | hand-ae.toml | .toml | text | text | fail: 不支持的 Office 类型: .toml |  |  | fail: 不支持的 Office 类型: .toml | 200 application/octet-stream 18B | fail: 仅支持 docx/xlsx 原始字节 | ready | 12 字 | v3-text（纯文本只读） | ✅能开 |
+| 44 | hand-af.ini | .ini | text | text | fail: 不支持的 Office 类型: .ini |  |  | fail: 不支持的 Office 类型: .ini | 200 application/octet-stream 14B | fail: 仅支持 docx/xlsx 原始字节 | ready | 8 字 | v3-text（纯文本只读） | ✅能开 |
+| 45 | hand-ag.sql | .sql | text | text | fail: 不支持的 Office 类型: .sql |  |  | fail: 不支持的 Office 类型: .sql | 200 application/octet-stream 10B | fail: 仅支持 docx/xlsx 原始字节 | ready | 10 字 | v3-text（纯文本只读） | ✅能开 |
+| 46 | hand-ah.py | .py | text | text | fail: 不支持的 Office 类型: .py |  |  | fail: 不支持的 Office 类型: .py | 200 application/octet-stream 15B | fail: 仅支持 docx/xlsx 原始字节 | ready | 15 字 | v3-text（纯文本只读） | ✅能开 |
+| 47 | hand-ai.ts | .ts | text | text | fail: 不支持的 Office 类型: .ts |  |  | fail: 不支持的 Office 类型: .ts | 200 application/octet-stream 37B | fail: 仅支持 docx/xlsx 原始字节 | ready | 37 字 | v3-text（纯文本只读） | ✅能开 |
+| 48 | hand-aj.tsx | .tsx | text | unknown | fail: 不支持的 Office 类型: .tsx |  |  | fail: 不支持的 Office 类型: .tsx | 200 application/octet-stream 28B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 49 | hand-ak.js | .js | text | text | fail: 不支持的 Office 类型: .js |  |  | fail: 不支持的 Office 类型: .js | 200 application/octet-stream 19B | fail: 仅支持 docx/xlsx 原始字节 | ready | 19 字 | v3-text（纯文本只读） | ✅能开 |
+| 50 | hand-al.ps1 | .ps1 | text | unknown | fail: 不支持的 Office 类型: .ps1 |  |  | fail: 不支持的 Office 类型: .ps1 | 200 application/octet-stream 18B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 51 | hand-am.sh | .sh | text | text | fail: 不支持的 Office 类型: .sh |  |  | fail: 不支持的 Office 类型: .sh | 200 application/octet-stream 8B | fail: 仅支持 docx/xlsx 原始字节 | ready | 8 字 | v3-text（纯文本只读） | ✅能开 |
+| 52 | hand-an.bat | .bat | text | text | fail: 不支持的 Office 类型: .bat |  |  | fail: 不支持的 Office 类型: .bat | 200 application/octet-stream 20B | fail: 仅支持 docx/xlsx 原始字节 | ready | 20 字 | v3-text（纯文本只读） | ✅能开 |
+| 53 | hand-ao.conf | .conf | text | unknown | fail: 不支持的 Office 类型: .conf |  |  | fail: 不支持的 Office 类型: .conf | 200 application/octet-stream 12B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 54 | hand-ap.vue | .vue | text | unknown | fail: 不支持的 Office 类型: .vue |  |  | fail: 不支持的 Office 类型: .vue | 200 application/octet-stream 28B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 55 | hand-aq.go | .go | text | unknown | fail: 不支持的 Office 类型: .go |  |  | fail: 不支持的 Office 类型: .go | 200 application/octet-stream 13B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 56 | hand-ar.rs | .rs | text | unknown | fail: 不支持的 Office 类型: .rs |  |  | fail: 不支持的 Office 类型: .rs | 200 application/octet-stream 13B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 57 | hand-as.env | .env | text | unknown | fail: 不支持的 Office 类型: .env |  |  | fail: 不支持的 Office 类型: .env | 200 application/octet-stream 10B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 58 | hand-at.7z | .7z | text | unknown | fail: 不支持的 Office 类型: .7z |  |  | fail: 不支持的 Office 类型: .7z | 200 application/octet-stream 38B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 59 | hand-au.rar | .rar | text | unknown | fail: 不支持的 Office 类型: .rar |  |  | fail: 不支持的 Office 类型: .rar | 200 application/octet-stream 39B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 60 | hand-av.jsonl | .jsonl | text | unknown | fail: 不支持的 Office 类型: .jsonl |  |  | fail: 不支持的 Office 类型: .jsonl | 200 application/octet-stream 16B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 61 | hand-aw.markdown | .markdown | text | unknown | fail: 不支持的 Office 类型: .markdown |  |  | fail: 不支持的 Office 类型: .markdown | 200 application/octet-stream 31B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 62 | hand-ax | .hand-ax | text | unknown | fail: 不支持的 Office 类型: . |  |  | fail: 不支持的 Office 类型: . | 200 application/octet-stream 28B | fail: 仅支持 docx/xlsx 原始字节 | error（该文件类型不支持在线查看） |  | 错误提示行 | ❌打不开 |
+| 63 | hand-ay.txt | .txt | text | text | fail: 不支持的 Office 类型: .txt |  |  | fail: 不支持的 Office 类型: .txt | 200 application/octet-stream 34B | fail: 仅支持 docx/xlsx 原始字节 | ready | 14 字 | v3-text（纯文本只读） | ✅能开 |
+
+## 判定分布
+- ⚠️降级（出源码不渲染）（1）：.html
+- ⚠️降级（只出提取文本，无排版）（1）：.pptx
+- ⚠️降级（解析不出正文，界面显示兜底提示）（2）：.doc .doc
+- ✅能开（29）：.docx .xlsx .pdf .docx .pdf .txt .md .csv .json .xml .svg .png .jpg .gif .bmp .webp .ico .log .yaml .yml .toml .ini .sql .py .ts .js .sh .bat .txt
+- ❌打不开（30）：.zip .odt .ods .epub .tiff .tsv .tiff .heic .avif .rtf .xls .ppt .mp3 .mp4 .wav .eml .msg .ipynb .tsx .ps1 .conf .vue .go .rs .env .7z .rar .jsonl .markdown .hand-ax
+
+## 逐条备注（样本怎么造的 / 为什么这么判）
+- gen-docx.docx：docx 库现场生成
+- gen-xlsx.xlsx：exceljs 现场生成
+- gen-pptx.pptx：pptxgenjs 现场生成
+- gen-pdf.pdf：pdfkit 现场生成（纯 ASCII：pdfkit 未嵌中文字体）
+- gen-zip.zip：jszip 现场生成
+- hand-odt.odt：zip 容器近似样本（未过 LibreOffice 校验）
+- hand-ods.ods：zip 容器近似样本
+- hand-book.epub：zip 容器近似样本（未过阅读器校验）
+- real-mammoth.docx：真身样本（mammoth 测试件）
+- real-pdfparse.pdf：真身样本（pdf-parse 测试件）
+- real-jpegexif.tiff：真身样本（jpeg-exif 测试件）：真正的 TIFF 位图
+- hand-g.html：HTML：前端按**源码**显示（不渲染）
+- hand-h.svg：SVG：可渲染，但响应头带 CSP sandbox（禁脚本）
+- hand-m.webp：webp 头合法但像素数据为空（浏览器可能画不出来）
+- hand-o.tiff：只有 TIFF 头、无 IFD 的伪样本（真样本见 real-jpegexif.tiff）
+- hand-rtf伪装.doc：**用户真实数据里就有这种文件**（data-files 里名为「RTF伪装.doc」）
+- hand-s.doc：OLE2 头 + 无有效 WordDocument 流
+- hand-t.xls：OLE2 头 + 无有效工作簿流
+- hand-u.ppt：OLE2 头 + 无有效演示文稿流
+- hand-z.msg：OLE2 头（Outlook .msg 同族容器）
+- hand-aa.ipynb：其实是 JSON
+- hand-aj.tsx：**不在**前端的可读文本清单里
+- hand-al.ps1：**不在**前端的可读文本清单里
+- hand-ao.conf：**不在**前端的可读文本清单里
+- hand-ap.vue：**不在**前端的可读文本清单里
+- hand-aq.go：**不在**前端的可读文本清单里
+- hand-ar.rs：**不在**前端的可读文本清单里
+- hand-as.env：**不在**前端的可读文本清单里
+
+## 打不开（❌）清单
+- .zip — 该文件类型不支持在线查看
+- .odt — 该文件类型不支持在线查看
+- .ods — 该文件类型不支持在线查看
+- .epub — 该文件类型不支持在线查看
+- .tiff — 该文件类型不支持在线查看
+- .tsv — 该文件类型不支持在线查看
+- .tiff — 该文件类型不支持在线查看
+- .heic — 该文件类型不支持在线查看
+- .avif — 该文件类型不支持在线查看
+- .rtf — 该文件类型不支持在线查看
+- .xls — 不支持的 Office 类型: .xls
+- .ppt — 不支持的 Office 类型: .ppt
+- .mp3 — 该文件类型不支持在线查看
+- .mp4 — 该文件类型不支持在线查看
+- .wav — 该文件类型不支持在线查看
+- .eml — 该文件类型不支持在线查看
+- .msg — 该文件类型不支持在线查看
+- .ipynb — 该文件类型不支持在线查看
+- .tsx — 该文件类型不支持在线查看
+- .ps1 — 该文件类型不支持在线查看
+- .conf — 该文件类型不支持在线查看
+- .vue — 该文件类型不支持在线查看
+- .go — 该文件类型不支持在线查看
+- .rs — 该文件类型不支持在线查看
+- .env — 该文件类型不支持在线查看
+- .7z — 该文件类型不支持在线查看
+- .rar — 该文件类型不支持在线查看
+- .jsonl — 该文件类型不支持在线查看
+- .markdown — 该文件类型不支持在线查看
+- .hand-ax — 该文件类型不支持在线查看
+
+## 降级（⚠️）清单
+- .pptx — ⚠️降级（只出提取文本，无排版）
+- .html — ⚠️降级（出源码不渲染）
+- .doc — ⚠️降级（解析不出正文，界面显示兜底提示）
+- .doc — ⚠️降级（解析不出正文，界面显示兜底提示）

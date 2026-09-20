@@ -16,6 +16,13 @@ import { existsSync } from 'node:fs'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
+/* 【扩展名一处定义】本插件不再自己写文本扩展名清单，改为从 `privhub-core/src/file-exts` **显式派生**：
+ * 派生式 = `VERSION_TEXT_EXTS`（= 可预览的纯文本 − 配置族 `.env`）。
+ * 「要不要存版本快照」与「能不能预览」不是同一个问题，故是**派生**而不是共用同一个集合；
+ * 取值范围与 `privhub-files-fulltext` 一致（索引与快照要覆盖的东西本来就该一样）。
+ * 迁前这里是一份手写数组，比 core 预览清单**少了** `.toml/.htm/.java/.c/.cpp`
+ * （实测不一致，见 `docs/reviews/11-格式支持矩阵与铺满修复.md` §3.3）。 */
+import { VERSION_TEXT_EXTS } from '../../privhub-core/src/file-exts'
 
 export const name = 'privhub-files-versions'
 export const inject = ['storage', 'privhub']
@@ -32,7 +39,8 @@ const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const FILE = join(rootDir, 'data', 'versions.json')
 const MAX_PER_FILE = 20
 
-const TEXT_EXTS = new Set(['txt', 'md', 'json', 'js', 'ts', 'css', 'html', 'xml', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql'])
+/** 允许创建版本快照的文本扩展名（**派生**，不手写）。 */
+const TEXT_EXTS = new Set(VERSION_TEXT_EXTS)
 
 /** S7：快照库随 storage 加密（密文/明文自动识别，旧明文文件无缝兼容） */
 async function load(ctx: Context): Promise<Store> {

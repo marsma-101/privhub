@@ -10,13 +10,14 @@
  *   store.js     共享状态（reactive）
  *   content.js   内容加载 + Markdown / Office→Markdown 渲染
  *   tabs.js      文件标签页（持久化 / 打开 / 激活 / 关闭）
+ *   viewers.js   内容区 viewer 契约（注册表 + 挂载锚点 + 挂/卸生命周期，第二步 a）
  *   ops.js       ⋯ 菜单 + 文件操作（改名/复制/移动/删除/下载/编辑/新建）
  *   tree.js      左栏目录树（tree slot）
  *   panel.js     中栏内容区（panel slot）
  *   detail.js    右侧详情面板（preview slot）
  *   fontzoom.js  顶栏整体缩放（user-area slot）
  *
- * 依赖方向严格单向：deps → utils → store → {content, tabs} → ops → tree → panel → 本文件。
+ * 依赖方向严格单向：deps → utils → store → viewers → {content, tabs} → ops → tree → panel → 本文件。
  * 新增功能时先判断它属于哪个模块；不要在这里堆逻辑。
  *
  * @module privhub-files-explorer-v3/client

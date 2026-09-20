@@ -131,9 +131,42 @@ function installFileLogger(root: string): void {
   } catch { /* 无法建日志目录（如只读磁盘）：退化为纯控制台输出 */ }
 }
 
+/**
+ * O3 补齐：进程级兜底处理器（unhandledRejection / uncaughtException）。
+ *
+ * 为什么必须有：全仓此前【零命中】这两个处理器，而 Node 24 的默认策略是
+ * 「未处理的 rejection 直接当致命异常抛出」⇒ 任何一处忘接的 Promise
+ * 都会让整个 PrivHub 静默死掉，且崩溃现场不进日志（logger 只挂了 console）。
+ * 这里把它们变成「有记录、只记一次」，让「服务为什么没了」有据可查。
+ *
+ * 注意：本函数【不做退出决策】，仅记录；重复故障不重复刷盘（故障风暴时保护日志）。
+ */
+function installProcessGuards(): void {
+  let crashing = false
+  process.on('unhandledRejection', (reason: unknown) => {
+    if (crashing) return
+    crashing = true
+    console.error('[guard] 未处理的 Promise 拒绝（unhandledRejection），服务继续运行:', reason)
+    setTimeout(() => { crashing = false }, 1000)
+  })
+  process.on('uncaughtException', (err: unknown) => {
+    if (crashing) return
+    crashing = true
+    console.error('[guard] 未捕获异常（uncaughtException），服务继续运行:', err)
+    setTimeout(() => { crashing = false }, 1000)
+  })
+}
+
 async function main(): Promise<void> {
   const port = argPort()
+  /* 进程级兜底（O3 补齐）：紧随日志安装之后立即生效，此后任何异步故障都有日志可查。
+   * 背景：Node 24 默认 --unhandled-rejections=throw，一个没人接手的 Promise 会被
+   * 升级成 uncaughtException ⇒ 进程直接死；而 installFileLogger 只把 console 接到
+   * 日志文件，崩溃现场（含堆栈）不会自己进去 ⇒ 事后查不出「服务为什么没了」。
+   * 这里只做两件事：① 把现场完整写进 data/logs 日志；② 同一次故障只记一次不刷屏。
+   * 不在此处 process.exit：退出策略留给运维（进程守护 / 重启），擅自退出会掩盖真实原因。 */
   installFileLogger(rootDir)
+  installProcessGuards()
   const ctx = new Context()
 
   /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */

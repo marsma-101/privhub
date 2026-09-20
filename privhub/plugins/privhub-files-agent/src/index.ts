@@ -26,6 +26,12 @@ import { join, extname } from 'node:path'
 import { stat, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tokenOf } from '../../privhub-core/src/index'
+/* 【扩展名一处定义】本插件的文本清单改为从 `privhub-core/src/file-exts` **显式派生**：
+ * 派生式 = `TEXT_EXTS − SENSITIVE_EXTS`（能力与预览同等，但**敏感文件豁免**）。
+ * 为什么是"减"而不是另写一份：迁前这份是手写数组，且比 core 预览清单少了 `.java/.c/.cpp/.toml/.htm`，
+ * 又比 `SENSITIVE_EXTS` 多了 `.env` —— 两处都是"各写各的"的直接后果。
+ * 语义不变：`TEXT_EXT` 只在两处用于分流（写覆盖时"存快照 还是 落 .bak 备份"），不减任何既有能力。 */
+import { TEXT_EXTS as SHARED_TEXT_EXTS, SENSITIVE_EXTS_BARE } from '../../privhub-core/src/file-exts'
 import { WriteGate, Idempotency, QuotaLedger, RateLimiter, PathLocks, versionSnapshot, startFlusher, restoreRateBuckets, fileEtag, sha256 as sha256m, M2Config, M2_DEFAULTS } from './m2'
 
 export const name = 'privhub-files-agent'
@@ -39,7 +45,8 @@ const KEYS_FILE = join(rootDir, 'data', 'agent-keys.json')
 const KEY_PREFIX = 'pha_'
 const KEY_BYTES = 16
 const SENSITIVE_EXTS = ['.key', '.pem', '.p12', '.pfx', '.crt', '.env', '.git-credentials', '.htpasswd']
-const TEXT_EXT = new Set(['txt', 'md', 'json', 'js', 'ts', 'html', 'htm', 'css', 'xml', 'yaml', 'yml', 'csv', 'log', 'py', 'java', 'c', 'cpp', 'sh', 'bat', 'ini', 'toml', 'sql'])
+/** 允许按文本处理的扩展名：由共享基础集合**减去**上面的敏感后缀（派生式见文件头 import 处的注释）。 */
+const TEXT_EXT = new Set(SHARED_TEXT_EXTS.filter((e) => !SENSITIVE_EXTS_BARE.includes(e)))
 const LIMITS = {
   readTextDefault: 1024 * 1024,
   readTextMax: 4 * 1024 * 1024,

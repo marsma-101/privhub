@@ -11,6 +11,9 @@ import { join, extname } from 'node:path'
 import { readFile, writeFile, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
+/* 【扩展名一处定义】快照清单取自 `privhub-core/src/file-exts`（一处定义 + 显式派生），
+ * 本文件不再手写任何扩展名字面量。 */
+import { AGENT_SNAPSHOT_EXTS } from '../../privhub-core/src/file-exts'
 
 /* ============ 配置 ============ */
 
@@ -299,7 +302,13 @@ export class RateLimiter {
 
 /* ============ 版本快照（复用 privhub-files-versions 数据格式 data/versions.json） ============ */
 
-const SNAPSHOT_EXTS = new Set(['txt', 'md', 'json', 'js', 'ts', 'css', 'html', 'xml', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql'])
+/* 【扩展名一处定义】不再手写：取自共享派生集合 `AGENT_SNAPSHOT_EXTS`，与迁前那份 17 项手写清单
+ * **逐项同值**（迁前清单里 `md`/`html` 也在；`AGENT_SNAPSHOT_EXTS` 把 `md` 加回、
+ * `html` 与 `toml/java/c/cpp/htm` 按"不扩权"留在不做快照那一侧，行为一字不变）。
+ * 为什么这份与 `privhub-files-versions` 不同：智能体的覆盖写在**沙箱**里，非快照类型走 `.bak-` 备份，
+ * 这是既有的分级策略，本批只把清单"归一"，不改分级。
+ * 要改范围，只改 `privhub-core/src/file-exts.ts` 的派生式，不要在这里写第二份清单。 */
+const SNAPSHOT_EXTS = new Set(AGENT_SNAPSHOT_EXTS)
 const VERSIONS_FILE = 'data/versions.json'
 
 interface Version { at: number; by: string; content: string }

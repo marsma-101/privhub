@@ -8,7 +8,7 @@
  */
 
 import { api, nav, bus, AUTH } from './deps.js'
-import { tabKey, isEditableText, relPath, uiZoom } from './utils.js'
+import { tabKey, isEditableText, relPath, uiZoom, EXT } from './utils.js'
 import { store } from './store.js'
 import { persistTabs, openTab, activateTab } from './tabs.js'
 import { loadContent } from './content.js'
@@ -259,7 +259,11 @@ function doEdit() {
   if (!m || m.entry.isDir) return
   const rel = relPath(m.project, m.dirPath, m.entry.name)
   const ext = (m.entry.name.split('.').pop() || '').toLowerCase()
-  if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pdf'].includes(ext)) {
+  /* 【扩展名一处定义】这里原本手写一串 Office 扩展名 —— 现取自
+   * `utils.js` 的 `EXT.OFFICE_EXTS`（= `file-exts.ts` 的 Office 基础集合，**含 pdf**）。
+   * 迁前那份手写清单比后端多出 `xls`/`ppt`（后端 `/office/read` 对它们报"不支持的 Office 类型"），
+   * 属于同类漂移；现与后端同源。 */
+  if (EXT.OFFICE_EXTS.includes(ext)) {
     if (ext === 'doc') { void convertDocToDocx({ entry: m.entry, project: m.project, dirPath: m.dirPath || '' }); return }
     bus.emit('office:edit', { entry: m.entry, project: m.project, path: rel })
     return

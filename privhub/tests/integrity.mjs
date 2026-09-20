@@ -349,7 +349,7 @@ const MODULAR_PLUGINS = [
   {
     dir: 'privhub-files-explorer-v3',
     min: 10,
-    need: ['deps', 'utils', 'styles', 'store', 'treecache', 'content', 'tabs', 'ops', 'tree', 'panel', 'detail', 'fontzoom'],
+    need: ['deps', 'utils', 'styles', 'store', 'treecache', 'content', 'tabs', 'viewers', 'ops', 'tree', 'panel', 'detail', 'fontzoom'],
   },
   {
     dir: 'privhub-admin-console',

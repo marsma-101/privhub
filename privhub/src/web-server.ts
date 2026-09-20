@@ -298,6 +298,11 @@ export class WebServerService extends Service {
           if (handler) return await handler(req, res)
           await self.serveStatic(url.pathname, req, res)
         } catch (e) {
+          /* O3/07 修复：此处是全站【唯一】兜底 catch —— 此前它把异常整个吞掉
+           * （e 未被使用、无任何日志），表现为「接口 500 但日志里查不到原因」。
+           * 现在把异常写进系统日志（console 已被 main.ts 的 installFileLogger
+           * 接到 data/logs/privhub-YYYY-MM-DD.log），响应行为保持原样：仍是 500。 */
+          console.error('[webServer] 路由处理异常 ' + req.method + ' ' + (req.url ?? '') + ':', e)
           try { res.writeHead(500); res.end('internal server error') } catch { /* 忽略 */ }
         }
       })()

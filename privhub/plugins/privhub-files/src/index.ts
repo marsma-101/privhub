@@ -64,7 +64,13 @@ export function apply(ctx: Context): void {
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     const r = await svc.readFileForPreview(project, path)
     if (!r) return json(res, 404, { ok: false, error: '无法预览' })
-    json(res, 200, { ok: true, type: r.type, data: r.data })
+    /* 体积超限（type='too-large'）时把 size / limit 如实透给前端，
+     * 供界面说清「多大、超出上限多少」并指向「下载后查看」。
+     * 其余类型没有这两个字段，响应形状除新增可选字段外与原先一致。 */
+    const body: { ok: true; type: string; data: string; size?: number; limit?: number } = { ok: true, type: r.type, data: r.data }
+    if (typeof r.size === 'number') body.size = r.size
+    if (typeof r.limit === 'number') body.limit = r.limit
+    json(res, 200, body)
   }, 'preview')
 
   /* 预览原始字节流（供 img/iframe 直接加载图片与 PDF） */
@@ -81,6 +87,10 @@ export function apply(ctx: Context): void {
     const s = await stat(target)
     if (s.isDirectory()) { res.writeHead(404); res.end('not found'); return }
     const ext = extname(target).slice(1).toLowerCase()
+    /* 【扩展名一处定义】这张表是「扩展名 → MIME」的映射（映射本身必须逐条写），
+     * 但它的**键集**受约束：必须恰好等于共享的 `IMAGE_EXTS` 加上 `pdf`。
+     * 这条不靠人记 —— `tests/file-exts.mjs` 有一组断言直接读这段源码取键、与
+     * `privhub-core/src/file-exts.ts` 的 `IMAGE_EXTS` 比对，漏一个（例如 `.ico`）立刻变红。 */
     const mime: Record<string, string> = {
       png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
       svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', pdf: 'application/pdf',
@@ -113,8 +123,19 @@ export function apply(ctx: Context): void {
       // S7 安全加固：realpath 校验防 junction 目录写穿越
       const dir = await svc.resolveReal(project, subPath)
       if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
-      // A11+S7：流式加密落盘（storage.createWriteStream 内部写密文头+加密流+末尾 tag），不整读进内存；超限中断清理
+      /* A4（只做「不再静默」这一步）：同名文件已存在时【明确失败】，不再静默覆盖。
+       *
+       * 为什么不改写入语义、也不做自动备份：覆盖会改数据，属于「会动数据」的功能，
+       * 按 Shape Up 的硬约束不适用轻量交付 —— 备份/版本历史要单独立项设计
+       * （版本历史随覆盖清空的问题属另一批）。本批只让这一次拒绝被用户看见。
+       * 校验必须在【读取请求体之前】，避免先落 .part 再报错、留下垃圾临时文件。
+       * 已知影响面：同目录重名上传（含「复制副本」若同名副本已存在）会从
+       * 「静默覆盖」变成「明确失败并在界面提示」，这是有意的行为变化。 */
       const target = join(dir, name)
+      if (existsSync(target)) {
+        return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+      }
+      // A11+S7：流式加密落盘（storage.createWriteStream 内部写密文头+加密流+末尾 tag），不整读进内存；超限中断清理
       const tmp = target + '.part'
       const size = await new Promise<number>((ok, fail) => {
         let written = 0

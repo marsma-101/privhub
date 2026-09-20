@@ -1,0 +1,45 @@
+[d 批收工 · 跨插件 DOM 认领归零证据]
+时间：2026/9/20 16:34:09
+
+扫描口径：privhub/plugins/**/client/**/*.js，排除 node_modules / _retired-v2 / vendor
+扫描文件数：62
+
+== 判据 A：非宿主插件里按宿主类名认领内容区的（应为空）==
+（0 命中）
+
+== 判据 B：全仓插件前端里出现 MutationObserver 的（应为空 —— comments 那个已删）==
+plugins/privhub-files-comments/client/index.js:12: *   ② 在那个节点上挂 `MutationObserver`（childList + subtree + characterData）——
+plugins/privhub-files-comments/client/index.js:26: *   `MutationObserver`（`tests/personal-ui.mjs` 的 M 段有源码级断言，含剥注释）。
+plugins/privhub-files-comments/client/index.js:145: * 迁前这里是「watch 一个现查 DOM 的 computed + 在新节点上挂 MutationObserver」。
+plugins/privhub-files-comments/client/index.js:282: * 没有渲染根时交 null。本插件不再自己查 `.v3-content .v3-md`、也不再挂 MutationObserver。
+plugins/privhub-files-explorer-v3/client/panel.js:74: *   ② 在那个节点上挂 `MutationObserver`（childList+subtree+characterData）—— 靠"盯着别人的
+plugins/privhub-files-explorer-v3/client/panel.js:698: 插件不再按 .v3-content/.v3-md 去查、也不再在它上面挂 MutationObserver。 -->
+
+== 判据 C：comments 里剩余的 querySelector（应只剩自己锚点的 mark.v3-cmt）==
+plugins/privhub-files-comments/client/index.js:25: * ⚠ 因此本文件里不得再出现对 `.v3-content` / `.v3-md` 的 `querySelector`，也不得再出现
+plugins/privhub-files-comments/client/index.js:69: root.querySelectorAll('mark.v3-cmt').forEach((m) => {
+plugins/privhub-files-comments/client/index.js:243: const mark = this.mdEl && this.mdEl.querySelector('mark.v3-cmt[data-id="' + id + '"]')
+
+== 判据 D：bus 事件 emit/on（v3:md-root 应 1 发 1 听；v3:md-rendered 应 0 发 0 听）==
+plugins/privhub-files-comments/client/index.js:16: *   bus.on('v3:md-root', ({ el, project, key, reason }) => …)
+plugins/privhub-files-comments/client/index.js:284: this._offRoot = bus.on('v3:md-root', (p) => { this.onMdRoot(p) })
+plugins/privhub-files-explorer-v3/client/panel.js:355: bus.emit('v3:md-root', { el: mdRootOf(this.$refs), project: (this.activeTab && this.activeTab.project) || '', key: cur, reason: reason || '' })
+
+== 判据 E：KNOWN_INJECTORS（personal-ui.mjs）==
+privhub/tests/personal-ui.mjs:421: const KNOWN_INJECTORS = []
+
+== 判据 F：两个舱位锚点 + 两个状态类的使用者（只应各归其正主 / 宿主）==
+⚠ plugins/privhub-files-comments/client/index.js:28: * ⚠ 也不得复用两个「舱位」的类名：`.v3-viewer-host`（viewer 的地界）与
+⚠ plugins/privhub-files-comments/client/index.js:29: *   `.v3-editor-host`（编辑态的地界）都不是本插件的落点 —— 需要新形态要请宿主再开舱位。
+（上面若无 ⚠ 行 = 六个只读引用者与 comments 都没碰舱位/状态类）
+
+== 判据 B/C/F 的逐条判读（上面命中的全是**注释**，不是代码）==
+B：6 处 MutationObserver 全部落在注释里（讲"迁前是什么、为什么不许再有"）；
+   剥注释后的源码级断言在 tests/personal-ui.mjs 段 M1（0 命中）。
+C：comments 里只剩两处**自己的锚点**选择器（mark.v3-cmt 的清除与定位），
+   对宿主类的 querySelector 已 0 命中。
+D：v3:md-rendered **一行都没命中**（连注释里讲来历都改用文字描述了）——
+   bus.on 1 处（comments）/ bus.emit 1 处（panel.js），即 1 发 1 听。
+E：白名单已是 **空数组**（const KNOWN_INJECTORS = []）。
+F：两行 ⚠ 也是**注释**（"不得复用两个舱位类名"这句话本身提到了类名）；
+   源码里 comments 对这两个类名 0 命中（段 M2 有断言）。
