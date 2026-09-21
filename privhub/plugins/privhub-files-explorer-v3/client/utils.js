@@ -32,9 +32,12 @@ import { api } from './deps.js'
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']
 /** 基础集合：Markdown 家族。取值必须与 `file-exts.ts` 的 `MARKDOWN_EXTS` 同值。 */
 const MARKDOWN_EXTS = ['md', 'markdown']
-/** 基础集合：Office（含 PDF）。取值必须与 `file-exts.ts` 的 `OFFICE_EXTS` 同值。 */
+/** 基础集合：Office 读取链（含 PDF）。取值必须与 `file-exts.ts` 的 `OFFICE_EXTS` 同值。
+ *  **不含 `xls`/`ppt`**：它们是 Office 文件但不在读取链里（`.ppt` 全仓无人能读、`.xls` 只在
+ *  `files-office` 的提取链上）—— 口径与理由见 `file-exts.ts` 文件头「Office 那一族的口径」。
+ *  界面「✏️ 编辑」分支取的就是这一份，所以它必须与后端读取链**同源**：多一项＝点了没反应。 */
 const OFFICE_EXTS = ['doc', 'docx', 'xlsx', 'pptx', 'pdf']
-/** 派生：kind 为 `office` 的那一批 = Office 减去 `pdf`（pdf 在界面上走自己的 iframe 分支）。 */
+/** 派生：kind 为 `office` 的那一批 = Office 读取链减去 `pdf`（pdf 在界面上走自己的 iframe 分支）。 */
 const OFFICE_KIND_EXTS = OFFICE_EXTS.filter((e) => e !== 'pdf')
 
 /**

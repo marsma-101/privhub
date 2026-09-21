@@ -260,9 +260,11 @@ function doEdit() {
   const rel = relPath(m.project, m.dirPath, m.entry.name)
   const ext = (m.entry.name.split('.').pop() || '').toLowerCase()
   /* 【扩展名一处定义】这里原本手写一串 Office 扩展名 —— 现取自
-   * `utils.js` 的 `EXT.OFFICE_EXTS`（= `file-exts.ts` 的 Office 基础集合，**含 pdf**）。
-   * 迁前那份手写清单比后端多出 `xls`/`ppt`（后端 `/office/read` 对它们报"不支持的 Office 类型"），
-   * 属于同类漂移；现与后端同源。 */
+   * `utils.js` 的 `EXT.OFFICE_EXTS`（= `file-exts.ts` 的 `OFFICE_EXTS`，**含 pdf**）。
+   * 迁前那份手写清单比后端多出 `xls`/`ppt`：后端 `/office/read` 对它们报"不支持的 Office 类型"，
+   * 而 `office-ui` 的浮层也把它们挡在门外 ⇒ 当时在 `.xls`/`.ppt` 上点「✏️ 编辑」是**点了没反应**。
+   * 本批收敛后两边同源，那一类错配**不会再出现**：清单里没有的扩展名不会进这个分支
+   * （`.xls`/`.ppt` 走它本来走的路：`.xls` 由 `files-office` 的提取链接管文本预览）。 */
   if (EXT.OFFICE_EXTS.includes(ext)) {
     if (ext === 'doc') { void convertDocToDocx({ entry: m.entry, project: m.project, dirPath: m.dirPath || '' }); return }
     bus.emit('office:edit', { entry: m.entry, project: m.project, path: rel })

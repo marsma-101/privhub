@@ -12,6 +12,28 @@
 
 const { api, bus, nav } = window.PrivHub
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * 【Office 扩展名：本插件的单点定义】
+ *
+ * 取值 = `privhub-files-explorer-v3/client/utils.js` 的 `EXT.OFFICE_EXTS`
+ *        = `privhub-core/src/file-exts.ts` 的 `OFFICE_EXTS`（**全仓唯一出处**）。
+ * 三处取值**逐项同值**由 `tests/file-exts.mjs` ② 组与 `tests/office-doc.mjs` 钉住。
+ *
+ * 为什么这里必须自己存一份、而不能 import 那一份（**不是偷懒**）：
+ *   ① 浏览器侧取不到 `plugins/privhub-core/src/`（静态映射只到 `client/`）；
+ *   ② 硬约束 3/4 与 `tests/integrity.mjs:379-389` 要求插件 client 只引用**同目录**文件，
+ *      跨插件相对 import 一出现就红；
+ *   ③ 骨架 `frontend/index.html:731` 的 `window.PrivHub` 只有 12 个键、**没有** EXT，
+ *      本批不动骨架 ⇒ 没有现成的通道把那张表递过来。
+ * ⇒ 于是走「**单点定义 + 断言钉住**」这条既有范式（与 `edit-md/client/index.js` 同形）。
+ *
+ * ⚠ 迁前这里是手写的一份**同值**清单（全仓 4 处同族副本之一，见
+ *   `privhub-core/src/file-exts.ts` 文件头「Office 那一族的口径」）。
+ * ⚠ **含 pdf** 是刻意的：读取链认 pdf；而「office kind」那一份（panel.js 用的）不含 pdf，
+ *   因为 pdf 在界面上走自己的 iframe 分支 —— 两份的关系是 `OFFICE_KIND_EXTS = OFFICE_EXTS − pdf`。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const OFFICE_EXTS = ['doc', 'docx', 'xlsx', 'pptx', 'pdf']
+
 const OfficeEditor = {
   name: 'office-editor',
   data() {
@@ -42,7 +64,7 @@ const OfficeEditor = {
       const e = payload && payload.entry ? payload.entry : payload
       if (!e || e.isDir) return
       const ext = (e.name.split('.').pop() || '').toLowerCase()
-      if (!['doc', 'docx', 'xlsx', 'pptx', 'pdf'].includes(ext)) return
+      if (!OFFICE_EXTS.includes(ext)) return
       this.project = (payload && payload.project) || nav.project || ''
       this.path = (payload && payload.path) || nav.relPathOf(e.name)
       this.name = e.name

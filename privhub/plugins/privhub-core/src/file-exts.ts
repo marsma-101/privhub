@@ -43,6 +43,8 @@
  * | 智能体读写 `files-agent` | `TEXT_EXTS − SENSITIVE_EXTS` | 能力同等，**敏感文件豁免**（该清单在 `files-agent` 内） |
  * | 界面分类 `explorer-v3/client/utils.js` | `IMAGE_EXTS` / `OFFICE_EXTS` / `MARKDOWN_FAMILY` | 前端只能拿到**投影**（见下「前端怎么办」） |
  * | 界面可编辑 `explorer-v3` + `edit-md` | `EDITABLE_TEXT_EXTS` | **有意比预览窄**：编辑要过写接口，见下 |
+ * | Office 读取链 `svc-office` | `OFFICE_EXTS`（**同一份**） | 服务层不再自带清单；`files-office` 的提取链同样取它 |
+ * | Office 家族（界面识别） | `OFFICE_FAMILY_EXTS` | `explorer-v3` 与 `office-ui` 的**显示侧**取这一份，见下「Office 那一族的口径」 |
  *
  * ## 前端怎么办（**这一条是硬约束逼出来的，不是偷懒**）
  *
@@ -68,6 +70,40 @@
  * | `.eml` / `.avif` / `.tiff` / 音视频 | `docs/reviews/11-…md` §3.3 建议补，但 `.avif` 的浏览器支持**本轮未实测**、音视频要另开前端形态 ⇒ 本批不做，留待专项 |
  * | **无扩展名文件**默认当文本 | **明确不做**：本文件只做「按扩展名分类」，不做二进制嗅探（NUL 字节检测）。理由是**没有任何既有触点**需要它（`listFiles` / `preview` / 索引 / 快照全按扩展名走），为它单独给每次预览加一次读字节的开销不划算；且"把二进制当文本读出乱码"比"打不开"更坏。将来真要做，应在 `readFileForPreview` 里做一次嗅探并把这些名字放进 `SNIFF_AS_TEXT`（**注意：无扩展名的名字不是扩展名**，不能塞进下面任何集合） |
  * | 新增扩展名一律进 `EDITABLE_TEXT_EXTS` | 本批只补【预览】。编辑要过 `text/save` 写接口、会造出可编辑入口（交互结构归主子定），不顺手扩 |
+ *
+ * ## Office 那一族的口径（**第二批收敛，2026-09-21**；`.xls`/`.ppt` 到底算不算，答案在这里）
+ *
+ * 迁前这一族有 **4 处同族副本**（上一批扫出来、只加了注释，没合并）：
+ *
+ * | 位置（迁前） | 取值 | 谁在用 |
+ * |---|---|---|
+ * | `privhub-svc-office/src/index.ts:22` | `doc docx xlsx pptx pdf` | `/api/office/read`、`/api/ai/office/read`、`/api/office/convert-doc` |
+ * | `privhub-files-office/src/index.ts:11` | `docx xls xlsx pptx` | `/api/office-preview`（**SheetJS 真能读 `.xls`**） |
+ * | `privhub-files-office/src/extract.mjs:11` | 同上（同值第二份） | 上者的实现体 |
+ * | `privhub-files-office-ui/client/index.js:45` | `doc docx xlsx pptx pdf` | 「编辑」浮层的入口闸 |
+ * | `explorer-v3/client/panel.js:173`（迁前） | `doc docx xls xlsx ppt xlsx` | `isOfficeFile`（**多 `xls`/`ppt`**） |
+ * | `explorer-v3/client/ops.js:262`（迁前） | 上者 + `pdf` | 右键「编辑」分支（**多 `xls`/`ppt`**） |
+ *
+ * **最终口径（本批拍的，明写在这里）**：
+ *
+ * | 概念 | 取值 | 含义 |
+ * |---|---|---|
+ * | `OFFICE_EXTS` | `doc docx xlsx pptx pdf`（**5 项，不变**） | **Office 读取链真能读出来的那一批** —— `svc-office.read()` 对每一个都有一条能出正文的实现（`office-lib.mjs`），`convert-doc` 也只认 `.doc` |
+ * | `OFFICE_FAMILY_EXTS` | 上者 **∪** `xls ppt`（**7 项**） | **界面上属 Office 家族**的那一批（`.xls`/`.ppt` 也是 Office 文件，用户会这么认） |
+ *
+ * **`.xls` / `.ppt` 判为「不在读取链里」，理由分开写**：
+ *   · `.ppt`（PowerPoint 97 二进制）—— **全仓没有任何一处能读它**：`svc-office` 的 `readPptx` 只解 OOXML zip
+ *     （`office-lib.mjs:106-130`），`files-office/extract.mjs:98` 的 `extractOffice()` 对 `ppt` 直接抛
+ *     「不支持的 Office 类型」。生态里也没有可用的纯 JS 渲染器（见 `docs/reviews/11-…md` §3.4）。
+ *   · `.xls`（BIFF）—— 项目**确实有**一个能读它的依赖（`xlsx` / SheetJS 在 `package.json` 里，
+ *     `files-office/extract.mjs:96` 用 `XLSX.read` 读 `xls`）。但它接在 **`/api/office-preview`** 那条
+ *     「提取成 Markdown」的链上，**不在** `svc-office.read()` 这条「服务层结构化读取」链上；
+ *     而界面打开 `.xls` 走的是**后者**。⇒ **本批不把一条能力挪到另一条链上**（那会动 Office 读取链的分支），
+ *     保持「谁声明谁负责」：`files-office` 继续只为 `office-preview` 认 `xls`。
+ *   · ⇒ 于是**界面侧的清单回归读取链的取值**：`xls`/`ppt` 不再冒充「点右键就能编辑」的文件。
+ *     迁前用户在 `.xls`/`.ppt` 上点「✏️ 编辑」会**静默无反应**（`ops.js` 的清单放行 → `office-ui` 的
+ *     `openEditor` 又把它挡回去），现在**不进那个分支**（不留悬空入口）。要恢复，得先把 `svc-office.read()`
+ *     里 `.xls`/`.ppt` 的实现补上 —— 那是**功能改动**，按纪律留给专项，此处不顺手扩。
  *
  * ## 可信度标记（沿用七路评审口径）
  * 本文件所有集合取值均为**【实体】**（逐行读源码得来），集合间关系为**【实证】**
@@ -107,7 +143,21 @@ export const IMAGE_EXTS: readonly string[] = Object.freeze([
 /** Markdown 家族 —— 渲染器与分块策略按这个家族分流（`svc-rag` 的 `chunkText` 依赖它）。 */
 export const MARKDOWN_EXTS: readonly string[] = Object.freeze(['md', 'markdown'])
 
-/** Office（含 PDF）—— `privhub-svc-office` 的 `OFFICE_EXTS` 是它的一份**同值**定义（服务层对外承诺，未动）。 */
+/**
+ * Office（含 PDF）—— **Office 读取链真能读出来的那一批**（5 项）。
+ *
+ * 语义**只有一条**：`privhub-svc-office` 的 `read()` 对每一个都有一条能出正文的实现
+ * （`office-lib.mjs`：`doc`→word-extractor/Python 兜底、`docx`→mammoth、`xlsx`→exceljs、
+ * `pptx`→jszip 解 slide XML、`pdf`→pdf-parse）。
+ *
+ * 消费方（迁前各写各的 4 处，本批全部改成读这一份）：
+ *   · `privhub-svc-office/src/index.ts` —— 服务层判定 + `/api/office/read`；
+ *   · `privhub-files-office/src/index.ts` 与 `src/extract.mjs` —— 提取链的入口闸与实现体；
+ *   · `privhub-files-office-ui/client/index.js` —— 「编辑」浮层的入口闸（前端侧取 `EXT.OFFICE_EXTS` 投影）。
+ *
+ * ⚠ 只说「能读」**不说**「用户觉得它是 Office」：后者见 `OFFICE_FAMILY_EXTS`。
+ * ⚠ `.xls` / `.ppt` **不在**这里 —— 理由（分开写、各有证据）见文件头「Office 那一族的口径」。
+ */
 export const OFFICE_EXTS: readonly string[] = Object.freeze(['doc', 'docx', 'xlsx', 'pptx', 'pdf'])
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -254,6 +304,30 @@ export const VERSION_TEXT_EXTS: readonly string[] = Object.freeze(minus(PREVIEW_
 export const RAG_TEXT_EXTS: readonly string[] = Object.freeze(
   minus(PREVIEW_TEXT_EXTS, union(ENV_EXTS, RAG_EXCLUDED_EXTS)),
 )
+
+/**
+ * 【Office 家族（界面识别）】= `OFFICE_EXTS ∪ {xls, ppt}`（7 项）。
+ *
+ * 语义：**用户会不会把它当 Office 文件**。与「读取链能不能读它」（`OFFICE_EXTS`）是**两个问题**，
+ * 合成一个集合就是迁前 4 处副本互不一致的根因（前端两份多 `xls`/`ppt`、后端 `svc-office` 少它们）。
+ *
+ * 消费方：**本批没有 UI 消费方直接取它** —— `explorer-v3` 的 `kindOf`（`utils.js:92`）与
+ * `ops.js:266` 的「✏️ 编辑」分支都只认 `OFFICE_EXTS`（理由：那条链点下去要真能读，
+ * 见文件头「Office 那一族的口径」）。它是**口径的落点**：将来给 `.xls`/`.ppt` 单独做
+ * 「只读提取预览」入口时从这里取，不要再手写一串；留着它也让断言能把
+ * 「家族 ⊇ 读取链、差集恰好是 xls/ppt」这条关系说清楚。
+ */
+export const OFFICE_FAMILY_EXTS: readonly string[] = Object.freeze(union(OFFICE_EXTS, ['xls', 'ppt']))
+
+/**
+ * `files-office` 的**提取链**（`/api/office-preview`，产出 Markdown）比读取链多认的那一项：`xls`。
+ *
+ * 依据【实体】：`files-office/src/extract.mjs:96` 用 SheetJS 读 `xls`（`xlsx` 依赖在 `package.json` 里）。
+ * **`.ppt` 不在里面** —— 全仓没有任何一处能读它（`extract.mjs:98` 对 `ppt` 直接抛错）。
+ * ⚠ 它表示的仍是「提取链会读」，**不是**「读取链会读」；两者是两条不同的链，见文件头。
+ */
+export const OFFICE_EXTRACT_ONLY_EXTS: readonly string[] = Object.freeze(['xls'])
+
 /** `SENSITIVE_EXTS` 去掉前导点后的纯扩展名形式（供"按扩展名做减法"使用）。 */
 export const SENSITIVE_EXTS_BARE: readonly string[] = Object.freeze(
   SENSITIVE_EXTS.map(normExt).filter((s) => s !== ''),
@@ -292,6 +366,24 @@ export function isImageExt(ext: string): boolean {
 /** 是不是 Markdown 家族。 */
 export function isMarkdownExt(ext: string): boolean {
   return MARKDOWN_EXTS.includes(normExt(ext))
+}
+
+/** 是不是 **Office 读取链**认得的类型（`OFFICE_EXTS`，含 `pdf`）；`.xls`/`.ppt` ⇒ false。 */
+export function isOfficeReadExt(ext: string): boolean {
+  return OFFICE_EXTS.includes(normExt(ext))
+}
+
+/** 是不是 **Office 家族**（含 `.xls`/`.ppt`，界面识别用）；判定口径见 `OFFICE_FAMILY_EXTS`。 */
+export function isOfficeFamilyExt(ext: string): boolean {
+  return OFFICE_FAMILY_EXTS.includes(normExt(ext))
+}
+
+/** Office 读取链的 kind（`OFFICE_EXTS` 的成员，含 `pdf`）；不在其中 ⇒ `'unknown'`。
+ *  ⚠ 与 `kindOfExt` 分工不同：`kindOfExt` 判的是「预览形态」（text/image/pdf/unknown），
+ *  这个是「Office 读取链认不认」，`svc-office.read()` 用它。 */
+export function officeKindOf(ext: string): string {
+  const e = normExt(ext)
+  return (OFFICE_EXTS as readonly string[]).includes(e) ? e : 'unknown'
 }
 
 /**

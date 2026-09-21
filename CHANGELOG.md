@@ -58,8 +58,8 @@
 - 点开头的文件名（例如 `.合同`）现在**不允许创建**；此前可以创建、但列表与搜索都看不到。
 
 **回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
-（0 条失败），退出码 0；改动前基线 `docs/reviews/_baseline-A.txt`、
-改动后 `docs/reviews/_after-A.txt`。
+（0 条失败），退出码 0；改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-A.txt`、
+改动后 `docs/reviews/evidence-2026-09-17/_after-A.txt`。
 
 ### 缺陷修复 · 文本文件超过 512 KB 时谎报「该文件类型不支持在线查看」
 
@@ -88,12 +88,12 @@
 「超限与不支持给出【不同】的 type（unknown ≠ unknown）」；同一次运行里
 「限内小文本照常」「不支持仍是不支持」「下载通道可用」共 15 条**保持绿**，
 说明变红的不是环境也不是探针，正是被修的那一处行为。原始输出见
-`docs/reviews/_negative-control-oversize.txt`。
+`docs/reviews/evidence-2026-09-17/_negative-control-oversize.txt`。
 
 **回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败），退出码 0；断言行 315 → 335，**差值 20 = 新增断言的条数**，
-无既有断言改名或消失。改动前基线 `docs/reviews/_baseline-oversize.txt`、
-改动后 `docs/reviews/_after-oversize.txt`。
+无既有断言改名或消失。改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-oversize.txt`、
+改动后 `docs/reviews/evidence-2026-09-17/_after-oversize.txt`。
 
 **已知边界（本批未动，留给后续）**：内嵌编辑器（`privhub-files-edit-md`）读的是同一接口
 但不看 `type`（`client/index.js:225-229`），超限文本在它那里会落成**空白编辑区**；
@@ -159,8 +159,8 @@
 
 | 对照 | 做法 | 结果 | 原始输出 |
 |---|---|---|---|
-| A · 上限翻回 512 KB | 把 `MAX_TEXT_PREVIEW_BYTES` 改回 `512 * 1024` | 39 通过 / 0 失败 → **35 通过 / 4 失败**，退出码 1 | `docs/reviews/_negative-control-10m-limit.txt` |
-| B · 去掉只读闸 | 把 `if (!readonlyHint)` 改成 `if (true)`（无条件自动进编辑） | 39 通过 / 0 失败 → **38 通过 / 1 失败**，退出码 1 | `docs/reviews/_negative-control-10m-gate.txt` |
+| A · 上限翻回 512 KB | 把 `MAX_TEXT_PREVIEW_BYTES` 改回 `512 * 1024` | 39 通过 / 0 失败 → **35 通过 / 4 失败**，退出码 1 | `docs/reviews/evidence-2026-09-17/_negative-control-10m-limit.txt` |
+| B · 去掉只读闸 | 把 `if (!readonlyHint)` 改成 `if (true)`（无条件自动进编辑） | 39 通过 / 0 失败 → **38 通过 / 1 失败**，退出码 1 | `docs/reviews/evidence-2026-09-17/_negative-control-10m-gate.txt` |
 
 对照 A 里变红的第 1 条是**故意写死的绝对下限**（不是按阈值参数化算出来的）——
 否则「边界两侧」那几条会跟着旧阈值一起缩，反而测不出「用户要的能力被拿掉了」。
@@ -169,7 +169,7 @@
 （0 条失败，前后都无 ❌），退出码 0；各套件 86/12/76/39/16/50/3 + A批27 + 预览上限
 20 → 39，**总通过数 348**（其中预览上限由 20 涨到 39）；
 **无既有断言改名、消失或转红**。
-改动前基线 `docs/reviews/_baseline-10m.txt`、改动后 `docs/reviews/_after-10m.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-10m.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-10m.txt`。
 
 **[未实测·如实标注]** 10 MB 文本在**真实浏览器**里的渲染与传输开销（Vue 把 ~10 MB 内容
 交给 `v-html` / `<pre>` 的那一下）本批**无法实测**：现有回归没有一条开过浏览器。
@@ -239,7 +239,7 @@
 **回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败），退出码 0；各套件 86/12/76/**39→77**/16/50/3 + A批27 + 预览上限39
 （**个人空间界面回归的增量是本次新增断言**，前 39 条断言逐条同名且全绿）。
-改动前基线 `docs/reviews/_baseline-inject.txt`、改动后 `docs/reviews/_after-inject.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-inject.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-inject.txt`。
 
 **[未实测·如实标注]** **「闪烁」本身是浏览器的绘制时序现象，Node 里既没有浏览器也没有
 合成层**，本批**没有**在真实浏览器里用绘制录制复现或验证过：
@@ -297,12 +297,12 @@
 | ① | `viewers.js` 异类切换分支「只挂不卸」（`if (cur) unmount('switch')` → `if (false)`） | `个人空间界面回归：122 通过 / 3 失败` —— ❌ 异类切换 = 换 viewer（锚点里只剩新 viewer 一个）；❌ 先卸旧的、再挂新的（**实测：B.mount:P\|c.md**）；❌ 再切回去同样先卸后挂 |
 | ② | `tabs.js` `activateTab` 把 `md:interrupt` 挪到 `store.activeKey` 之后 | `123 通过 / 2 失败` —— ❌ 三个切换入口都在改 activeKey 之前 emit md:interrupt；❌ 真跑 activateTab（**实测顺序：activeKey变更 → md:interrupt**） |
 
-对照原始输出存 `docs/reviews/_negative-control-viewer-NC1.txt` / `-NC2.txt`。
+对照原始输出存 `docs/reviews/evidence-2026-09-17/_negative-control-viewer-NC1.txt` / `-NC2.txt`。
 
 **回归对照**：`node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败），退出码 0；个人空间界面回归 **77 → 125**（增量全部是本次新增断言，
 原有 77 条逐条同名且全绿）。
-改动前基线 `docs/reviews/_baseline-viewer.txt`、改动后 `docs/reviews/_after-viewer.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-viewer.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-viewer.txt`。
 
 **[未实测·如实标注]** **「同类切换复用不白闪」的肉眼观感，本批证明不了**：Node 里没有
 浏览器、没有合成层，只有 DOM 桩。本批能证的是「不该重建的没重建、不该留的没留、
@@ -386,15 +386,15 @@
 
 | # | 去掉/改坏哪一环 | 真实输出 | 对照原始输出 |
 |---|---|---|---|
-| ① | office2 的 `mount` 改回「自己去认领 `.v3-content`」（`const content = document.querySelector('.v3-content'); content.prepend(frame)`） | `个人空间界面回归：139 通过 / 15 失败` —— ❌【要害】office2 源码里不再出现 .v3-content；❌【要害·加严】整个文件 grep 不到 querySelector(".v3-content")；❌ 多出注入者 office2；❌ office2 已不在注入者名单里；❌ mount 只往挂载点里放了 1 个 iframe（实测 0 个）；❌【要害】mount 全程没有按 .v3-content 查过任何东西（**实测查过：.v3-content**）；❌ 那个「别人的容器」一个节点都没多；❌ 打开 docx → 锚点出现 1 个 iframe（实测 0 个）等 | `docs/reviews/_negative-control-office2-NC1.txt` |
-| ② | 布局改回宿主硬编码 `['.docx','.xlsx']` 能力清单（`contentClass` + `viewerLayout` 两处一起回退） | `个人空间界面回归：149 通过 / 4 失败` —— ❌ office 专属的硬编码布局分支已彻底消失；❌ 宿主源码里不再硬编码扩展名能力清单；❌ 布局状态由 viewer 会话的返回值派生；❌ contentClass 直接读 viewerLayout | `docs/reviews/_negative-control-office2-NC2.txt` |
+| ① | office2 的 `mount` 改回「自己去认领 `.v3-content`」（`const content = document.querySelector('.v3-content'); content.prepend(frame)`） | `个人空间界面回归：139 通过 / 15 失败` —— ❌【要害】office2 源码里不再出现 .v3-content；❌【要害·加严】整个文件 grep 不到 querySelector(".v3-content")；❌ 多出注入者 office2；❌ office2 已不在注入者名单里；❌ mount 只往挂载点里放了 1 个 iframe（实测 0 个）；❌【要害】mount 全程没有按 .v3-content 查过任何东西（**实测查过：.v3-content**）；❌ 那个「别人的容器」一个节点都没多；❌ 打开 docx → 锚点出现 1 个 iframe（实测 0 个）等 | `docs/reviews/evidence-2026-09-17/_negative-control-office2-NC1.txt` |
+| ② | 布局改回宿主硬编码 `['.docx','.xlsx']` 能力清单（`contentClass` + `viewerLayout` 两处一起回退） | `个人空间界面回归：149 通过 / 4 失败` —— ❌ office 专属的硬编码布局分支已彻底消失；❌ 宿主源码里不再硬编码扩展名能力清单；❌ 布局状态由 viewer 会话的返回值派生；❌ contentClass 直接读 viewerLayout | `docs/reviews/evidence-2026-09-17/_negative-control-office2-NC2.txt` |
 
 > 对照②的一个如实说明：J7 是**孤立地**测 `layoutForAction` 这个映射函数，把调用点改坏时它不会红；
 > 把它钉在实现上的是 G 段那条 `this.viewerLayout = layoutForAction(res.action)`（对照②里红了）。
 
 **回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败）；个人空间界面回归 **125 → 153**（增量全部是本次新增/改写的断言）。
-改动前基线 `docs/reviews/_baseline-office2.txt`、改动后 `docs/reviews/_after-office2.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-office2.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-office2.txt`。
 契约模块 `viewers.js`、骨架 `frontend/index.html`、manifest、插槽、打包链**均未改动**；
 `data/` 与 `data-files/` 只读。
 
@@ -499,13 +499,13 @@
 
 | # | 改坏哪一环 | 真实输出 | 对照文件 |
 |---|---|---|---|
-| ① | edit-md 改回「查别人的容器 + teleport 到别人的容器」（`document.querySelector('.v3-content')` / `to=".v3-content"`） | `个人空间界面回归：181 通过 / 14 失败` —— ❌ 要害：teleport 目标不是舱位；❌ 要害：代码里仍在认领别人的容器；❌ 加严两条（含注释 0 命中）变红；❌ 不再从整个文档查任何东西；❌ 打开 md 没进内嵌编辑态（实测 mode 落到浮层）；❌ 捕获/保存/退场的整条流水缺失…… | `docs/reviews/_negative-control-editmd-NC1.txt` |
-| ② | 把「捕获 + 发出保存」挪到 `open=false` **之后**（先卸后存） | `212 通过 / 3 失败` —— ❌【第一优先·丢内容】实测顺序 `open=false → api:PUT`；❌ 流水 kind 顺序 `save-intent → editor-close → save-capture`；❌ 流水号捕获 seq=3、退场 seq=2（倒挂） | `docs/reviews/_negative-control-editmd-NC2.txt` |
-| ③ | 拆掉会话闸（`mine()` 恒真，回包无条件写回） | `212 通过 / 3 失败` —— ❌ 上一轮回包把 **A 的正文**写进了正在编辑 B 的编辑器（实测 `doc="---\ntitle: a\n...\n# A v2 又改了"`、`path=b.md`、`baseMtime=999`、`dirty=false`）；❌ 脏标记被清；❌ 静默失败不再告警 | `docs/reviews/_negative-control-editmd-NC3.txt` |
+| ① | edit-md 改回「查别人的容器 + teleport 到别人的容器」（`document.querySelector('.v3-content')` / `to=".v3-content"`） | `个人空间界面回归：181 通过 / 14 失败` —— ❌ 要害：teleport 目标不是舱位；❌ 要害：代码里仍在认领别人的容器；❌ 加严两条（含注释 0 命中）变红；❌ 不再从整个文档查任何东西；❌ 打开 md 没进内嵌编辑态（实测 mode 落到浮层）；❌ 捕获/保存/退场的整条流水缺失…… | `docs/reviews/evidence-2026-09-17/_negative-control-editmd-NC1.txt` |
+| ② | 把「捕获 + 发出保存」挪到 `open=false` **之后**（先卸后存） | `212 通过 / 3 失败` —— ❌【第一优先·丢内容】实测顺序 `open=false → api:PUT`；❌ 流水 kind 顺序 `save-intent → editor-close → save-capture`；❌ 流水号捕获 seq=3、退场 seq=2（倒挂） | `docs/reviews/evidence-2026-09-17/_negative-control-editmd-NC2.txt` |
+| ③ | 拆掉会话闸（`mine()` 恒真，回包无条件写回） | `212 通过 / 3 失败` —— ❌ 上一轮回包把 **A 的正文**写进了正在编辑 B 的编辑器（实测 `doc="---\ntitle: a\n...\n# A v2 又改了"`、`path=b.md`、`baseMtime=999`、`dirty=false`）；❌ 脏标记被清；❌ 静默失败不再告警 | `docs/reviews/evidence-2026-09-17/_negative-control-editmd-NC3.txt` |
 
 **回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败）；九套断言 86 / 12 / 76 / **215** / 16 / 50 / 3 / 27 / 39。
-改动前基线 `docs/reviews/_baseline-editmd.txt`、改动后 `docs/reviews/_after-editmd.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-editmd.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-editmd.txt`。
 `data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
 
 **[未实测·如实标注]** **浏览器里的事一件都没验**：`teleport` 是否真的把编辑器挂进了舱位、
@@ -585,9 +585,9 @@
 
 | # | 改坏哪一环 | 真实输出 | 对照文件 |
 |---|---|---|---|
-| ① | comments 改回**自己查别人的容器**（`mdEl(){ return document.querySelector('.v3-content .v3-md') }`） | `254 通过 / 4 失败` —— ❌【要害】代码里不再出现 `.v3-content`（剥注释后 0 命中）；❌【要害·加严】整个文件（含注释）0 命中；❌ 不再从整个 document 查任何东西；❌ 锚点根改成宿主交进来的引用 | `docs/reviews/_negative-control-comments-NC1.txt` |
-| ② | 把那个 `MutationObserver` 加回去（盯别人的 DOM） | `256 通过 / 2 失败` —— ❌【要害·本批的第二个要害】剥注释后仍有 `MutationObserver` 命中；❌ 根被收回（el 为 null）时不渲染 | `docs/reviews/_negative-control-comments-NC2.txt` |
-| ③ | 宿主不再等渲染完成（把 `noticeMdRoot` 从 `$nextTick` 里挪出来，发在渲染**之前**） | `257 通过 / 1 失败` —— ❌ 宿主在 `$nextTick` 之后才发根（实测发早了）—— 这正是迁前 `v3:md-rendered` 的病根 | `docs/reviews/_negative-control-comments-NC3.txt` |
+| ① | comments 改回**自己查别人的容器**（`mdEl(){ return document.querySelector('.v3-content .v3-md') }`） | `254 通过 / 4 失败` —— ❌【要害】代码里不再出现 `.v3-content`（剥注释后 0 命中）；❌【要害·加严】整个文件（含注释）0 命中；❌ 不再从整个 document 查任何东西；❌ 锚点根改成宿主交进来的引用 | `docs/reviews/evidence-2026-09-17/_negative-control-comments-NC1.txt` |
+| ② | 把那个 `MutationObserver` 加回去（盯别人的 DOM） | `256 通过 / 2 失败` —— ❌【要害·本批的第二个要害】剥注释后仍有 `MutationObserver` 命中；❌ 根被收回（el 为 null）时不渲染 | `docs/reviews/evidence-2026-09-17/_negative-control-comments-NC2.txt` |
+| ③ | 宿主不再等渲染完成（把 `noticeMdRoot` 从 `$nextTick` 里挪出来，发在渲染**之前**） | `257 通过 / 1 失败` —— ❌ 宿主在 `$nextTick` 之后才发根（实测发早了）—— 这正是迁前 `v3:md-rendered` 的病根 | `docs/reviews/evidence-2026-09-17/_negative-control-comments-NC3.txt` |
 
 > 阴性对照②的第一版**当场崩**在 `ReferenceError: MutationObserver is not defined`（沙箱里没有这个全局）——
 > 那本身也是一条证据（新代码路径里它确实一次都不需要），但**崩掉就测不出行为**，
@@ -595,8 +595,8 @@
 
 **回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**
 （0 条失败）；九套断言 86 / 12 / 76 / **258** / 16 / 50 / 3 / 27 / 39。
-改动前基线 `docs/reviews/_baseline-comments.txt`、改动后 `docs/reviews/_after-comments.txt`；
-开工前的跨插件认领现状快照 `docs/reviews/_d-before-scan.txt`。
+改动前基线 `docs/reviews/evidence-2026-09-17/_baseline-comments.txt`、改动后 `docs/reviews/evidence-2026-09-17/_after-comments.txt`；
+开工前的跨插件认领现状快照 `docs/reviews/evidence-2026-09-17/_d-before-scan.txt`。
 `data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
 
 **[未实测·如实标注]** **浏览器里的事一件都没验**（本批尤其要紧，因为改的正是"渲染完成后"的时序）：
@@ -657,7 +657,7 @@ pdf-parse 的 pdf、jpeg-exif 的**真 TIFF**），全部经 `/api/upload` 真�
 `/api/list`、`/api/preview`、`/api/preview-raw`、`/api/office/read`、`/api/office-preview`、`/api/office2/raw`；
 **"前端会显示什么"不靠猜**：把前端真身（`utils.js` 的 `kindOf` + `content.js` 的 `loadContent`）装进 vm，
 `api` 桩逐字对齐骨架 `frontend/index.html:364-385` 打真 HTTP。
-产物：`docs/reviews/_matrix-format.txt`（63 行全表）与 `_matrix-format.json`；分析报告 `docs/reviews/11-格式支持矩阵与铺满修复.md`。
+产物：`docs/reviews/evidence-2026-09-17/_matrix-format.txt`（63 行全表）与 `_matrix-format.json`；分析报告 `docs/reviews/11-格式支持矩阵与铺满修复.md`。
 
 **实测结论**：✅能开 **29** ／ ⚠️降级 **4**／ ❌打不开 **30**。三条实测发现：
 
@@ -682,7 +682,7 @@ pdfjs-dist 34.8MB）与**性价比排序**：先做 **① 收敛并补齐纯文�
 
 **回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（0 条失败）；
 九套断言 86 / 12 / 76 / **258 → 279**（+21 为本批新增断言）/ 16 / 50 / 3 / 27 / 39。
-基线 `docs/reviews/_baseline-fill.txt`、收工 `docs/reviews/_after-fill.txt`。
+基线 `docs/reviews/evidence-2026-09-17/_baseline-fill.txt`、收工 `docs/reviews/evidence-2026-09-17/_after-fill.txt`。
 ⚠️ **退出码口径**：用 `2>&1 | Tee-Object` 写法时 PowerShell 会把服务端 stderr（两条已知告警）算成 `NativeCommandError`，
 `$LASTEXITCODE` 会报 1 —— **不是测试失败**；用 `*> 文件` 写法实测 `run-all` 本体 **exit=0**。
 `data/` 与 `data-files/` 只读（仅扫过扩展名分布）；**未做 git commit / push / stash**；版本号仍为 3.1.1（条目追加在 3.1.1 段内）。
@@ -732,18 +732,78 @@ pdfjs-dist 34.8MB）与**性价比排序**：先做 **① 收敛并补齐纯文�
 
 **阴性对照（已做，做完整份还原并核 SHA256）**：把 `explorer-v3/client/utils.js` 的 `EXT` 改回手写副本 ⇒
 **②③ 组变红**（前端 5 份清单与后端比对失败、`.ico` kind 回落到 text）；把 `privhub-files-versions` 的派生改回一份少几项的手写清单 ⇒
-**⓪ 组变红**（索引/快照集逐项同值失败）。原始输出见 `docs/reviews/_negative-control-exts-NC1.txt` / `-NC2.txt`。
+**⓪ 组变红**（索引/快照集逐项同值失败）。原始输出见 `docs/reviews/evidence-2026-09-17/_negative-control-exts-NC1.txt` / `-NC2.txt`。
 另把版本文件里那份手写副本**故意留在原地时**扫描器也能直接抓到（`[越界] …`），这条同样贴了真实输出。
 
 **回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（0 条失败）；
 九套断言 86 / 12 / 76 / 279 / 16 / 50 / 3 / 27 / **39 → 42**，合计 **588 → 591**（+3 为 `preview-limits` 第 ⑦ 组），
 另有新增静态套件 `file-exts.mjs` **59 条**（run-all 汇总里以独立脚本行打印）。
-基线 `docs/reviews/_baseline-exts.txt`、收工 `docs/reviews/_after-exts.txt`（后附一次同命令复跑 `_after-exts-round2.txt`，两轮断言数字逐行一致）。
+基线 `docs/reviews/evidence-2026-09-17/_baseline-exts.txt`、收工 `docs/reviews/evidence-2026-09-17/_after-exts.txt`（后附一次同命令复跑 `_after-exts-round2.txt`，两轮断言数字逐行一致）。
 口径说明：基线跑的是**旧代码**（`preview-limits` 还是 39），但 `file-exts.mjs` 在基线跑完前已落盘，故基线文件里也能看到它（当时 56 条，0 失败）。
 
 **纪律留痕**：`frontend/index.html` **一字未动**；不动 manifest / 插槽 / 打包链 / `viewers.js`；无新增界面入口、不改布局；
 `data/` 与 `data-files/` 只读；**未做 git commit / push / stash**；版本号仍为 **3.1.1**（条目追加在 3.1.1 段内）。
 报告：`docs/reviews/12-扩展名白名单收敛与补齐.md`。
+
+---
+
+### 缺陷修复 · `.doc`「解析失败却报成功」+ Office 扩展名族收敛（同批两件）
+
+**动机**：上一批（本段内「格式支持矩阵」）实测出两件都在 Office 处理链上的事 ——
+① **`.doc` 解析失败却回 `ok:true`**，界面把一句「兜底提示」当正文显示（用户看到的就是"这份文档只有一行字"）；
+② **Office 扩展名族有 4 处同族副本**，且前后端**已经不一致**（前端两份多 `xls`/`ppt`，后端 `svc-office` 没有它们）。
+
+#### 一、`.doc`：拿不到正文就不许说成功
+
+| 项 | 内容 |
+|---|---|
+| **病根（【实体】）** | `privhub-svc-office/src/office-lib.mjs` 的 `readDoc` 是三级链：word-extractor → Python 兜底 `scripts/doc2md.py` → **兜底文案**。三级全失败时它 `return { text:'[无法提取 DOC 文本]（请用 Word/WPS 打开后另存为 docx 再上传）' }` ⇒ `svc-office.read()` 见它不是 `ok:false` 就当成功 ⇒ `/api/office/read` 回 **HTTP 200 + ok:true** ⇒ 前端 `content.js` 把 `content.text` 经 `officeToMd` 渲染成正文 |
+| **改法（后端）** | `readDoc` **只回两种形状**：`{ text }`（真提取到）或 `{ ok:false, reason, detail }`（**如实报失败 + 可区分的原因码**）。`svc-office.read()` 把失败翻成 `ok:false` + 中文 `error`，并新增稳定字段 **`reason`**：`unsupported-type` / `read-failed` / `capability-missing` / `capability-broken` / `parse-failed` / `empty-content` |
+| **改法（界面）** | `content.js` 的 Office 分支只认 `ok` 与 `error`：`ok:false` ⇒ 进错误态、显示**后端给的原因原文**（既有的 `.v3-loading` 那一行，**不加控件、不改布局**），并把 `reason` 挂到 `content.officeReason` 供排查。兜底句不再可能成为正文（后端已不产出它；`officeToMd` 本来就只搬 `content`） |
+| **为什么要先探测 Python** | 本机 `python`/`python3` 只是 Microsoft Store 占位别名（【实证】`where` 解析出的真实路径在 `…\WindowsApps\`，执行会**挂十几秒**）。新增 `probePython()`：先 `where` 解析真实路径 → 占位别名**直接判不可用、不执行** → 否则才跑 `-c pass` 确认；结论缓存并**启动即预热**。实测探测 **98ms**（原本"跑一下试试"要 16s+） |
+| **`.doc` 现在的行为** | 假 `.doc`（RTF/HTML/纯文本伪装、空 OLE2）⇒ **HTTP 400 + `{"ok":false,"kind":"doc","reason":"capability-missing","error":"无法提取这份 .doc 的正文：本机没有真正的 Python（只有应用商店的占位程序）。请用 Word/WPS 打开后另存为 docx 再上传"}`**；界面显示该 `error` 原文。真 `.docx`/`.xlsx`/`.pdf` 照旧 **HTTP 200 + ok:true + 正文**（回归断言守着） |
+| **口径（第三级为何保留）** | 本机永远用不到 Python 兜底，但**别的部署环境可能有真 Python** ⇒ 删掉等于砍掉一条真能力。本批只做「先探测 + 把"缺能力"与"文件不对"分开」 |
+
+#### 二、Office 扩展名族：一处定义 + 各处显式派生
+
+| 项 | 内容 |
+|---|---|
+| **一处定义** | `privhub-core/src/file-exts.ts` 新增 `OFFICE_EXTS`（**5 项** `doc docx xlsx pptx pdf` = **读取链真能读出正文**的那一批）、`OFFICE_FAMILY_EXTS`（**7 项** = 上者 ∪ `xls ppt` = **界面上属 Office 家族**的那一批）、`OFFICE_EXTRACT_ONLY_EXTS`（`xls`），以及判定入口 `isOfficeReadExt` / `isOfficeFamilyExt` / `officeKindOf` |
+| **最终口径：`xls`/`ppt` 算 Office 家族，但不算「读取链」** | `.ppt`：**全仓无人能读**（`extract.mjs` 对它直接抛错，生态也没有可用 JS 渲染器）。`.xls`：项目**确实**有能读它的依赖（SheetJS），但它接在 `/api/office-preview` 那条「提取成 Markdown」的链上，**不在** `svc-office.read()` 这条链上；把一条能力挪到另一条链是**功能改动**，本批不做。⇒ 界面清单**回归读取链取值**：`.xls`/`.ppt` 不再冒充"点右键就能编辑"（迁前那样点是**静默无反应**，因为 `office-ui` 的浮层又把它们挡回去） |
+| **4 处副本收敛后** | `svc-office/src/index.ts`、`files-office/src/index.ts` ⇒ 从共享处**派生**；`files-office/src/extract.mjs` ⇒ **连清单都不再认**（入口闸在 `index.ts` 的 `EXTS = union(OFFICE_EXTS, OFFICE_EXTRACT_ONLY_EXTS)`）；`office-ui/client/index.js` ⇒ **有意保留为该插件自己的单点定义**（浏览器取不到 `core/src/`，且 `integrity.mjs` 要求 client 只引用同目录文件），取值与共享处**逐项同值**由断言钉住 |
+| **前端** | 与上一批同一范式：`explorer-v3/client/utils.js` 的 `EXT.OFFICE_EXTS` 是前端唯一出处；`ops.js` 的「✏️ 编辑」分支与 `panel.js` 的 `isOfficeFile` 都从它派生（`OFFICE_KIND_EXTS = OFFICE_EXTS − pdf`） |
+
+#### 三、防漂移断言与阴性对照
+
+- **新增静态套件 `privhub/tests/office-doc.mjs`（79 条，自带隔离实例端口 3198、独立测试根 `tests/.testroot-office-doc/`，不碰 `data/` 与 `data-files/`）**，六组：
+  ① Office 口径（集合取值与关系：家族 ⊇ 读取链、差集恰好 `xls,ppt`）；
+  ② `readDoc` 三态（四条自造假 `.doc` 一律失败且带原因、**代码里不再有那句兜底文案**、失败形状本身被钉死）；
+  ③ `svc-office.read()` 契约（失败 `ok:false`+`reason`，`unsupported-type`/`read-failed`/`parse-failed` **三者可区分**）；
+  ④ 端到端（真上传假 `.doc` ⇒ 400/`ok:false`；真 `docx/xlsx/pdf` ⇒ 200/`ok:true`/正文）；
+  ⑤ 前端 `content.js` **真身进 vm**（喂 `ok:false` 回包 ⇒ 错误态显示后端原因原文、无正文、无兜底句）；
+  ⑥ Office 族收敛（3 处副本真删 + 两份前端单点定义逐项同值 + **逃逸扫描**：备案外第 4 处手写清单 ⇒ 红，自带阳性/阴性对照）。
+- `privhub/tests/file-exts.mjs` **④ 组扫描器同步更新**：备案表由 **8 处减到 5 处**（Office 族从 4 处收到 1 处），并给扫描器加了两条对照 —— **注释里引用取值不得误报**（本批两条注释因此被误伤过）、**代码里的真清单照样命中**（证明"注释不算"没有变成"什么都不算"）。
+- `privhub/tests/run-all.mjs` 脚本清单**追加** `office-doc.mjs`（原顺序未动），并让它以 `--import tsx/esm` 启动。
+- **阴性对照（两条，都贴了真实输出）**：
+  ① 把 `readDoc` 的失败分支改回「`return { text:'[无法提取 DOC 文本]…' }`」⇒ **`office-doc.mjs` 59 通过 / 20 失败**，其中 `[实测] /office/read OD假样本-rtf伪装.doc → HTTP 200 {"ok":true,"kind":"doc"}` —— **正是迁前那个"报假成功"**；真 `docx/xlsx/pdf` 三条仍绿（说明变红的就是这一处行为）。原始输出 `docs/reviews/evidence-2026-09-17/_negative-control-doc-NC1.txt`。
+  ② 在 `files-office/src/index.ts` 里再塞一份手写清单 ⇒ **`office-doc.mjs` 77/1**（`[越界] …/files-office/src/index.ts:OFFICE_EXTS_OLD`）且 **`file-exts.mjs` 68/1**（`[越界] …/files-office/src/index.ts:20 → doc,docx,xlsx,pptx,pdf`）。输出 `-NC2-office.txt` / `-NC2-fileexts.txt`。
+  两条做完**整份还原**并核 SHA256（`docs/reviews/_sha-before-doc.txt` 为收工快照，13 个产品/测试文件哈希与还原后逐行一致、`Compare-Object` 输出为空）。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（各 0 条）；
+十一套断言 86 / 12 / 76 / 279 / 16 / 50 / 3 / 27 / 42 / **59 → 69** / **新增 79**
+（静态与冷启动段逐套合计 **563 → 632**，+69 = `file-exts` +10 与新增 `office-doc` 79）。
+基线 `docs/reviews/_baseline-doc.txt`、收工 `docs/reviews/_after-doc.txt`。
+
+#### 四、未实测 / 判不了的（如实列）
+
+- **真 `.doc` 到底能不能出正文：仍标【推断】，本批未实测**。理由与上一批相同 —— 真实 `data-files/` 里的 42 个 `.doc` **全是密文**，且其中一个是真的业务文档，**不许解密**；本批也没有 Word/可用的 `.doc` 生成器来造一个**真** OLE2 Word 二进制样本（已核：`node_modules` 里没有任何 `.doc` 夹具、本机无 LibreOffice）。
+  所以「真 `.doc` 走 word-extractor 能出正文」这条**只有代码路径证据**（`office-lib.mjs` 第一级），本批的实测覆盖的是**假 `.doc` 那条路**与**真 `docx/xlsx/pdf` 那条路**。
+- **界面观感**：仓库里没有任何浏览器测试 ⇒ "错误提示在真机上长得怎么样"没有看过（不改布局、复用既有 `.v3-loading` 一行，**推断**观感与既有错误提示一致）。
+- **`empty` / `capability-broken` / `python-failed` 三个原因码本机触发不到**（需要"能解析但没正文的 .doc"与"装了 Python 的机器"）⇒ 只在断言里钉住取值集合与可区分性，**没有端到端跑过**。
+
+**纪律留痕**：`frontend/index.html` **一字未动**；不动 manifest / 插槽 / 打包链 / `viewers.js`；不新增界面入口、不改布局；
+`data/` 与 `data-files/` 只读（隔离实例的临时数据除外，跑完自清）；未解密任何真实数据；**未做 git commit / push / stash**；
+未用 workflow / ralph；版本号仍为 **3.1.1**（条目追加在 3.1.1 段内）。报告：`docs/reviews/13-doc假成功修复与Office族收敛.md`。
 
 ---
 

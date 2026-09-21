@@ -4,11 +4,17 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { extname } from 'node:path'
+/* 【扩展名一处定义】本插件**提取链**认得的类型 = 共享的 Office 读取链集合 ∪ 它自己多认的 `.xls`
+ * （SheetJS 能读 `xls`，`extract.mjs` 一直在这么做）。迁前这里是手写的一串，
+ * 是全仓 4 处同族副本之一；口径与 `.ppt` 为什么谁都不读见 `file-exts.ts` 文件头
+ * 「Office 那一族的口径」。 */
+import { OFFICE_EXTS, OFFICE_EXTRACT_ONLY_EXTS, union } from '../../privhub-core/src/file-exts'
 
 export const name = 'privhub-files-office'
 export const inject = ['privhub', 'storage']
 
-const OFFICE_EXTS = ['docx', 'xls', 'xlsx', 'pptx']
+/** 本插件提取链认得的扩展名（**派生**，不手写）。 */
+const EXTRACT_EXTS: readonly string[] = Object.freeze(union(OFFICE_EXTS, OFFICE_EXTRACT_ONLY_EXTS))
 
 /** 提取函数供路由与（未来）全文索引复用。 */
 export type ExtractFn = (project: string, relPath: string) => Promise<{ ok: boolean; type?: string; markdown?: string; error?: string }>
@@ -30,7 +36,7 @@ export function apply(ctx: Context): void {
 
   const extract = async (project: string, relPath: string): Promise<{ ok: boolean; type?: string; markdown?: string; error?: string }> => {
     const ext = extname(relPath).slice(1).toLowerCase()
-    if (!OFFICE_EXTS.includes(ext)) return { ok: false, error: '不支持的 Office 类型: .' + ext }
+    if (!EXTRACT_EXTS.includes(ext)) return { ok: false, error: '不支持的 Office 类型: .' + ext }
     const buf = await readBuf(project, relPath)
     if (!buf) return { ok: false, error: '读取失败' }
     if (buf.length > 32 * 1024 * 1024) return { ok: false, error: '文件过大（>32MB），请下载后查看' }

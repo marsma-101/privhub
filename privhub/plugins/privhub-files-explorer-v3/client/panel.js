@@ -171,10 +171,12 @@ const PanelV3 = {
     content() { return store.content },
     showTabs() { return store.tabs.length > 0 },
     /* 是否是「走 Office 内容链」的文件：扩展名取自**前端唯一那一处定义**
-     * （`utils.js` 的 `EXT.OFFICE_KIND_EXTS` = Office 基础集合减去 pdf），不在这里写字面量。
-     * 迁前这里是手写的一串 Office 扩展名（其中含 `xls`/`ppt`），而 `xls`/`ppt` **不在**基础
-     * Office 集合里（`privhub-svc-office` 的 `OFFICE_EXTS` 没有它们、后端 `/office/read` 对它们报错），
-     * 靠 `t.kind === 'office'` 这道前置判断才没出问题 —— 现在清单与 kind 的取值同源，这类错配不会再出现。 */
+     * （`utils.js` 的 `EXT.OFFICE_KIND_EXTS` = Office 读取链集合减去 pdf），不在这里写字面量。
+     * 迁前这里是手写的一串 Office 扩展名（其中含 `xls`/`ppt`），而 `xls`/`ppt` **不在**读取链集合里
+     * （`privhub-svc-office` 的 `OFFICE_EXTS` 没有它们、后端 `/office/read` 对它们报错），
+     * 靠 `t.kind === 'office'` 这道前置判断才没出问题 —— 现在清单与 kind 的取值同源，这类错配不会再出现。
+     * `.xls`/`.ppt` 最终口径（为什么它们是"Office 家族但不在读取链"）见
+     * `privhub-core/src/file-exts.ts` 文件头「Office 那一族的口径」。 */
     isOfficeFile() {
       const t = this.activeTab
       return t ? EXT.OFFICE_KIND_EXTS.includes(t.kind === 'office' ? extOf(t.name) : '') : false

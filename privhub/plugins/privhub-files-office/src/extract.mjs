@@ -3,12 +3,16 @@
  *
  * 以 .mjs 独立成文件：插件 TS 通过动态 import() 加载（ESM 解析器，
  * 不触发 tsx 对含 CJS npm 依赖文件的 CJS 转译）。
+ *
+ * 【扩展名一处定义】本文件**不再自带** Office 扩展名清单：
+ * 迁前它有一份 `export const OFFICE_EXTS = ['docx','xls','xlsx','pptx']`，
+ * 与同目录 `index.ts` 里那份是**同一份取值的两个副本**（全仓 4 处同族副本中的两处）。
+ * 现在入口闸在 `index.ts` 的 `EXTRACT_EXTS`（从 `privhub-core/src/file-exts.ts` 派生），
+ * 本文件只负责"按扩展名分发到对应的提取器"，**不认清单**。
  */
 import mammoth from 'mammoth'
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
-
-export const OFFICE_EXTS = ['docx', 'xls', 'xlsx', 'pptx']
 
 /** 简易 XML 实体解码。 */
 function decodeXmlEntities(s) {
@@ -90,7 +94,7 @@ async function extractPptx(buf) {
   return text || '[无法提取 PPTX 文本]'
 }
 
-/** 入口：按扩展名提取。 */
+/** 入口：按扩展名提取（**清单不在这里** —— 分发本身在 `index.ts` 的入口闸之后才会被调到）。 */
 export async function extractOffice(ext, buf) {
   if (ext === 'docx') return await extractDocx(buf)
   if (ext === 'xlsx' || ext === 'xls') return extractSpreadsheet(buf)

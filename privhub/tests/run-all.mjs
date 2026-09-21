@@ -95,7 +95,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'preview-limits.mjs', 'file-exts.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'office-doc.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -110,9 +110,11 @@ function runChild(script) {
     /* 需要读 TS 源码（并以 `import()` 直接装载 .ts）的脚本，自身必须以 tsx 转译运行：
      *   · rag-resilience.mjs  —— 读 `src/web-server.ts` 的源码文本；
      *   · file-exts.mjs       —— 动态 `import()` 共享定义 `plugins/privhub-core/src/file-exts.ts`
-     *                            （本机 Node 24 本身也能剥类型，但走 tsx 与全仓口径一致、更稳）。
+     *                            （本机 Node 24 本身也能剥类型，但走 tsx 与全仓口径一致、更稳）；
+     *   · office-doc.mjs      —— 同上（读 `file-exts.ts`），另外直接 import `svc-office/src/index.ts`
+     *                            来驱动 `read()` 的契约断言。
      * 其余静态脚本不需要，保持原样调用。 */
-    const needsTsx = /(rag-resilience|file-exts)\.mjs$/.test(script)
+    const needsTsx = /(rag-resilience|file-exts|office-doc)\.mjs$/.test(script)
     const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))

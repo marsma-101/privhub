@@ -34,8 +34,23 @@ async function loadContent(key) {
   try {
     if (tab.kind === 'office') {
       const r = await api('/privhub/api/office/read?project=' + encodeURIComponent(tab.project) + '&path=' + encodeURIComponent(tab.path))
-      if (r.ok) store.content = { key, state: 'ready', office: { kind: r.kind, markdown: officeToMd(r.kind, r.content) } }
-      else store.content = { key, state: 'error', error: r.error || '无法读取 Office 文档' }
+      /* Office 那条链只有两态：**要么给正文，要么明说读不出来**。
+       *
+       * 迁前后端在 `.doc` 解析失败时会回 `ok:true` + 一句兜底文案（'[无法提取 DOC 文本]（…）'），
+       * 这里照单收下 ⇒ 界面把**提示句当正文**渲染，用户以为文档里就那一行字
+       * （`docs/reviews/11-格式支持矩阵与铺满修复.md` §2.5 ②，本批修掉）。
+       * 现在：后端失败即 `ok:false` + `error`；这里只认这两个字段，
+       * 且**不**把任何"提示句"混进正文（`officeToMd` 只产出真内容，见下）。
+       * `reason` 是后端给的稳定原因码（unsupported-type / capability-missing / parse-failed / …），
+       * 本层**不解析它**、也不据此分流布局 —— 只把它挂进 state 供排查，
+       * 用户看到的一句话来自后端（那里才知道"是这台机器缺能力"还是"这个文件不对"）。 */
+      if (r.ok) {
+        store.content = { key, state: 'ready', office: { kind: r.kind, markdown: officeToMd(r.kind, r.content) } }
+        store.content.officeReason = ''
+      } else {
+        store.content = { key, state: 'error', error: r.error || '无法读取 Office 文档' }
+        store.content.officeReason = r.reason || ''
+      }
       /* 【第二步 d】这里原来会 emit 'v3:md-rendered'（连同函数末尾那一发）。
        * 它发在 `store.content` 赋值之后、**Vue 还没渲染 DOM 之前** —— 那一刻新节点根本不存在，
        * 监听方（office2 迁前 / comments 迁前）只能看到上一次渲染的旧节点，这正是"锚点认错根"的由来。

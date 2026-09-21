@@ -14,8 +14,9 @@
  *   ① **行为口径**：`kindOfExt` / `extOfName` 对真扩展名与**无扩展名**的判定（无扩展名一律不认文本）；
  *   ② **前端与后端逐项一致**：把 `explorer-v3/client/utils.js` 装进 vm 取 `EXT`，与 `file-exts.ts` 比对；
  *   ③ **前端两份可编辑清单一致**：`edit-md` 与 `explorer-v3` 的取值必须相同；
- *   ④ **反漂移源码扫描**：全仓源码里凡「≥3 个像扩展名的字符串字面量组成的数组/Set」，
- *      只允许出现在**有备案的出处**；任何一处**手写副本**都会让它变红；
+ *   ④ **反漂移源码扫描**：全仓源码里凡「≥4 个字面量且 ≥70% 像扩展名」的数组/Set，
+ *      只允许出现在**有备案的出处**（本批的 Office 族收敛把备案表从 8 处减到 5 处）；
+ *      任何一处**手写副本**都会让它变红；
  *   ⑤ **端到端**：为「本批该补的扩展名」各造一个真文件，走 `/privhub/api/preview` 验「现在真能打开」，
  *      并复验 `.ico` 的 kind 已与后端一致（不再走 iframe）。
  *
@@ -246,32 +247,36 @@ if (editmdList !== null && client) {
 console.log('\n══ ④ 反漂移源码扫描（手写副本 ⇒ 变红）══')
 
 /**
- * 🔒 **备案表：允许出现"扩展名字面量数组"的文件 —— 全仓只有这 8 个**。
+ * 🔒 **备案表：允许出现"扩展名字面量数组"的文件 —— 全仓只有这些**。
  *
- * 前 3 个是本批收敛的成果（**文本扩展名**这一族的唯一出处）：
+ * 前 3 个是「**文本扩展名**」这一族（上一批收敛）：
  *   · `privhub-core/src/file-exts.ts` —— **后端唯一出处**（一处定义）；
  *   · `explorer-v3/client/utils.js`    —— **前端唯一出处**（浏览器拿不到 core，硬约束，见该文件头）；
  *   · `edit-md/client/index.js`        —— 它自己的**单点定义**（跨插件 import 会弄反依赖方向）。
- * 后 3 个是本批**扫出来、判为出本批范围**的同族问题（**Office 扩展名**那一族），
- * 已加显式注释指向共享出处并写进报告，本批**不顺手改**（改动这类清单会动 Office 编辑链的大小写/分支）：
- *   · `privhub-svc-office/src/index.ts`    —— Office 那一族的**当前出处**（服务层对外承诺）；
- *   · `privhub-files-office/src/index.ts` 与 `src/extract.mjs` —— 同值的两份（`extract.mjs` 是 ESM 工具副本）；
- *   · `privhub-files-office-ui/client/index.js` —— 界面侧一份同值清单。
- * 另有 2 个 `files-office*` 的 **`inject` 服务名数组**（`['privhub','office']`）—— 那不是扩展名清单，
- * 是 Cordis 依赖声明，靠下面的"服务名/字段名黑名单"排除，不进备案表。
  *
- * 后两者的取值与本文件 ②③ 两组断言逐项比对 ⇒ **不是"各写各的"，是"一处定义 + 断言钉住"**。
+ * 中间 3 个是「**Office 扩展名**」这一族（**本批收敛**，2026-09-21）：
+ *   · `privhub-core/src/file-exts.ts`（同上，`OFFICE_EXTS` / `OFFICE_FAMILY_EXTS` 的唯一出处）；
+ *   · `explorer-v3/client/utils.js`（同上，前端那一份投影 `EXT.OFFICE_EXTS`）；
+ *   · `files-office-ui/client/index.js` —— 它自己的**单点定义**（同 `edit-md` 的理由：
+ *     client 模块只许引用同目录文件，硬约束 + `tests/integrity.mjs:379-389`）。
+ *   ⇒ 迁前那 4 处副本（`svc-office` / `files-office` 的 `.ts` 与 `.mjs` / `office-ui`）里，
+ *     **前 3 处已删**：`svc-office` 与 `files-office` 改为从本文件派生，
+ *     `files-office/src/extract.mjs` 连清单都不再认（入口闸在 `index.ts` 的 `EXTS`）。
+ *     逐项同值由 `tests/office-doc.mjs` 的 ①⑥ 组守着（那边还有一条按声明式数组扫全仓的逃逸检查）。
+ *
+ * 最后 1 个是**敏感后缀族**自己的出处（`files-agent` 里的既有清单；本批只用它做减法，未搬动）。
+ *
+ * 「文本族」与「Office 族」的取值分别与本文件 ②③ 组、`office-doc.mjs` ①⑥ 组逐项比对
+ * ⇒ **不是"各写各的"，是"一处定义 + 断言钉住"**。
  * 想加进备案表？先回答"为什么不能派生"，并把理由写进 `file-exts.ts` 的文件头那张表。
  */
 const ALLOWED_LITERAL_SOURCES = [
-  // —— 本批收敛的成果（文本扩展名族）——
+  // —— 文本扩展名族：一处定义 + 两份前端单点定义（上一批收敛）——
   'plugins/privhub-core/src/file-exts.ts',
   'plugins/privhub-files-explorer-v3/client/utils.js',
   'plugins/privhub-files-edit-md/client/index.js',
-  // —— 本批扫出、判为出本批范围（Office 扩展名族，已注释指向共享出处）——
-  'plugins/privhub-svc-office/src/index.ts',
-  'plugins/privhub-files-office/src/index.ts',
-  'plugins/privhub-files-office/src/extract.mjs',
+  // —— Office 扩展名族：只剩"一处定义 + 前端投影 + 该插件自己的单点定义"（本批收敛）——
+  //    （迁前这里的 `svc-office/src/index.ts` 与 `files-office/src/{index.ts,extract.mjs}` 三行已删除）
   'plugins/privhub-files-office-ui/client/index.js',
   // —— 敏感后缀族自己的出处（`files-agent` 里的既有清单；本批只用它做减法，未搬动）——
   'plugins/privhub-files-agent/src/index.ts',
@@ -305,13 +310,28 @@ const NON_EXT_TOKENS = new Set([
 ])
 
 /**
- * 找出「≥4 个字面量组成的数组/Set 且其中 ≥70% 像扩展名」的位置。
- * 为什么下界是 4：最小的真清单就是 4 项（`files-office` 的 Office 提取清单）；
- * 再小（2~3 项）误报会明显变多，得不偿失。
+ * **只扫代码**：先去掉块注释与行注释。
+ *
+ * 为什么必须这样做（本批实测踩到）：`file-exts.ts` 与 `office-doc.mjs` 为了讲清"迁前错在哪"，
+ * 会在注释里**引用**那份取值（例如 `迁前它有一份 export const OFFICE_EXTS = ['docx','xls',…]`）。
+ * 那种引用不是"又写了一份副本"，但如果算进去，断言就会**逼人不敢写注释**——
+ * 而"有人干脆把断言关掉"才是真正的失守（见下面 `NON_EXT_TOKENS` 的同款说明）。
+ * 去掉注释**不会**造成漏报：本例里所有真清单都写在代码里（备案表 5 处全是 `const … = [...]` 形式）。
+ */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+}
+
+/**
+ * 找出「≥4 个字面量组成的数组/Set 且其中 ≥70% 像扩展名」的位置（**在代码里**，注释不算）。
+ * 为什么下界是 4：最小的真清单就是 4 项；再小（2~3 项）误报会明显变多，得不偿失。
  * 判据刻意保守：宁漏勿错报 —— 漏了还能靠 ⓪②③ 那三组同值断言兜住，
  * 误报会让人去关掉这条断言。
  */
-function findExtLiteralLists(src) {
+function findExtLiteralLists(rawSrc) {
+  const src = stripComments(rawSrc)
   const hits = []
   for (const m of src.matchAll(/\[([^\[\]]{0,400}?)\]|\bnew\s+Set\(([^()]{0,400}?)\)/g)) {
     const body = m[1] ?? m[2] ?? ''
@@ -319,7 +339,9 @@ function findExtLiteralLists(src) {
     if (toks.length < 4) continue
     const extish = toks.filter((t) => EXT_TOKEN.test(t) && !NON_EXT_TOKENS.has(t.replace(/^\./, '')))
     if (extish.length / toks.length < 0.7) continue
-    hits.push({ line: src.slice(0, m.index).split('\n').length, tokens: toks })
+    /* 行号按**原始文本**算（去掉注释会改动行数，报出来的行号必须还能对上源码） */
+    const idx = rawSrc.indexOf(m[0])
+    hits.push({ line: rawSrc.slice(0, idx < 0 ? 0 : idx).split('\n').length, tokens: toks })
   }
   return hits
 }
@@ -351,6 +373,12 @@ ok(findExtLiteralLists(plantProbe).length === 1,
 /* 阴性对照（同一套判据）：服务名/字段名数组不该被误报 */
 ok(findExtLiteralLists("export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus']\n").length === 0,
   '阴性对照：Cordis 服务名数组不会被误报成扩展名清单（宁漏勿错报）')
+/* 阴性对照（本批新增）：**注释里引用**那份取值不该被误报（否则会逼人不敢写注释） */
+ok(findExtLiteralLists("/* 迁前它是 export const OFFICE_EXTS = ['docx','xls','xlsx','pptx'] */\n").length === 0,
+  '阴性对照：注释里引用迁前的清单不会被误报（本批两条注释就是这么被误伤过；去掉注释不造成漏报，真清单都写在代码里）')
+/* 阳性对照（同一条判据，代码里）：确认上面那条"注释不算"没有把真清单也一起漏掉 */
+ok(findExtLiteralLists("const A = ['docx','xls','xlsx','pptx']\n").length === 1,
+  '阳性对照：同一条判据对**代码里**的真清单照样命中（"注释不算"没有变成"什么都不算"）')
 
 const allFiles = walkSourceFiles()
 const offenders = []
@@ -380,11 +408,31 @@ const derivedUsers = [
   ['plugins/privhub-files-agent/src/index.ts', 'SENSITIVE_EXTS_BARE', '智能体文本集减去敏感族'],
   ['plugins/privhub-files-agent/src/m2.ts', 'AGENT_SNAPSHOT_EXTS', '智能体快照用派生集'],
   ['plugins/privhub-files-explorer-v3/client/panel.js', 'EXT.OFFICE_KIND_EXTS', '宿主 Office 判定用前端那一处定义'],
+  /* ── Office 族（本批收敛）：这四条就是"迁前那 4 处副本现在改成派生"的证据 ── */
+  ['plugins/privhub-svc-office/src/index.ts', "from '../../privhub-core/src/file-exts'", 'Office 读取链用共享集合'],
+  ['plugins/privhub-svc-office/src/index.ts', 'officeKindOf', 'Office 读取链用共享判定入口'],
+  ['plugins/privhub-files-office/src/index.ts', 'OFFICE_EXTRACT_ONLY_EXTS', '提取链用共享集合 + 显式派生'],
+  ['plugins/privhub-files-office/src/index.ts', 'union(', '提取链的清单是算出来的，不是写出来的'],
 ]
 for (const [rel, needle, what] of derivedUsers) {
   const src = readFileSync(join(ROOT, rel), 'utf8')
   ok(src.includes(needle), `${what}（${rel.split('/').pop()} 引用了 ${needle}）`)
 }
+
+/* Office 族：**迁前那 3 处副本必须真删了**（不是"共享了但旧数组还在"） */
+console.log('\n     ── Office 族：迁前 4 处副本收敛后的样子 ──')
+const officeCopyGone = [
+  ['plugins/privhub-svc-office/src/index.ts', /(?:export\s+)?const\s+OFFICE_EXTS\s*=\s*\[/, '`svc-office` 的手写清单'],
+  ['plugins/privhub-files-office/src/index.ts', /(?:export\s+)?const\s+OFFICE_EXTS\s*=\s*\[/, '`files-office` TS 里的手写清单'],
+  ['plugins/privhub-files-office/src/extract.mjs', /(?:export\s+)?const\s+OFFICE_EXTS\s*=\s*(?:new\s+Set\()?\s*\[/, '`extract.mjs` 里的同值副本'],
+]
+for (const [rel, re, what] of officeCopyGone) {
+  const code = readFileSync(join(ROOT, rel), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  ok(!re.test(code), `${what} 已删除（迁前的 4 处副本 ⇒ 现在只剩 core 一处定义 + 前端两份单点定义）`)
+}
+ok(readFileSync(join(ROOT, 'plugins/privhub-files-office-ui/client/index.js'), 'utf8').includes("const OFFICE_EXTS = ['doc', 'docx', 'xlsx', 'pptx', 'pdf']"),
+  '`office-ui` 那份**有意保留**为「该插件自己的单点定义」（client 只许引用同目录文件；取值由 `office-doc.mjs` ①⑥ 组钉住）')
+
 const coreSrc = readFileSync(join(ROOT, 'plugins/privhub-core/src/index.ts'), 'utf8')
 ok(!/const\s+textExts\s*=/.test(coreSrc) && !/const\s+imgExts\s*=/.test(coreSrc),
   'core 里那两份手写字面量（`textExts` / `imgExts`）确实已经删掉，不再"共享了但没用"')
