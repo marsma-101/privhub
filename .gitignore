@@ -16,7 +16,10 @@ data-files/
 node-runtime/
 
 # ===== 参考代码（第三方开源项目副本，只读参考，不进 git） =====
-references/
+# 只忽略【仓库根】的 references/（DSH 引擎上游副本）。
+# 原写法 `references/` 无前导斜杠，会连带匹配任意层级的同名目录，
+# 把 docs/experts/*/references/ 研究底稿一并扫掉；故用前导斜杠锚定到根。
+/references/
 
 # ===== 与运行无关的临时产物（不进 git，也不上 GitHub） =====
 # 重构前完整快照（2GB，仅供本地查阅，不进 git）
@@ -36,6 +39,11 @@ clean_junctions.cjs
 privhub/tests/.testroot/
 privhub/tests/.audittest/
 privhub/tests/.firstrun/
+privhub/tests/.matrixroot/
+# .testroot-* 家族（.testroot-sibling / .testroot-rag / .testroot-preview …）
+privhub/tests/.testroot-*/
+# 助手脚手架与内嵌测试根的运行数据（含 secret.key / users.json / audit.jsonl 等运行期数据）
+/.assistant/
 # 备份文件（含账号数据的旧快照）
 *.bak*
 
