@@ -5,26 +5,29 @@
 #### Description
 PrivHub — a LAN file hub center: a file management system built on a pure Cordis base with self-developed plugins. Ready to use, encrypted at rest, and deployable as a private service.
 
+**Current version: 3.1.1** — per-version changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 #### Software Architecture
-- **Pure Cordis base**: only depends on `@deepseek-ai/cordis` (~240KB) + `schemastery` + `tsx`. No heavy framework; the whole directory can be moved and run as-is.
-- **Three-layer plugin architecture**:
-  - L1 core hub: core / auth / files / trash / admin / shell (manifest aggregation)
-  - L2 capability services: storage / audit / acl / watermark / search / meta / collab / office
+- **Pure Cordis base**: only depends on `@deepseek-ai/cordis` + `schemastery` + `tsx`. No heavy framework; the whole directory can be moved and run as-is.
+- **Three-layer plugin architecture** (currently **50 plugin directories**):
+  - L1 core hubs: core / auth / files / trash / admin / shell
+  - L2 capability services (10): storage / events / audit / acl / watermark / search / meta / collab / office / model
   - L3 feature plugins: auto-discovered and assembled (add/remove = add/remove a `plugins/` directory, no code changes)
-- **Self-developed webServer** (node:http): exact-route + static frontend + `/privhub-plugins/<name>/<file>` plugin asset mapping.
-- **Frontend**: Vue single-page skeleton + manifest/slot loader; pure-frontend plugins work out of the box.
+- **Self-developed webServer** (node:http): exact-route + static frontend + `/privhub-plugins/<name>/<file>` plugin asset mapping (112 backend routes across 31 plugins).
+- **Frontend**: Vue single-page skeleton (single `index.html`, no build step) + manifest/slot loader; pure-frontend plugins work out of the box.
 
 #### Installation
 
-1. Requirement: Node.js 18+ (no other runtime needed).
-2. Install dependencies: `npm install` (restores runtime packages such as cordis / schemastery / tsx).
+1. Requirement: Node.js 20+ (tested on v24.21.0; no other runtime needed).
+2. Install dependencies: `npm install` (restores 15 runtime packages: cordis / schemastery / tsx / better-sqlite3 / sqlite-vec / Office document libraries, etc.).
 3. Start dev environment: double-click `start.bat`, visit http://127.0.0.1:3180
 4. Production: `start.bat 3181`, visit http://127.0.0.1:3181
 
 #### Instructions
 
-1. Default account is generated on first launch: `admin` / `admin123` (change the password immediately after login).
-2. All data (user files + system data + audit logs) is encrypted at rest with AES-256-GCM; the key `data/secret.key` must be backed up together with the data — losing the key means the data cannot be recovered.
+1. Default accounts are generated on first launch: `admin` / `admin123` (change the password immediately after login), plus a sample account `user1` / `user123`.
+2. User files and system data are encrypted at rest with AES-256-GCM (file header `PHENC1`); the key `data/secret.key` must be backed up together with the data — losing the key means the data cannot be recovered.
+   ⚠️ Exception: `comments.json`, `publish.json`, and `invites.json` are currently stored as plaintext (`settings.json` has already been migrated to encrypted storage).
 3. Full deployment, migration, and plugin development guide: [`privhub/部署说明.md`](privhub/部署说明.md).
 
 #### Contribution

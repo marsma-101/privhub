@@ -5,7 +5,7 @@
 #### 介绍
 私域枢纽 PrivHub —— 局域网文件枢纽中心：基于纯 Cordis 底座 + 自研插件架构的文件管理系统。开箱即用、数据加密落盘、可私有化部署。
 
-**当前版本 3.1.0** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本 3.1.1** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 #### 软件架构
 - **纯 Cordis 底座**：核心框架仅依赖 `@deepseek-ai/cordis` + `schemastery` + `tsx`，无重型 Web 框架，整个目录搬走即可运行。
@@ -56,17 +56,18 @@
 
 1. 首次启动自动生成默认账号：`admin` / `admin123`（登录后请立即修改密码）；另有示例普通账号 `user1` / `user123`。
 2. 文件与系统数据以 AES-256-GCM 加密落盘（文件头 `PHENC1`）；密钥 `data/secret.key` 必须随数据一起备份，丢失密钥 = 数据无法恢复。
-   ⚠️ 例外：`settings.json`、`comments.json`、`publish.json`、`invites.json` 目前为**明文存储**（详见架构说明 2.4 节）。
-3. 完整部署、迁移与插件开发说明见 [`privhub/部署说明.md`](privhub/部署说明.md)（该文档尚未随本次核对同步）。
+   ⚠️ 例外：`comments.json`、`publish.json`、`invites.json` 目前为**明文存储**（`settings.json` 已收口为加密；详见架构说明 2.4 节）。
+3. 完整部署、迁移与插件开发说明见 [`privhub/部署说明.md`](privhub/部署说明.md)（2026-09-21 已随 v3.1.1 现状同步）。
 
-#### 现状提示（2026-09-14 复核）
+#### 现状提示（2026-09-21 复核）
 
-- `privhub/` 为开发主目录（**50 个插件**）；`deploy/privhub-deploy/` 为独立生产部署包，**当前落后于开发源码**（少 2 个插件、关键源码有差异），上线前需重新同步。
+- `privhub/` 为开发主目录（**50 个插件 / 112 条后端路由**，2026-09-21 实测复核）；`deploy/` 下两个独立部署包（`privhub-deploy/`、`privhub-prod/`）**均落后于开发源码**（七角度评审实测：包内版本号仍报 0.2.0、且缺会话校验，见 [`docs/reviews/07-delivery-and-runtime.md`](docs/reviews/07-delivery-and-runtime.md)），上线前必须重新同步。
   **同步生产必须经显式授权**，并在同步后用 `node tests/integrity.mjs --release` 做发布闸门校验。
 - 回归测试：`cd privhub && node tests/run-all.mjs --spawn`（隔离实例，端口 3190，**不会触碰真实数据**）。
-  v3.1.0 新增 `tests/admin-console.mjs`（管理控制台 76 项，含真实挂载渲染与列表-详情布局）。
-- 旧文档引用的 `tests/_archive/project-tests/` 回归脚本与 `scripts/build-deploy.ps1` 在本工作区**不存在**。
-- 改进事项清单（**42 项**，含 6 项 P0 必做）见 [`docs/PrivHub-改进建议.md`](docs/PrivHub-改进建议.md)；上一版清单已归档至 `docs/v2/`。
+  v3.1.1 最终批次时点十套套件合计 **650 项断言全部通过**（personal-ui 279 / smoke 86 / 管理控制台 76 / file-exts 59 / 预览上限 42 / RAG 韧性 27 等，逐批数字见 CHANGELOG）。
+- 打包脚本 `scripts/build-deploy.ps1` 已恢复可用（旧文档所称"脚本在工作区缺失"是 2026-09-11 之前的状态）。
+- 改进事项：2026-09-11 的 42 项账本（6 项 P0 **已全部完成**并验收）保留在 [`docs/PrivHub-改进建议.md`](docs/PrivHub-改进建议.md) 作为历史依据；**当前未解决问题与后续开发方向以 [`docs/PrivHub-待改进清单-2026-09-21.md`](docs/PrivHub-待改进清单-2026-09-21.md) 为准**。
+- 最近两轮只读评审：七角度交叉评审（[00-总览](docs/reviews/00-总览-七角度交叉结论.md)，2026-09-17）与黑盒交互测试（[`PrivHub-交互测试报告-2026-09-18.md`](docs/PrivHub-交互测试报告-2026-09-18.md)）。
 - `data-files/.agents/` 存有早期测试残留（`user1/A项目/模板/` 三层空目录）。沙箱改用个人空间后已不再被使用，按「测试/示例数据保持原样」原则保留。
 
 #### 参与贡献

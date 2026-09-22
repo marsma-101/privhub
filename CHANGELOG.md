@@ -807,6 +807,63 @@ pdfjs-dist 34.8MB）与**性价比排序**：先做 **① 收敛并补齐纯文�
 
 ---
 
+### 缺陷修复 · W2：内容区所有权迁移的收尾批次（修 1 处疑似真 bug + 补 2 处断言/契约缺项 + 1 份语义方案）
+
+**动机**：内容区所有权迁移（第二步 a–d）已经落地，但收尾有三处「**连错了不吭声**」型的空档：
+一处真 bug 与两处没人守的契约。本批只补这三处 + 出一份语义方案，**不扩范围、不改行为口径**。
+
+| # | 项 | 性质 | 改法 |
+|---|---|---|---|
+| **②** | `privhub-files-edit-md/client/index.js` 用 `this.$el.querySelector` 查**已经被 teleport 到宿主舱位**的节点（`:356` 的 focus、`:379-380` 的 `syncScroll`） | **疑似真 bug**（内嵌模式下 `$el` 指向哪一块取决于 Vue 内部实现，赌错即 focus 与滚动同步**静默失效**） | 改成 `ref="src"` / `ref="pre"` + `this.$refs`（**与实现无关**的稳健修法），并加存在性判断。`$el.querySelector` 已**全部消除**（0 处）。⚠ **本批无法实测滚动同步/focus 在真浏览器里活了**：仓库里没有任何浏览器测试、本机也没有 vue 的本地副本（前端是 CDN 全局构建）⇒ 只有代码路径证据 |
+| **①** | `panel.js` 的 `menuCloseAll` 清空标签时**不发** `md:interrupt` —— 靠舱位兜底链（`syncEditorHost` → `v3:editor-host {available:false}` → `leaveInline('host-gone')`，**先捕获、先发保存、再退场**）不丢字 | **不是 bug，缺的是断言**（`viewers.js` 的 `checkOrder()` 注释里明写它**故意不查**「有没有发过保存」，为的就是不误伤这条路） | `tests/personal-ui.mjs` 段 K2-8：跑 `panel.js` 的 `menuCloseAll` **真身** + 真 `syncEditorHost` + 真 `edit-md` + 真注册表，钉住「宿主通知到了 / 捕获早于卸 / 那一发保存真的出去且是清空前那份 / 顺序不变式零违规」 |
+| **④** | `checkOrder()` 只查**倒挂**，查不出「**该发保存意图的路径压根没发**」 | **契约缺项**（新增一条独立不变式，**不改** `checkOrder()` 与 `violations()` 的既有语义） | `viewers.js` 新增 `SAVE_INTENT_SOURCES` 声明表（只登记 `tabs.js` 的三条切标签路；**不登记 = 有意例外**，`menuCloseAll` 属此类）+ `registry.begin/via` + `lifecycle.checkSaveIntentCoverage()` / `missingSaveIntents()`；`tabs.js` 三处 emit 改走 `emitSaveIntent(source)`。**给意图带来源标记**，报警文案写明怎么改；既有 `bus.on('md:interrupt', …)` 取证点（`viewers.js:284`）**没有失效** |
+| **⑤** | 内容区总线事件的事实**散在三处**（`viewers.js:1-58`、`panel.js:86-136`、`content.js:54-59`），`viewers.js` 头部没有总表 | **低危文档缺项** | `viewers.js` 头部补**总线事件总表**（事件 / 方向 / 载荷 / 语义 / 地界 / scope），覆盖任务点名的 8 条 + 内容区实际用到的其余 17 条（含「`v3:viewer-host` **不存在这个事件**」与已作废的 `v3:md-rendered` 两条记录项）；并配**覆盖比对断言**（表与代码互相覆盖，多列/漏列都红） |
+| **③** | 409 冲突 + 取消的语义（显式保存 vs 静默保存两条路的行为不同） | **属产品决定，本批只出方案、不改代码** | `docs/reviews/14-内容区契约收尾.md` §5 给出**两个口味**（静默路径该不该弹阻塞 `confirm`、取消后正文留不留/给不给「复制正文」）的取舍、各自改哪几行、可见行为变化、风险与可逆性、回归影响面 |
+
+#### 断言与阴性对照（五条，都贴了真实输出）
+
+- `tests/personal-ui.mjs` **279 → 310**：其中**新增 29 条**（段 K2-2 / K2-8 / K2-9 / K2-10 与段 M），
+  另**补回 2 条**在沙箱工厂化时一度丢掉显式形式的既有断言（`viewers.js` 真身装载、宿主真身方法全部取出），
+  并把第 3 条既有断言（原「6 个方法都取到了」）**原位恢复强度**、第 5 条（`_session`）补回。
+  **对既有断言的处理是「改写 3 条 + 一度丢掉显式形式 3 条（现已全部补回／恢复强度）」**，逐条处置表见
+  `docs/reviews/14-内容区契约收尾.md` §3.4（**不是**「一条未删改」）。
+  另：`tests/personal-ui.mjs:977` 那条「emit 必须在改 `activeKey` 之前」的源码级断言**有意放宽**为
+  同时认 `emitSaveIntent(` 与裸 `bus.emit('md:interrupt'`；「保存意图必须带登记来源」改由段 M3 的源码闸承担
+  （NC2 实测：放宽那条仍绿，M3 变红）。
+- 阴性对照（原始输出在 `docs/reviews/evidence-2026-09-21/`；**这批输出是补回那 2 条断言之前跑的**，
+  故「通过」数比现在重跑少 2，失败清单不受影响）：
+  ① `_negative-control-w2-NC1-menucloseall.txt` —— 断开兜底链（`syncEditorHost` 不再发 `available:false`）⇒ **304 通过 / 4 失败**，红的正是 K2-8 那四条；
+  ② `-NC2-bare-emit.txt` —— `tabs.js` 那行换成裸 `bus.emit` ⇒ **302 / 6**（应发路径没记账）；
+  ③ `-NC3-emit-deleted.txt` —— 整行删掉 ⇒ **298 / 10**（含既有的 J4-a 源码级断言 + 新增的 M3 源码闸）；
+  ④ `-NC4-emit-moved.txt` —— 把发意图挪到改 `store.activeKey` 之后 ⇒ **302 / 6**；
+  ⑤ `-NC5-unlisted-event.txt` —— 加一条**未登记**的总线事件 ⇒ **307 / 1**，红的正是段 M 的漏列断言（`漏了 v3:w2-unlisted-event`）。
+  五条做完**逐份还原**（`panel.js` 哈希与基线逐位一致）。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（各 0 条），退出码 0；
+逐套断言 86 / 12 / 76 / **279 → 310** / 16 / 50 / 3 / 27 / 42 / 69 / 79。
+静态与冷启动段（十套，不含 HTTP 那行汇总）逐条相加：**653 → 684**（+31 全部来自 `personal-ui`）。
+> 上一批记的「合计 632」是**加错了**：按同一批证据文件重加是 653（基线 `_baseline-doc.txt` 实为 564、收工 `_after-doc.txt` 实为 653）。
+> 本批重新逐条加过并改准：基线 **653**、收工 **684**。
+基线 `docs/reviews/_baseline-w2.txt`、收工 `docs/reviews/_after-w2.txt`。
+
+#### 未实测 / 判不了的（如实列）
+
+- **② 的最终效果（内嵌模式下 focus 与滚动同步）无法在本批实测**：仓库没有浏览器测试；本机 `privhub/node_modules` 里没有 vue
+  （前端走 CDN 全局构建）。⇒ 只能说「代码路径上不再依赖 `$el` 指向哪里」，**不能说**「滚动同步已实测正常」。
+- **`$el` 对「根节点是 teleport 的组件」到底指向目标容器还是锚点**：本批**没有定论**（未在本机跑真 Vue），
+  但这正是改用 `ref` 的理由 —— 修法不依赖这个答案。
+- **`v3:viewer-host` 这条线**：实测**全仓 0 处 emit / 0 处 on**（它不是事件，是选择器 `.v3-viewer-host`），总表里如实记为 `info`。
+- **`viewers.js` 那份声明表与源码的对照只在测试里做**：浏览器侧拿不到 `fs`，运行期只查「进过的应发路径有没有真发」；
+  「整段 emit 被删掉」这种改法**运行期查不出来**（NC3 的实测就是这条边界），拦它的是段 M3 的源码闸。
+- **段 M 的覆盖比对只认字面量形式**的 `bus.emit/on/off('名字')`（常量发的名字由表的信息项覆盖）；
+  间接调用（`const EV = 'x'; bus.emit(EV)`）扫不到 —— 这一点写在断言与注释里。
+
+**纪律留痕**：`frontend/index.html` **一字未动**；不动 manifest / 插槽 / 打包链；`data/` 与 `data-files/` 只读（未解密任何真实数据）；
+**未做 git commit / push / stash**；未用 workflow / ralph；未启动子智能体；版本号仍为 **3.1.1**（条目追加在 3.1.1 段内）。
+报告：`docs/reviews/14-内容区契约收尾.md`；连线契约同步更新在 `docs/reviews/08-连线契约.md` §4.1.1。
+
+---
+
 ## [3.1.0] — 2026-09-14
 
 ### 新功能 · 管理控制台外壳（第一阶段：外壳统一、导航清晰、入口不丢）
