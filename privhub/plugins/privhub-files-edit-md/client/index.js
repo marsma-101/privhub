@@ -353,7 +353,7 @@ const MdEditor = {
         /* 只读预览的隐藏交给**宿主的编辑态布局**（styles.js 的 `.v3-content--editor`）：
          * 本插件不再去别家的节点上写内联 display（写进去还得自己负责还原，正是老毛病的来源）。 */
         this.$nextTick(() => {
-          const ta = this.$el && this.$el.querySelector ? this.$el.querySelector('textarea.md-src') : null
+          const ta = this.refSrc()
           if (ta) { ta.focus(); this.syncScroll() }
         })
         // 报「编辑态已开」：宿主据此给内容区加上 `.v3-content--editor`（布局归宿主）
@@ -374,10 +374,29 @@ const MdEditor = {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); void this.save() }
     },
     togglePreview() { this.previewOpen = !this.previewOpen },
-    /* 编辑区滚动同步到预览区 */
+    /* ---- 取「自己的节点」一律走 `ref`，不再走 `$el.querySelector` ----
+     *
+     * 【为什么不能在 teleport 形态里用 `$el.querySelector`】
+     * 内嵌模式下编辑器的节点被 `teleport` 到**宿主舱位** `.v3-editor-host`（模板第一支），
+     * 它已经不在本组件子树的锚点里了；`this.$el` 指的是哪一块（目标容器？锚点？）取决于
+     * Vue 内部怎么给「根节点是 teleport 的组件」赋 `$el` —— 那是实现细节，本插件不该赌。
+     * 赌错的后果是本项目最忌讳的那种：**查不到就 `null`，于是 focus 与滚动同步静默失效**
+     * （不报错、不提示，用户只觉得"有时候不好使"）。
+     *
+     * `ref` 是 Vue 的**公开契约**（模板里 `ref="x"` ⇒ 实例上 `$refs.x`），且对 teleport
+     * 内容同样成立（Vue 会把 teleport 子树的 ref 收进**发起它的那个组件实例**）。两种形态
+     * 用的是同一套写法 ⇒ 不看形态、也不看实现。
+     * ⚠ 一并加存在性判断：ref 没到位时**什么都不做**（宁可这一帧不同步，也不抛错）——
+     *   "退化成不做事"在同步里是可接受的（下一个滚动事件就会再试一次），
+     *   而"抛错炸掉输入回调"会让编辑器直接不可用，严重得多。
+     */
+    refSrc() { return (this.$refs && this.$refs.src) || null },
+    refPre() { return (this.$refs && this.$refs.pre) || null },
+    /* 编辑区滚动同步到预览区（只在内嵌模式的源码 textarea 上有意义：浮层走 EasyMDE，
+     * 它的输入区在 CodeMirror 里、没有这个 ref ⇒ 这里自然什么都不做）。 */
     syncScroll() {
-      const src = this.$el && this.$el.querySelector ? this.$el.querySelector('textarea.md-src') : null
-      const pre = this.$el && this.$el.querySelector ? this.$el.querySelector('.md-inline-preview') : null
+      const src = this.refSrc()
+      const pre = this.refPre()
       if (!src || !pre) return
       const ratio = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight)
       pre.scrollTop = ratio * (pre.scrollHeight - pre.clientHeight)
@@ -682,6 +701,7 @@ const MdEditor = {
               <span style="flex:1"></span><span>Ctrl+S 保存</span>
             </div>
             <textarea
+              ref="src"
               class="md-src"
               v-model="doc"
               @input="onSrcInput"
@@ -693,7 +713,7 @@ const MdEditor = {
           </div>
           <div v-if="previewOpen" style="flex:1;display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--line)">
             <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0">实时预览（双链 [[文件名]] 可点击）</div>
-            <div class="md-inline-preview md-preview" v-html="previewHtml" @click="onPreviewClick" style="flex:1;overflow:auto;padding:14px 18px;background:var(--panel2);color:var(--text);font-size:14px;line-height:1.7"></div>
+            <div class="md-inline-preview md-preview" ref="pre" v-html="previewHtml" @click="onPreviewClick" style="flex:1;overflow:auto;padding:14px 18px;background:var(--panel2);color:var(--text);font-size:14px;line-height:1.7"></div>
           </div>
         </div>
         <!-- 底部状态条 -->

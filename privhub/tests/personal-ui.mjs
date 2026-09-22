@@ -957,7 +957,9 @@ try {
 
   /* ---- J4 顺序准绳：卸载 viewer 必须晚于「切标签前的静默保存」 ---- */
   {
-    /* J4-a 源码级：tabs.js 三个切换入口都在改 activeKey 之前 emit md:interrupt */
+    /* J4-a 源码级：tabs.js 三个切换入口都在改 activeKey 之前发保存意图
+     * （`emitSaveIntent('…')` = 带来源记账地发 `md:interrupt`；两个写法都算，
+     *   但**位置**必须仍排在改 `store.activeKey` 之前 —— 这条断言只管位置）。 */
     const tabsSrc = readExplorer('tabs.js')
     const bodyOf = (name) => {
       const at = tabsSrc.indexOf('function ' + name + '(')
@@ -967,12 +969,12 @@ try {
     const orderOk = []
     for (const fn of ['openTab', 'activateTab', 'closeTab']) {
       const b = bodyOf(fn)
-      const e = b.indexOf("bus.emit('md:interrupt'")
+      const e = Math.max(b.indexOf("bus.emit('md:interrupt'"), b.indexOf("emitSaveIntent('"))
       // 只认【赋值】：`store.activeKey === key` 这种比较不算变更（closeTab 里先有一处比较）
       const a = b.search(/store\.activeKey\s*=(?!=)/)
       orderOk.push(e >= 0 && a >= 0 && e < a)
     }
-    ok(orderOk.every(Boolean), 'tabs.js：openTab / activateTab / closeTab 都在改 store.activeKey【之前】emit md:interrupt（保存意图先于挂载点变更）')
+    ok(orderOk.every(Boolean), 'tabs.js：openTab / activateTab / closeTab 都在改 store.activeKey【之前】发保存意图（emitSaveIntent → md:interrupt；保存意图先于挂载点变更）')
 
     /* J4-b 行为级（更强）：真跑 tabs.js，用【同步观察者】看两件事的先后。
      * 同步观察者 = 最坏情形（等价于宿主把 watcher 改成 flush:'sync'）：
@@ -1253,6 +1255,10 @@ let kDone = null
     return src.slice(at, end + 1)
   }
 
+
+  const PANEL_BARE = stripJsComments(PANEL_K)
+
+  /* K 段跑真身用的那套「测试自带」状态（tabs.js 真身与其阴性对照共用这一份）。 */
   const events = []       // 综合顺序流水（本测试自己记，逐条同步）
   const apiCalls = []
   const toasts = []
@@ -1281,10 +1287,11 @@ let kDone = null
     return Promise.resolve({ ok: true })
   }
 
-  const kbus = (() => {
+  /* 总线工厂：外层 J 段与每个 K 段沙箱各用一根（每个沙箱一根的理由见下面 makeSandbox 的注释）。 */
+  const makeBus = () => {
     const l = {}
-    return {
-      on(ev, fn) { (l[ev] = l[ev] || []).push(fn); return () => kbus.off(ev, fn) },
+    const b = {
+      on(ev, fn) { (l[ev] = l[ev] || []).push(fn); return () => b.off(ev, fn) },
       off(ev, fn) { const a = l[ev]; const i = a ? a.indexOf(fn) : -1; if (i >= 0) a.splice(i, 1) },
       emit(ev, ...args) {
         for (const fn of (l[ev] || []).slice()) {
@@ -1293,71 +1300,137 @@ let kDone = null
       },
       _listeners(ev) { return (l[ev] || []).length },
     }
-  })()
+    return b
+  }
+  const kbus = makeBus()
 
   /* key 口径取宿主自己的实现（utils.js 的 tabKey 真身），测试不另造一套 */
-  const tabKeySrc = /const tabKey = \(project, path\) => [^\n]*/.exec(readExplorer('utils.js'))
-  const tabKey = tabKeySrc ? vm.runInNewContext('(function(){' + tabKeySrc[0] + '; return tabKey})()', {}) : null
+  const utilsSrcK = readExplorer('utils.js')
+  const utilFn = (name, re) => {
+    const src = re.exec(utilsSrcK)
+    return src ? vm.runInNewContext('(function(){' + src[0] + '; return ' + name + '})()', {}) : null
+  }
+  const tabKey = utilFn('tabKey', /const tabKey = \(project, path\) => [^\n]*/)
+  /* `openTab` 还要用这两个真身：relPath 拼路径、kindOf 判类型。
+   * kindOf 自身依赖 `extOf` 与 `IMAGE_EXTS` / `OFFICE_KIND_EXTS` —— 把这三样一并喂进它，
+   * 式子仍是 utils.js 里那一行（`OFFICE_EXTS` 去掉 pdf），不是我另写一份清单。 */
+  const relPath = utilFn('relPath', /function relPath\(project, dir, name\)[^\n]*/)
+  const kindOf = (() => {
+    const src = /function kindOf\(name\) \{[\s\S]*?\n\}/.exec(utilsSrcK)
+    const extSrc = /function extOf\(name\) \{[\s\S]*?\n\}/.exec(utilsSrcK)
+    if (!src || !extSrc) return null
+    const officeExts = ((/const OFFICE_EXTS = \[([^\]]*)\]/.exec(utilsSrcK) || ['', ''])[1] || '')
+      .split(',').map((s) => s.replace(/['"\s]/g, '')).filter(Boolean)
+    if (officeExts.length < 4) return null
+    const box = {
+      IMAGE_EXTS: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'],
+      OFFICE_KIND_EXTS: officeExts.filter((e) => e !== 'pdf').map((e) => e.replace(/['\s]/g, '')),
+    }
+    return vm.runInNewContext('(function(){ ' + extSrc[0] + ' ' + src[0] + '; return kindOf })()', box)
+  })()
   if (!tabKey) throw new Error('utils.js 里找不到 tabKey 真身')
+  if (!relPath || !kindOf) throw new Error('utils.js 里找不到 relPath / kindOf 真身')
   ok(tabKey('P', 'a/b.md') === 'P|a/b.md', 'key 口径取宿主真身（utils.js 的 tabKey）：' + tabKey('P', 'a/b.md'))
 
-  const K = {
-    console: { log: NOOP, warn: NOOP, error: (...a) => { errs.push(a.map(String).join(' ')) } },
-    document: {
+  /* ---- K 段用的「一套沙箱」工厂（M 段复用同一份，避免测试自己另造一套口径） ----
+   *
+   * 每个实例都是**独立的 K0 上下文**，于是每个实例都重新装一遍 `viewers.js` 真身、
+   * 都从零建一次注册表 —— 这正是「同一个沙箱里换掉 window.PrivHub」会串味的地方
+   * （模块级标志会让第二份注册表建不出来）。所以 `installViewerRegistry()` 是按
+   * `PH.viewers` 是否已存在判断的，不是按模块级布尔值。
+   *
+   * 阴性对照要在**真源码文本**上做变异，所以 `tabs.js` 的源码在这里读一次。
+   */
+  /* 每个沙箱**自带一根总线**：`viewers.js` 的取证监听是按 bus 记账的（同一根 bus 只挂一条），
+   * 而 K2-10 要在一个进程里连开五套沙箱做阴性对照 —— 共用一根 bus 会让
+   * 「第几套沙箱的监听器在跑」变得说不清（真跑出来的症状是：保存意图被记在**别人的**注册表上）。
+   * 所以沙箱内的一律用 `makeBus()` 新造；外层 J 段用的 `kbus` 保持不变。 */
+
+  const dock = { className: 'v3-editor-host' }
+  const tabsReal = { src: readExplorer('tabs.js') }
+  let K = null               // 主沙箱（下面 `S = makeSandbox()` 之后赋值；variants 各用各的）
+  const makeSandbox = () => {
+    const kdoc = {
       getElementById: () => null, createElement: () => ({}),
       querySelector: () => null, querySelectorAll: () => [],
       head: { appendChild: () => {} }, body: { appendChild: () => {} },
-    },
-    TextEncoder, Date, Math, JSON, Object, Array, String, Number, Boolean, Error, TypeError,
-    RegExp, Promise, Map, Set, Symbol, Proxy, queueMicrotask,
-    confirm: () => { events.push('confirm'); return false },
-    setTimeout: () => 0,
-    bus: kbus,
-    tabKey,
-    EDITOR_SELECTOR: dockDecl ? dockDecl[1] : '',
-    store: { activeKey: '', content: null },
-    window: null,
+    }
+    const bus = makeBus()          // 每个沙箱一根自己的总线（理由见上）
+    const KX = {
+      console: { log: NOOP, warn: NOOP, error: (...a) => { errs.push(a.map(String).join(' ')) } },
+      document: kdoc,
+      TextEncoder, Date, Math, JSON, Object, Array, String, Number, Boolean, Error, TypeError,
+      RegExp, Promise, Map, Set, Symbol, Proxy, queueMicrotask,
+      /* tabs.js 真身要 sessionStorage（标签持久化）；只用到 getItem / setItem，且都被 try/catch 包着 */
+      sessionStorage: (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), clear: () => m.clear(), key: (i) => [...m.keys()][i], get length() { return m.size } } })(),
+      confirm: () => { events.push('confirm'); return false },
+      setTimeout: () => 0,
+      bus,
+      tabKey,
+      relPath,
+      kindOf,
+      /* tabs.js / panel.js 里对 nav 的调用（openTab 末尾把选中项写进 nav、面板切目录）；
+       * 这些不是本段被测对象，给个够用的桩（形状与 deps.js 导出的 nav 一致：可写字段 + openDir）。 */
+      nav: { project: 'P', path: '', selected: null, rightOpen: false, entries: [], projectsList: [], openDir: () => {} },
+      /* tabs.js 打开标签后会 loadContent（真身会去发请求）；本段测的是**顺序**而不是取数，
+       * 给个桩（真正的「打开内容」由 K 段里 `showFile()` + 宿主真身 syncEditorHost 体现）。 */
+      loadContent: () => Promise.resolve(),
+      /* panel.js 的 menuCloseAll 用到了从 tabs.js import 进来的 persistTabs（宿主内部口径）；
+       * 这一条段的重点是「宿主有没有把舱位没了这件事说出去」，持久化不是被测对象 ⇒ 给个桩。
+       * （注意不是 NOOP 直接丢：桩里也走一遍 sessionStorage，跟真身行为一致。） */
+      persistTabs: () => { try { KX.sessionStorage.setItem('privhub_v3_tabs_u', JSON.stringify(KX.store.tabs)) } catch { /* 忽略 */ } },
+      EDITOR_SELECTOR: dockDecl ? dockDecl[1] : '',
+      store: { tabs: [], activeKey: '', content: null },
+      window: null,
+    }
+    const K = KX
+    K.globalThis = K; K.self = K
+    K.window = { PrivHub: { api: apiStub, bus, nav: { project: 'P', path: '' }, AUTH: { user: { username: 'u', role: 'admin', projects: ['P'] }, token: 't' }, toast: (m, k) => { toasts.push({ m, k }) } } }
+    vm.createContext(K)
+    vm.runInContext('const store = globalThis.store', K)
+    vm.runInContext(stripModK(readExplorer('viewers.js')) + '\nglobalThis.__vwK = { createRegistry, createViewerSession, currentRegistry, installViewerRegistry }', K, { filename: 'viewers.js' })
+    vm.runInContext('installViewerRegistry()', K)   // 建注册表 + 在这根 bus 上接取证监听（幂等）
+    const fns = {}
+    for (const name of ['contentLiveKey', 'editorHostInfo', 'syncEditorHost', 'setEditorLayout', 'noteEditorLifecycle', 'menuCloseAll', 'contentClass']) {
+      fns[name] = vm.runInContext('(' + 'function ' + methodSrc(PANEL_BARE, name) + ')', K)
+    }
+    let dockPresent = true
+    const host = {
+      activeTab: null, _editorHostKey: undefined, editorLayout: '', viewerLayout: '',
+      $el: { querySelector: (sel) => (sel === K.EDITOR_SELECTOR && dockPresent ? dock : null) },
+      _setDock: (v) => { dockPresent = !!v },
+      setDock: (v) => { dockPresent = !!v },
+    }
+    for (const [k, f] of Object.entries(fns)) host[k] = f
+    bus.on('v3:editor-host-ask', (p) => { bus.emit('v3:editor-host', host.editorHostInfo(p)) })
+    bus.on('v3:editor-state', (p) => { host.setEditorLayout(p) })
+    bus.on('md:editor-lifecycle', (p) => { host.noteEditorLifecycle(p) })
+    const showFile = (project, path) => {
+      const key = tabKey(project, path)
+      K.store.activeKey = key
+      K.store.content = { key, state: 'ready' }
+      host.activeTab = { key, project, path, name: path.split('/').pop(), kind: 'md' }
+    }
+    const hideContent = () => {
+      K.store.activeKey = ''
+      K.store.content = null
+      host.activeTab = null
+    }
+    return { K, bus, vw: K.__vwK, fns, host, showFile, hideContent, get dockPresent() { return dockPresent }, setDock: (v) => { dockPresent = !!v } }
   }
-  K.globalThis = K
-  K.self = K
-  K.window = { PrivHub: { api: apiStub, bus: kbus, nav: { project: 'P', path: '' }, AUTH: { user: { username: 'u', role: 'admin', projects: ['P'] }, token: 't' }, toast: (m, k) => { toasts.push({ m, k }) } } }
-  vm.createContext(K)
-  vm.runInContext(stripModK(readExplorer('viewers.js')) + '\nglobalThis.__vwK = { createRegistry, createViewerSession }', K, { filename: 'viewers.js' })
-  ok(!!K.__vwK, 'viewers.js 真身装进 K 沙箱（顺序流水用真注册表，不是测试自己捏的）')
-
-  /* panel.js 五个真身方法 + contentClass（computed）取出来，跑在同一个沙箱里 */
-  const PANEL_BARE = stripJsComments(PANEL_K)
-  const fns = {}
-  for (const name of ['contentLiveKey', 'editorHostInfo', 'syncEditorHost', 'setEditorLayout', 'noteEditorLifecycle', 'contentClass']) {
-    fns[name] = vm.runInContext('(' + 'function ' + methodSrc(PANEL_BARE, name) + ')', K)
-  }
-  ok(Object.values(fns).every((f) => typeof f === 'function'),
-    '宿主真身方法全部取出（contentLiveKey / editorHostInfo / syncEditorHost / setEditorLayout / noteEditorLifecycle / contentClass）')
-
-  const dock = { className: 'v3-editor-host' }
-  let dockPresent = true
-  const host = {
-    activeTab: null, _editorHostKey: undefined, editorLayout: '',
-    $el: { querySelector: (sel) => (sel === K.EDITOR_SELECTOR && dockPresent ? dock : null) },
-    viewerLayout: '',
-  }
-  for (const [k, f] of Object.entries(fns)) host[k] = f
-  /* 宿主面板 mounted() 里那三行接线（与源码逐字对应，行为上真接上） */
-  kbus.on('v3:editor-host-ask', (p) => { kbus.emit('v3:editor-host', host.editorHostInfo(p)) })
-  kbus.on('v3:editor-state', (p) => { host.setEditorLayout(p) })
-  kbus.on('md:editor-lifecycle', (p) => { host.noteEditorLifecycle(p) })
-
-  const showFile = (project, path) => {
-    const key = tabKey(project, path)
-    K.store.activeKey = key
-    K.store.content = { key, state: 'ready' }
-    host.activeTab = { key, project, path, name: path.split('/').pop(), kind: 'md' }
-  }
-  const hideContent = () => {
-    K.store.activeKey = ''
-    K.store.content = null
-    host.activeTab = null
-  }
+  const S = makeSandbox()
+  K = S.K
+  const host = S.host
+  const showFile = S.showFile
+  const hideContent = S.hideContent
+  /* 这两条是**原有断言**（`!!K.__vwK` 与 `Object.values(fns).every(…)`）在工厂化之后的形态：
+   * 沙箱改造把「装载」挪进了工厂，但这两条覆盖不能跟着一起消失 ——
+   * 没有它们，`viewers.js` 的导出被改坏、或某个 `methodSrc` 切片失败时，
+   * 症状是**整个 K 段直接抛异常**（文件级崩溃、后续断言一条都不跑），而不是一条有名字的 ❌。 */
+  ok(!!S.vw && typeof S.vw.createRegistry === 'function' && typeof S.vw.installViewerRegistry === 'function',
+    'viewers.js 真身装进 K 沙箱（顺序流水用真注册表，不是测试自己捏的）')
+  ok(Object.values(S.fns).every((f) => typeof f === 'function') && typeof host.menuCloseAll === 'function',
+    '宿主真身方法全部取出（contentLiveKey / editorHostInfo / syncEditorHost / setEditorLayout / noteEditorLifecycle / menuCloseAll / contentClass）—— K 段沙箱就绪')
 
   /* edit-md 真身进沙箱：剥掉 default export，暴露组件 */
   vm.runInContext(
@@ -1367,11 +1440,13 @@ let kDone = null
   ok(md && md.MdEditor && md.MdEditor.methods && md.MdEditor.data,
     'edit-md 真身在 K 沙箱里跑了起来（真跑组件代码，不是正则猜想）')
 
-  /* 造一个组件实例：方法直接挂在实例上（this === inst），data() 给初值，$nextTick/$el 用桩 */
+  /* 造一个组件实例：方法直接挂在实例上（this === inst），data() 给初值，$nextTick/$refs 用桩。
+   * ⚠ 这里**刻意不给 `$el`**：edit-md 已改成一律走 `ref`（`refSrc()` / `refPre()` 读 `$refs`）,
+   *   实例上根本没有 `$el` 时它也必须照跑 —— 这条本身就是「不再依赖 $el」的证明。 */
   const ticks = []
   const inst = Object.assign({}, md.MdEditor.methods, md.MdEditor.data())
   inst.$nextTick = (fn) => { ticks.push(fn) }
-  inst.$el = { querySelector: () => null }
+  inst.$refs = {}
   Object.defineProperty(inst, 'canEdit', { configurable: true, get() { return inst.canEditProject(inst.project) } })
   let openVal = false
   Object.defineProperty(inst, 'open', {
@@ -1379,10 +1454,10 @@ let kDone = null
     get() { return openVal },
     set(v) { openVal = v; events.push('open=' + v) },
   })
-  const intBefore = kbus._listeners('md:interrupt')   // viewers.js 自己那条「保存意图」监听已在此
-  const sayBefore = kbus._listeners('v3:editor-host')
+  const intBefore = S.bus._listeners('md:interrupt')   // viewers.js 自己那条「保存意图」监听已在此
+  const sayBefore = S.bus._listeners('v3:editor-host')
   md.MdEditor.mounted.call(inst)
-  ok(kbus._listeners('md:interrupt') === intBefore + 1 && kbus._listeners('v3:editor-host') === sayBefore + 1,
+  ok(S.bus._listeners('md:interrupt') === intBefore + 1 && S.bus._listeners('v3:editor-host') === sayBefore + 1,
     '组件 mounted() 接上了两条线：md:interrupt（退场）与 v3:editor-host（舱位没了）')
 
   const reg = K.window.PrivHub.viewers
@@ -1412,7 +1487,7 @@ let kDone = null
 
     reg.lifecycle.clear()
     events.length = 0
-    kbus.emit('md:interrupt', {})          // 真身 tabs.js 的时序：改 activeKey 之前先发
+    S.bus.emit('md:interrupt', {})          // 真身 tabs.js 的时序：改 activeKey 之前先发
     showFile('P', 'b.md')                  // ……emit 之后才换激活标签
     host.syncEditorHost('activeKey')
     ok(orderIn(events, 'api:PUT', 'open=false'),
@@ -1425,6 +1500,12 @@ let kDone = null
     ok(seq('save-intent') < seq('save-capture') && seq('save-capture') < seq('editor-close') && seq('editor-close') > 0,
       '流水号递增确认「捕获早于卸载」：intent seq=' + seq('save-intent') + '、capture seq=' + seq('save-capture') + '、close seq=' + seq('editor-close'))
     ok(reg.lifecycle.checkOrder().length === 0, 'viewers 的顺序不变式（先卸后存）零违规')
+    /* 不变式 2 的**阴性面**：来源不明（空串）的保存意图**不参与判定**、也不报警 —— 这一条是
+     * 「宁可漏报也不误伤 menuCloseAll 这类有意例外」的机制本身，不许被改成"来源空了就报"。 */
+    const covB2 = reg.lifecycle.checkSaveIntentCoverage()
+    ok(reg.lifecycle.log().some((e) => e.kind === 'save-intent' && e.source === '') && covB2.missing.length === 0 && covB2.ok === true,
+      '【不变式 2·不误伤】这一发来自裸 emit（source 为空）⇒ 记账但**不判违规**（实测 source=' +
+      ((reg.lifecycle.log().find((e) => e.kind === 'save-intent') || {}).source || '(空)') + '，missing=' + covB2.missing.length + '）')
     const capEntry = life.find((e) => e.kind === 'save-capture')
     ok(capEntry && capEntry.key === 'P|a.md' && capEntry.id === 'privhub-files-edit-md',
       '捕获那一笔按宿主自己的口径记了 key（实测：' + (capEntry ? capEntry.key + ' / ' + capEntry.id : '(没有)') + '）')
@@ -1443,7 +1524,7 @@ let kDone = null
     await inst.openEditor({ entry: { name: 'a.md', isDir: false }, project: 'P', path: '' }, true)
     inst.doc = '# A v2 又改了'
     inst.onSrcInput()
-    kbus.emit('md:interrupt', {})              // a 的保存发出，但被挂住（网络慢）
+    S.bus.emit('md:interrupt', {})              // a 的保存发出，但被挂住（网络慢）
     showFile('P', 'b.md'); host.syncEditorHost('activeKey')
     const aPut = pending[pending.length - 1]
     docReply = { ok: true, doc: '# B 的正文', mtime: 555 }
@@ -1470,7 +1551,7 @@ let kDone = null
     inst.doc = '# C 未保存的改动'
     inst.onSrcInput()
     const beforeClose = apiCalls.filter((c) => c.method === 'PUT').length
-    kbus.emit('v3:editor-host', { available: false, key: '', selector: DOCK, reason: 'activeKey' })
+    S.bus.emit('v3:editor-host', { available: false, key: '', selector: DOCK, reason: 'activeKey' })
     ok(inst.open === false, '宿主收走舱位 → 编辑器当场退场（不然 teleport 会攥着已销毁的目标）')
     ok(apiCalls.filter((c) => c.method === 'PUT').length === beforeClose + 1,
       '退场之前先把保存发出去了（实测新增 PUT ' + (apiCalls.filter((c) => c.method === 'PUT').length - beforeClose) + ' 次）')
@@ -1480,9 +1561,9 @@ let kDone = null
     showFile('P', 'd.md'); host.syncEditorHost('content')
     docReply = { ok: true, doc: '# D', mtime: 888 }
     await inst.openEditor({ entry: { name: 'd.md', isDir: false }, project: 'P', path: '' }, true)
-    kbus.emit('v3:editor-host', { available: false, key: '', selector: DOCK, reason: 'ask' })
+    S.bus.emit('v3:editor-host', { available: false, key: '', selector: DOCK, reason: 'ask' })
     ok(inst.open === true, '宿主对「能不能内嵌」的否定回答（reason=ask）不会关掉正在编辑的东西')
-    kbus.emit('md:interrupt', {})
+    S.bus.emit('md:interrupt', {})
 
     /* ---- K2-5 静默保存失败必须说出来（不能静默） ---- */
     toasts.length = 0
@@ -1492,7 +1573,7 @@ let kDone = null
     await inst.openEditor({ entry: { name: 'e.md', isDir: false }, project: 'P', path: '' }, true)
     inst.doc = '# E 未保存'
     inst.onSrcInput()
-    kbus.emit('md:interrupt', {})
+    S.bus.emit('md:interrupt', {})
     const ePut = pending[pending.length - 1]
     docReply = { ok: true, doc: '# F', mtime: 950 }
     showFile('P', 'f.md'); host.syncEditorHost('activeKey')    // 新一轮编辑：失败回包落在别的会话上
@@ -1506,7 +1587,7 @@ let kDone = null
 
     /* ---- K2-6 宿主真身：可用性判据 / 布局派生 / 流水记账 ---- */
     showFile('P', 'a.md')
-    dockPresent = true
+    host.setDock(true)
     ok(host.editorHostInfo({ project: 'P', path: 'a.md' }).available === true,
       '内容区正承载 a.md → 宿主答 available=true')
     showFile('P', 'zzz.md')
@@ -1514,10 +1595,10 @@ let kDone = null
       '【要害】舱位在、但内容区显示的是**别的文件** → 宿主答 available=false（旧判据「别人的 DOM 非空」在这里会给 true，编辑器就贴错画面）')
     hideContent()
     ok(host.editorHostInfo({ project: 'P', path: 'zzz.md' }).available === false, '内容区被销毁 → 答 available=false')
-    dockPresent = false
+    host.setDock(false)
     showFile('P', 'a.md')
     ok(host.editorHostInfo({ project: 'P', path: 'a.md' }).available === false, '舱位不在（内容区没渲染）→ 答 available=false')
-    dockPresent = true
+    host.setDock(true)
     /* 舱位消失时必须推 available:false 并让编辑态布局作废 */
     host.editorLayout = 'editor'
     hideContent()
@@ -1549,8 +1630,163 @@ let kDone = null
       '【兜底】绕开中断入口直接开另一个文件时，上一轮的未保存正文先被捕获并发出保存（实测 path=' + (putAfter[putAfter.length - 1] || {}).body?.path + '）')
     ok(inst.path === 'h.md' && inst.doc === '# H', '然后才切到新文件（实测 path=' + inst.path + '）')
 
+    /* ================= ① 守 menuCloseAll 那条兜底链（**不是 bug**，缺的是断言） =========
+     *
+     * `panel.js` 的 `menuCloseAll()`（清空全部标签）**不发** `md:interrupt`，它清的是
+     * `tabs` / `activeKey` / `content` 三件事。它不丢字，靠的是**另一条链**：
+     *   宿主 `store.activeKey` watcher → `syncEditorHost()` 发现舱位 key 变了
+     *   → 发 `v3:editor-host { available:false }` → `edit-md` 接住
+     *   → `leaveInline('host-gone')`：**先捕获、先发保存、再 open=false**。
+     * `viewers.js` 的 `checkOrder()` 注释里明写它**故意不查**「有没有发过保存」，为的就是
+     * 不误伤这条路。既然没人查，就**得有人守着** —— 这一段就是那条断言。
+     *
+     * 跑的是真身：`panel.js` 的 `menuCloseAll`（从源码切片）+ `syncEditorHost`（真身方法）
+     * + `edit-md` 真身 + 真注册表。阴性对照见下面 K2-10（V2：把 `syncEditorHost` 里的
+     * `available:false` 那一发去掉 ⇒ 本段变红）。
+     */
+    /* ---- K2-8 「清空标签」路径：宿主通知 + 先捕获后卸 的顺序仍成立 ---- */
+    /* 场景摆法对着 panel.js 的 watcher 来：`menuCloseAll()` 先改状态，watcher 再跑
+     * （`store.activeKey` 那条 watcher 的三件事：clearInjected / syncViewer / syncEditorHost）。
+     * 注意：**不能**先 `hideContent()` 再 `menuCloseAll()` —— 那样 `syncEditorHost` 在
+     * 「key 已经变了」的时刻才第一次跑，`_editorHostKey` 直接被设成 ''，**一发都不发**
+     * （舱位契约靠的是"变"的那一瞬间）。这一步的摆法本身就是这条断言的一部分。 */
+    host.setDock(true)
+    showFile('P', 'k8.md'); host.syncEditorHost('content')
+    docReply = { ok: true, doc: '# K8 原正文', mtime: 2001 }
+    await inst.openEditor({ entry: { name: 'k8.md', isDir: false }, project: 'P', path: '' }, true)
+    inst.doc = '# K8 清空标签前没保存的改动'
+    inst.onSrcInput()
+    reg.lifecycle.clear(); events.length = 0
+    const putBeforeK8 = apiCalls.filter((c) => c.method === 'PUT').length
+    host.menuCloseAll()                 // ← panel.js **真身**：清 tabs/activeKey/content（不发 md:interrupt，故意的）
+    host.syncEditorHost('activeKey')    // ← activeKey watcher 真身那一行（真身时序：watcher 排在同步块之后的微任务里，这里手动等价触发）
+    const k8Life = reg.lifecycle.log()
+    const k8Kinds = k8Life.map((e) => e.kind).join(' → ')
+    ok(k8Life.some((e) => e.kind === 'save-capture' && e.reason === 'host-gone') && k8Life.some((e) => e.kind === 'editor-close' && e.reason === 'host-gone'),
+      '【清空标签·宿主侧】宿主的 host-gone 通知真的到了（实测流水 kind@reason：' + JSON.stringify(k8Life.map((e) => e.kind + '@' + e.reason)) + '）'
+      + '｜说明：viewer 的 unmount 那一笔不在这条路径上 —— 它由 panel.js 的 `syncViewer` 记，而本段只跑 watcher 的 `syncEditorHost` 那一步（宿主侧三件事里的第三件）。')
+    ok(inst.open === false && inst.mode === 'float',
+      '【清空标签】编辑器随舱位消失当场退场（open=false / mode=float）')
+    ok(orderIn(k8Life.map((e) => e.kind), 'save-capture', 'editor-close'),
+      '【清空标签·顺序】捕获排在编辑态退场**之前**（实测 kind 顺序：' + k8Kinds + '）')
+    const k8Put = apiCalls.filter((c) => c.method === 'PUT')
+    ok(k8Put.length === putBeforeK8 + 1 && k8Put[k8Put.length - 1].body.path === 'k8.md' && /K8 清空标签前没保存的改动/.test(k8Put[k8Put.length - 1].body.doc),
+      '【清空标签·不丢字】那一发保存真的出去了，且写的是被清空前的那份正文（实测 path=' + (k8Put[k8Put.length - 1] || {}).body?.path + '）')
+    ok(reg.lifecycle.checkOrder().length === 0,
+      '【不误伤】这条路**没有** md:interrupt，但顺序不变式零违规（它查的是倒挂，不是"有没有发过"）')
+
+    /* ================= ④ 第二条不变式：该发而没发 ≠ 有意例外 =================
+     *
+     * 跑 `tabs.js` **真身**（源码原样装进沙箱，不另写一份 "等价实现"）：
+     *   · 阳性：正常切标签 / 关标签 ⇒ 每条应发路径都真发了，零违规；
+     *   · 阴性：把那一行 emit 删掉 / 挪到改 `activeKey` 之后 ⇒ 当场报违规。
+     * `reg.lifecycle.checkSaveIntentCoverage()` 的结果是数据（`checks` / `missing`），
+     * 断言打在数据上，不是打在 `console.error` 的字符串上。
+     */
+    const runTabs = (srcText, label) => {
+      const s = makeSandbox()
+      vm.runInContext(stripModK(srcText) + '\nglobalThis.__tabs = { openTab, activateTab, closeTab, closeOthers }', s.K, { filename: label || 'tabs.js' })
+      return { s, tabs: s.K.__tabs, reg: s.K.window.PrivHub.viewers }
+    }
+    const logOfTab = (r) => r.reg.lifecycle.log().map((e) => e.kind).join(' → ')
+    const coverageOf = (r) => r.reg.lifecycle.checkSaveIntentCoverage()
+
+    /* ---- K2-9 阳性：真身 tabs.js 的三条应发路径都真发了 ---- */
+    {
+      /* 三条应发路径都要在**自己是激活标签**的前提下走一遍（`closeTab` 只在关激活标签时发意图）：
+       * 打开 y → 切到 x（y 失活）→ 切回 y（y 又激活）→ 关 y（这时 y 才是激活标签）。 */
+      const T = runTabs(tabsReal.src, 'tabs.js')
+      T.s.showFile('P', 'x.md')                                  // 先有一个激活标签 x
+      T.tabs.openTab({ name: 'y.md', isDir: false }, 'P', '')            // → 意图 #1（openTab）
+      T.tabs.activateTab(tabKey('P', 'x.md'))                          // → 意图 #2（activateTab）
+      T.tabs.activateTab(tabKey('P', 'y.md'))                          // y 重新激活（同 key 切换：不发意图，符合 tabs.js 语义）
+      T.tabs.closeTab(tabKey('P', 'y.md'))                            // → 意图 #3（closeTab，关的是激活标签）
+      const srcs = T.reg.lifecycle.saveIntentSources()
+      const cov = coverageOf(T)
+      ok(srcs.length === 4 && srcs.every((e) => e.emitted && e.expected),
+        '【不变式 2·阳性】真身 tabs.js 的应发路径每走一次都真发了保存意图（实测：' + JSON.stringify(srcs.map((e) => e.source + (e.emitted ? '=发了' : '=没发'))) + '）')
+      ok(srcs.map((e) => e.source).join(',') === 'tabs.openTab,tabs.activateTab,tabs.activateTab,tabs.closeTab',
+        '四条记录的来源名与 SAVE_INTENT_SOURCES 登记的一致（实测：' + srcs.map((e) => e.source).join(' → ') + '）')
+      ok(cov.ok === true && cov.missing.length === 0,
+        '【不变式 2·零违规】正常时序下 checkSaveIntentCoverage() 无缺项（实测 missing=' + cov.missing.length + '，checks 全 seen：' + cov.checks.map((c) => c.source + '=' + (c.seen ? 'seen' : 'never')).join('/') + '）')
+      ok(cov.checks.every((c) => c.seen && c.emitted),
+        '声明表三行都对上了实际发生的调用（实测：' + JSON.stringify(cov.checks.map((c) => ({ s: c.source, seen: c.seen, emitted: c.emitted }))) + '）')
+      const intentKeys = T.reg.lifecycle.log().filter((e) => e.kind === 'save-intent').map((e) => e.key)
+      ok(intentKeys.join(',') === 'P|x.md,P|y.md,P|x.md,P|y.md',
+        '每一发保存意图都记在「当时那个文件」头上（实测 key：' + intentKeys.join(' → ') + '）')
+      ok(T.reg.lifecycle.log().some((e) => e.kind === 'save-intent' && e.source === 'tabs.closeTab'),
+        '取证点仍认得出「是哪条路发的」（viewers.js 那条 md:interrupt 监听没有失效）—— 实测流水：' + logOfTab(T))
+    }
+
+    /* ---- K2-10 阴性对照：把三处 emit 各改坏一次，逐条看哪一层变红 ---- */
+    {
+      const V1 = runTabs(tabsReal.src.replace("if (wasActive) emitSaveIntent('tabs.closeTab')", ''), 'tabs.js-NC-V1')
+      V1.s.showFile('P', 'x.md')
+      V1.tabs.openTab({ name: 'y.md', isDir: false }, 'P', '')
+      V1.reg.lifecycle.clear()
+      V1.tabs.closeTab(tabKey('P', 'y.md'))
+      const cov1 = coverageOf(V1)
+      ok(!cov1.checks.find((c) => c.source === 'tabs.closeTab').seen && cov1.ok === true && cov1.noneMissed === true,
+        '【阴性 V1·关标签那行被删】那条路这一次**根本没进**（声明表 seen=false），运行期没有"缺项"可报（ok=' + cov1.ok + '）—— 这正是「整段调用被删掉」的运行期盲区，拦它的是段 M3 的源码闸')
+
+      /* 把「发」换成裸 emit：`tabs.js` 自己那份账没人记 ⇒ 运行期查不出来（如实承认），
+       * 要拦它得靠源码级断言（走 wrapper）—— 这条就是那句承认的实测依据。 */
+      /* 关标签那条路只在「关的是激活标签」时才发意图 ⇒ tabs 里得真有这个标签：
+       * `showFile()` 只设 activeKey，标签要靠 `openTab` 才进 store（这正是 K2-9 踩过一次的坑）。 */
+      const V1b = runTabs(tabsReal.src.replace("if (wasActive) emitSaveIntent('tabs.closeTab')", "if (wasActive) bus.emit('md:interrupt', {})"), 'tabs.js-NC-V1b')
+      V1b.s.showFile('P', 'x.md')
+      V1b.tabs.openTab({ name: 'y.md', isDir: false }, 'P', '')
+      V1b.reg.lifecycle.clear()
+      V1b.tabs.closeTab(tabKey('P', 'y.md'))
+      const cov1b = coverageOf(V1b)
+      const v1bLog = V1b.reg.lifecycle.log()
+      ok(cov1b.ok === true && cov1b.missing.length === 0 &&
+         v1bLog.some((e) => e.kind === 'save-intent' && e.source === ''),
+        '【阴性 V1b·换成裸 emit】意图照样发出（行为没坏），但没人记账 ⇒ 运行期**查不出来**：如实承认这一条的边界（实测 missing=' + cov1b.missing.length + '、source="' + ((v1bLog.find((e) => e.kind === 'save-intent') || {}).source || '(空)') + '"、流水=' + logOfTab(V1b) + '）')
+
+      const V2 = runTabs(tabsReal.src.replace("if (wasActive) emitSaveIntent('tabs.closeTab')", 'if (wasActive) { store.activeKey = \'\'; emitSaveIntent(\'tabs.closeTab\') }'), 'tabs.js-NC-V2')
+      V2.s.showFile('P', 'x.md')
+      V2.tabs.openTab({ name: 'y.md', isDir: false }, 'P', '')
+      V2.reg.lifecycle.clear()
+      V2.tabs.closeTab(tabKey('P', 'y.md'))
+      const v2Log = V2.reg.lifecycle.log()
+      ok(v2Log.some((e) => e.kind === 'save-intent' && e.source === 'tabs.closeTab'),
+        '【阴性 V2·把 emit 挪到改 activeKey 之后】意图仍然发出了（这一层没坏：' + logOfTab(V2) + '）')
+
+      /* V3：整条兜底链断开 —— 宿主在舱位没了时**不再发** `available:false`。
+       * 这种做法会让 K2-8 从一开始就红（同一段逻辑，判据只是"宿主有没有说"），
+       * 这里把它做成**独立沙箱**，好把「红了的是哪一条」单独摆出来。 */
+      const V3 = makeSandbox()
+      const realSync = V3.fns.syncEditorHost
+      V3.host.syncEditorHost = function (t) { if (this.contentLiveKey()) return realSync.call(this, t) }
+      V3.host.setDock(true)
+      const inst8 = Object.assign({}, md.MdEditor.methods, md.MdEditor.data())
+      inst8.$nextTick = (fn) => { ticks.push(fn) }
+      inst8.$refs = {}
+      let v3open = false
+      Object.defineProperty(inst8, 'canEdit', { configurable: true, get() { return inst8.canEditProject(inst8.project) } })
+      Object.defineProperty(inst8, 'open', { configurable: true, get() { return v3open }, set(v) { v3open = v; events.push('open=' + v) } })
+      md.MdEditor.mounted.call(inst8)
+      V3.showFile('P', 'k8.md'); V3.host.syncEditorHost('content')
+      docReply = { ok: true, doc: '# K8 原正文', mtime: 2101 }
+      await inst8.openEditor({ entry: { name: 'k8.md', isDir: false }, project: 'P', path: '' }, true)
+      inst8.doc = '# K8 没保存的改动（V3）'
+      inst8.onSrcInput()
+      const regV3 = V3.K.window.PrivHub.viewers
+      regV3.lifecycle.clear()
+      const putV3 = apiCalls.filter((c) => c.method === 'PUT').length
+      V3.host.menuCloseAll(); V3.host.syncEditorHost('activeKey')
+      const v3Kinds = regV3.lifecycle.log().map((e) => e.kind).join(' → ') || '(空)'
+      ok(inst8.open === true && regV3.lifecycle.log().length === 0,
+        '【阴性对照 V3·把兜底链断开】宿主不再发 host-gone ⇒ 编辑器**没退场**、也没记流水（实测 open=' + inst8.open + '、流水=' + v3Kinds + '）')
+      ok(regV3.lifecycle.log().some((e) => e.kind === 'save-capture') === false &&
+         apiCalls.filter((c) => c.method === 'PUT').length === putV3,
+        '【阴性对照 V3】那份未保存正文**一次都没被捕获/发出**——正是 K2-8 守着的那件事（实测新增 PUT ' + (apiCalls.filter((c) => c.method === 'PUT').length - putV3) + ' 次，编辑器里还留着 ' + JSON.stringify(String(inst8.doc).slice(0, 24)) + '）')
+      md.MdEditor.beforeUnmount.call(inst8)
+    }
+
     md.MdEditor.beforeUnmount.call(inst)
-    ok(kbus._listeners('md:interrupt') === intBefore && kbus._listeners('v3:editor-host') === sayBefore,
+    ok(S.bus._listeners('md:interrupt') === intBefore && S.bus._listeners('v3:editor-host') === sayBefore,
       '组件 beforeUnmount 摘掉两条线（插件卸载 → 零残留；viewers.js 自己那条保存意图监听不受影响）')
     ok(sandboxErrors.length === 0 && errs.length === 0,
       '全程零异常、零 console.error' + (sandboxErrors.length || errs.length ? '：' + sandboxErrors.concat(errs).join(' | ') : ''))
@@ -2050,6 +2286,174 @@ console.log('\n── M 批注锚点 ← 宿主交来的渲染根（第二步 d�
   ok(inst.mdRoot === null, 'beforeUnmount 后不再持有渲染根引用')
 }
 
+
+/* ================= M. 内容区总线事件总表 ↔ 实际代码（⑤）与「该发而没发」的源码闸（④） =====
+ *
+ * ⑤ 的缺项不是「写错了」，是「契约散在三处、没有一处能一眼看全」：
+ *   注册表契约在 `viewers.js` 头部、编辑舱位那三条线在 `panel.js:86-110`、
+ *   `v3:md-root` 与已作废的 `v3:md-rendered` 在 `panel.js:112-136` 与 `content.js:54-59`。
+ *   本批在 `viewers.js` 头部补一张**总线事件总表**，并在这里把它与代码**钉在一起**：
+ *     · 表里 `scope=bus` 的名字，必须**恰好**是这两个插件里所有字面量形式的
+ *       `bus.emit / bus.on / bus.off('名字')` 的集合 —— 多列一个或漏列一个都红；
+ *     · 描述性的行（`scope=info`）与已作废的行（`scope=retired`）分槽：前者只做记录
+ *       （比如「`v3:viewer-host` 根本不存在」这条事实本身），后者进了名单反而要红。
+ *
+ * ④ 的源码闸：`viewers.js` 的 `SAVE_INTENT_SOURCES` 声明「哪几条路必须发保存意图」，
+ *   本段按声明里的 `before` 原文去 `tabs.js` 里定位，并验它排在改 `store.activeKey` 之前。
+ *   ——运行期的 `checkSaveIntentCoverage()` 只查「进去之后有没有真发」，
+ *     它**查不出「整段 emit 被删掉」**（见 K2-10 的 V1/V1b 实测），这一层归本段。
+ */
+console.log('\n── M 内容区总线事件总表 ↔ 实际代码 ／ 保存意图的源码闸 ──')
+{
+  /** 从 panel.js（已剥注释）里取一个方法/函数的真身源码（按大括号配平切片，不靠正则猜边界）。 */
+  const methodOf = (name, src = stripJsComments(TREE_PANEL)) => {
+    const at = src.indexOf('\n    ' + name + '(')
+    if (at < 0) throw new Error('panel.js 里找不到方法 ' + name)
+    const start = src.indexOf(name + '(', at)
+    const brace = src.indexOf('{', start)
+    let depth = 0
+    for (let i = brace; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1) }
+    }
+    throw new Error('方法 ' + name + ' 的括号没配平')
+  }
+
+  /* ---- M1 解析总表（从 viewers.js 头部的 fenced 表格里读，不另写一份名单） ---- */
+  const VW_SRC = readExplorer('viewers.js')
+  const M_COMMENT = /\/\*\*([\s\S]*?)\*\//.exec(VW_SRC)
+  const M_TEXT = M_COMMENT ? M_COMMENT[1] : ''
+  /* 按 `|` 切列（载荷列里会有 `{ project, path }` —— 没有 `|`，但别写成一个会吃到行尾的正则）。
+   * 一行合法 = 8 段（首尾空）且最后一段是 scope ∈ {bus, out, info, retired}。 */
+  const SCOPES = new Set(['bus', 'out', 'info', 'retired'])
+  const mRows = []
+  for (const line of M_TEXT.split('\n')) {
+    if (!/^\s*\*\s*\|/.test(line)) continue
+    const cols = line.replace(/^\s*\*\s*/, '').split('|').map((c) => c.trim())
+    if (cols.length !== 8 || cols[0] !== '' || cols[7] !== '') continue
+    const scope = cols[6]
+    if (!SCOPES.has(scope)) continue
+    const name = (cols[1].match(/`([^`]+)`/) || [])[1] || ''
+    if (!name) continue
+    mRows.push({ name, marker: cols[1], direction: cols[2], payload: cols[3], meaning: cols[4], owner: cols[5], scope })
+  }
+  ok(M_TEXT.includes('总线事件总表'),
+    'viewers.js 头部有「总线事件总表」（表里的事件名与说明都是**从源码里解析出来的**，不是测试另抄一份）')
+  ok(mRows.length >= 12,
+    '总表解析出 ' + mRows.length + ' 行（覆盖：谁发谁收 / 载荷 / 语义 / 谁的地界）')
+
+  const busEmitted = new Set(mRows.filter((r) => r.scope === 'bus').map((r) => r.name))
+  const infoOnly = new Set(mRows.filter((r) => r.scope === 'info').map((r) => r.name))
+  const retired = new Set(mRows.filter((r) => r.scope === 'retired').map((r) => r.name))
+  /* 覆盖比对的名单 = 表里 `bus` + `out` 两类（只差一个 `scope` 字段：前者整条线都在内容区，
+   * 后者另一端在地界之外）。`info` / `retired` 不进名单：一个是「记录一个不存在的事件」，
+   * 一个记已作废的名字 —— 它们进了名单反而要红。 */
+  const outNames = new Set(mRows.filter((r) => r.scope === 'out').map((r) => r.name))
+  const busNames = busEmitted
+  const coveredNames = new Set([...busNames, ...outNames, ...infoOnly])
+  ok(busNames.size + outNames.size >= 13 && retired.size >= 1,
+    '分槽正确：bus=' + busNames.size + ' 条、out=' + outNames.size + ' 条、info=' + infoOnly.size + ' 条、retired=' + retired.size + ' 条（info/retired 不进名单）')
+  ok(mRows.every((r) => r.direction && r.payload && r.meaning && r.owner),
+    '总表每一行都写了「方向 / 载荷 / 语义 / 地界」四列（缺一列就算没写清）')
+
+  /* 任务点名要覆盖的 8 个 + 内容区实际用到的其余事件名 */
+  const mustCover = ['v3:editor-host-ask', 'v3:editor-host', 'v3:md-root', 'md:interrupt', 'md:changed', 'md:opened', 'file:saved', 'v3:viewer-host']
+  const notCovered = mustCover.filter((n) => !coveredNames.has(n))
+  ok(notCovered.length === 0,
+    '任务点名的事件全在表里（含 `v3:viewer-host` 那一行「不存在」的记录）：漏了 ' + (notCovered.join('、') || '无'))
+  ok(infoOnly.has('v3:viewer-host') && !busEmitted.has('v3:viewer-host'),
+    '`v3:viewer-host` 如实记为「不存在这个事件」（viewer 的挂载点是选择器 `.v3-viewer-host`，不是事件）—— 不许编一个不存在的总线出来充数')
+
+  /* ---- M2 与代码对钉：字面量形式的 bus.emit / on / off ---- */
+  const scanBus = (files) => {
+    const set = new Set()
+    for (const f of files) {
+      const src = stripJsComments(readFileSync(f, 'utf8'))
+      const re = /bus\.(?:emit|on|off)\(\s*'([^']+)'/g
+      let m
+      while ((m = re.exec(src)) !== null) set.add(m[1])
+    }
+    return set
+  }
+  const scanFiles = explorerFiles.map((f) => join(EXPLORER_DIR, f))
+    .concat(['index.js'].map((f) => join(ROOT, 'plugins', 'privhub-files-edit-md', 'client', f)))
+  const inCode = scanBus(scanFiles)
+  const missingInTable = [...inCode].filter((n) => !coveredNames.has(n)).sort()
+  const extraInTable = [...busNames, ...outNames].filter((n) => !inCode.has(n)).sort()
+  ok(missingInTable.length === 0,
+    '【互相覆盖·漏列】代码里出现的总线事件都在总表里：漏了 ' + (missingInTable.join('、') || '无') + '（扫了 ' + scanFiles.length + ' 个文件、共 ' + inCode.size + ' 个事件名）')
+  ok(extraInTable.length === 0,
+    '【互相覆盖·多列】总表里 `bus`/`out` 的名字都在代码里真有 emit/on：多了 ' + (extraInTable.join('、') || '无'))
+  ok(retired.size > 0 && [...retired].every((n) => !inCode.has(n)),
+    '标 `retired` 的事件名确实不在代码里（`' + [...retired].join('`、`') + '` ⇒ 0 处 emit / 0 处 on）')
+  ok(inCode.has('v3:editor-host-ask') && inCode.has('v3:editor-host'),
+    '【常量发的名字也算数】`v3:editor-host-ask` 在 edit-md 里是 `EVENT_ASK` 常量、在 panel.js 里是字面量 ⇒ 扫描器扫得到，表里也必须有它')
+
+  /* 只解析**声明数组那一段**（`const SAVE_INTENT_SOURCES = [ … ]`）：
+   * 不整文件乱切 `{` —— `viewers.js` 里到处是对象字面量，乱切会切出几十条假声明。 */
+  const vwBare = stripJsComments(VW_SRC)
+  const dAt = vwBare.indexOf('const SAVE_INTENT_SOURCES')
+  const dOpen = dAt < 0 ? -1 : vwBare.indexOf('[', dAt)
+  const dClose = dOpen < 0 ? -1 : vwBare.indexOf(']', dOpen)
+  const declBlock = dAt < 0 ? '' : vwBare.slice(dAt, dClose > 0 ? dClose : dAt + 4000)
+  const declRows = []
+  const one = String.fromCharCode(39)
+  /* 取值用「找键 → 找开引号 → 找配对引号」三步，不拼正则：
+   * 一条声明在一行内（值里没有裸换行），所以第一个引号与下一个**未被转义**的同种引号
+   * 之间就是它的值。**单双引号都要认**：`before` 里的代码两头都有引号，
+   * 声明里刻意用双引号把它们包起来，只认单引号会读成空串（这正是本段第一版踩的坑）。 */
+  const readStrField = (seg, key) => {
+    /* 引号用 charCode 造，避开「单引号字符串里写单引号」这类嵌套引号的坑
+     * （本段第一版就是在这里把值读成空串的）。 */
+    const dq = String.fromCharCode(34)
+    const m = new RegExp(key + ':\\s*([' + one + dq + '])').exec(seg)
+    if (!m) return ''
+    const q = m[1]
+    let i = m.index + m[0].length
+    const out = []
+    while (i < seg.length) {
+      const c = seg[i]
+      if (c === '\\' && i + 1 < seg.length) { out.push(seg[i + 1]); i += 2; continue }
+      if (c === q) break
+      out.push(c); i++
+    }
+    return out.join('')
+  }
+  for (const line of declBlock.split(/\r?\n/)) {
+    if (!/^\s*\{\s*source:\s*'/.test(line)) continue
+    declRows.push({ source: readStrField(line, 'source'), file: readStrField(line, 'file'), note: readStrField(line, 'note'), before: readStrField(line, 'before') })
+  }
+  ok(declRows.length === 3 && declRows.every((d) => d.source && d.file && d.before),
+    'viewers.js 的 SAVE_INTENT_SOURCES 解析出 ' + declRows.length + ' 条声明（只解析那段数组；每条都带 source / file / before）'
+    + (declRows.length === 3 && !declRows.every((d) => d.source && d.file && d.before) ? '｜实测：' + JSON.stringify(declRows) : ''))
+  const reader = (file) => (file === 'tabs.js' ? readExplorer('tabs.js') : '')
+  const declProblems = []
+  for (const d of declRows) {
+    const text = reader(d.file)
+    /* 引号归一化后再找：声明里用双引号把 `before` 那段代码包起来（里面自带单引号），
+     * 直接拿双引号版本去目标文件里找必然找不到 —— 两边都折成单引号再比。 */
+    const norm = (s) => s.split(String.fromCharCode(34)).join(String.fromCharCode(39))
+    const at = text.indexOf(norm(d.before))
+    /* 位置判据：`before` 之后**紧邻的一小段**里不得出现对 `store.activeKey` 的赋值。
+     * 为什么不是「全文第一处赋值的下标」：那条太软 —— `tabs.js` 的 `restoreTabs`/`openTab`
+     * 里先就有别的赋值，按全文下标判会**放过**真正倒挂的那种改法（K2-10 的 V2 就是它）。
+     * 窗口 200 字符：够覆盖「原本那七八行」，又不至于吃到下一个函数的赋值。 */
+    const after = at < 0 ? '' : text.slice(at, at + 200)
+    const assignAfter = /store\.activeKey\s*=(?!=)/.test(after)
+    const declares = /emitSaveIntent\(\s*'/.test(d.before)
+    if (at < 0) declProblems.push(d.source + '：`before` 在 ' + d.file + ' 里找不到（代码改了没改表？）')
+    else if (!declares) declProblems.push(d.source + '：`before` 里没有 `emitSaveIntent(\'…\')`（绕开记账就是「连错了不吭声」）')
+    else if (assignAfter) declProblems.push(d.source + '：改 `store.activeKey` 排在发保存意图**之前**（那就是倒挂）')
+  }
+  ok(declProblems.length === 0,
+    '声明表与实际代码对得上（每条 `before` 都在目标文件里、且排在改 store.activeKey 之前）：' + (declProblems.join('；') || '3/3 命中'))
+  /* 声明表必须点名 `tabs.js` 的那三条路（`menuCloseAll` **不许**进来 —— 它是有意例外） */
+  ok(declRows.map((d) => d.source).join(',') === 'tabs.openTab,tabs.activateTab,tabs.closeTab',
+    '声明表点名的是 tabs.js 的三条切标签路：' + declRows.map((d) => d.source).join(' → '))
+  const mcSrc = methodOf('menuCloseAll')
+  ok(!/bus\.emit\(\s*'md:interrupt'/.test(mcSrc) && !/emitSaveIntent\(/.test(mcSrc),
+    '【有意例外不入表】`panel.js` 的 `menuCloseAll` 真身里确实**没有**保存意图（也不许被顺手加上）—— 它靠舱位兜底链（段 K2-8 守着）：' + mcSrc.replace(/\s+/g, ' ').slice(0, 90) + '…')
+}
 
 /* ================= 14. 前端模块语法体检 =================
  *

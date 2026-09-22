@@ -7,6 +7,31 @@ import { nav, bus, AUTH } from './deps.js'
 import { tabKey, kindOf, relPath } from './utils.js'
 import { store } from './store.js'
 import { loadContent } from './content.js'
+import { currentRegistry } from './viewers.js'
+
+/**
+ * 发一次「静默保存」意图，并**按来源记账**（见 `viewers.js` 的 `SAVE_INTENT_SOURCES`）。
+ *
+ * 为什么三处切标签都要走这里：`md:interrupt` 是「编辑器要没了，请先保存」的唯一入口，
+ * 而它**必须排在改 `store.activeKey` 之前**（宿主由 watcher 卸载 viewer，watcher 排在
+ * 之后 ⇒ 卸载必然晚于保存意图）。走 `reg.via()` 而不是裸 `bus.emit()` 的收益有两条：
+ *   ① 「进过这条应发路径却没有真发」会被 `viewers.lifecycle.missingSaveIntent...` 抓出来
+ *      （本项目最怕的正是「连错了不吭声」）；
+ *   ② 取证点（`viewers.js` 的 `md:interrupt` 监听）能记下**是哪条路**发的。
+ * 注册表不在（没装 explorer-v3 的宿主侧）时退化成裸 emit：**行为一字不变**，
+ * 只是没人记账 —— 这条退路保证「宿主不在也不影响别的插件」。
+ *
+ * ⚠ 别把这里的 `reg.via(...)` 改成 `setTimeout` / `$nextTick`：保存意图必须同步发出。
+ * ⚠ 也别把 `return` 提到 `bus.emit` 之前：那样「没发」就成了静默行为，正是要防的那类毛病。
+ */
+function emitSaveIntent(source) {
+  /* `typeof` 判断不是糊涂账：J4-b 那个沙箱只装 `utils.js` + `tabs.js`（不装 viewers.js），
+   * 那里退化成裸 emit 正是要的语义 —— 但**绝不吞掉"注册表坏了"**：注册表存在时，
+   * 它的记账结果是 `viewers.lifecycle.checkSaveIntentCoverage()`，那才是判定的地方。 */
+  const reg = typeof currentRegistry === 'function' ? currentRegistry() : null
+  if (reg && typeof reg.via === 'function') { reg.via(source, () => bus.emit('md:interrupt', {})); return }
+  bus.emit('md:interrupt', {})
+}
 
 /* ---- 标签持久化（按用户隔离，sessionStorage） ---- */
 const TABS_KEY = 'privhub_v3_tabs_'
@@ -50,7 +75,7 @@ function openTab(entry, project, dirPath) {
     sizeText: entry.sizeText || '', type: entry.type || '',
   }
   // 切换打开其他文件前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
-  if (store.activeKey && store.activeKey !== key) bus.emit('md:interrupt', {})
+  if (store.activeKey && store.activeKey !== key) emitSaveIntent('tabs.openTab')
   const idx = store.tabs.findIndex(t => t.key === key)
   if (idx >= 0) store.tabs.splice(idx, 1)
   store.tabs.push(tab)
@@ -66,7 +91,7 @@ function openTab(entry, project, dirPath) {
 function activateTab(key) {
   const tab = store.tabs.find(t => t.key === key)
   // 切换激活前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
-  if (store.activeKey && store.activeKey !== key) bus.emit('md:interrupt', {})
+  if (store.activeKey && store.activeKey !== key) emitSaveIntent('tabs.activateTab')
   // 幂等：即使已是激活标签也恢复选中/右侧面板（Esc/切视图后 rightOpen 被骨架清零）
   if (tab) {
     nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
@@ -81,7 +106,7 @@ function closeTab(key) {
   const idx = store.tabs.findIndex(t => t.key === key)
   if (idx < 0) return
   const wasActive = store.activeKey === key
-  if (wasActive) bus.emit('md:interrupt', {}) // 关闭激活标签前静默保存
+  if (wasActive) emitSaveIntent('tabs.closeTab') // 关闭激活标签前静默保存
   store.tabs.splice(idx, 1)
   persistTabs()
   if (wasActive) {
