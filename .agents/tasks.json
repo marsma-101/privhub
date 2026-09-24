@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "检查 plugins/ 目录，确认所有含 src/index.ts 的插件是否正确注册路由，输出依赖图到 docs/module-map.md",
+      "status": "done",
+      "reviewStatus": "manual-review",
+      "assignee": "trae",
+      "worktree": "worktrees/trae",
+      "branch": "feat/T-001",
+      "base": "a52989b",
+      "deliverables": [
+        "docs/module-map.md",
+        "docs/changes/T-001.md"
+      ],
+      "verification": {
+        "lint": "项目无 lint/typecheck 脚本（CLAUDE.md 明示），无适用对象",
+        "integrity": "46 通过 / 1 失败（唯一失败为 O1 部署包目录不存在，gitignored 环境项，需授权才可同步）",
+        "regression": "node tests/run-all.mjs --spawn：HTTP 86/86，静态与冷启动批次全部 0 失败；退出码 1 仅因 O1"
+      },
+      "pushDecision": {
+        "ruleFile": ".agents/push-rules.yml",
+        "ruleFileExists": false,
+        "action": "no-push",
+        "reason": "推送规则文件不存在，无法校验自动推送条件；按任务约束标记 manual-review，未推送 snapshot/trae/T-001"
+      },
+      "claimedAt": "2026-09-24T12:00:32+08:00",
+      "completedAt": "2026-09-24T12:45:00+08:00",
+      "history": [
+        {
+          "at": "2026-09-24T12:00:32+08:00",
+          "by": "trae",
+          "event": "claimed"
+        },
+        {
+          "at": "2026-09-24T12:45:00+08:00",
+          "by": "trae",
+          "event": "completed; findings F-01..F-05 recorded in docs/module-map.md; push gate unresolved (push-rules.yml missing) -> manual-review"
+        }
+      ]
+    }
+  ]
+}
