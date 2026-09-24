@@ -522,13 +522,29 @@ const PanelV3 = {
     doMoveSubmit() { void doMoveSubmit() },
     doEdit() { doEdit() },
     doMkdirHere() { doMkdirHere() },
-    /* 文件夹 ⋯ 菜单：上传整个文件夹到该文件夹（根节点 → 项目根） */
-    doUploadHere() {
+    /* 文件夹 ⋯ 菜单：本次上传的目标目录（相对项目根）。
+     * 根节点 → 项目根 ''；非文件夹节点 → null（不该出现上传项）。
+     * ⚠ 必须在 closeMenu() 之前取值：closeMenu 会清空 store.ctxMenu。 */
+    uploadTargetRel() {
       const m = store.ctxMenu
-      closeMenu()
-      if (!m || !m.entry.isDir) return
+      if (!m || !m.entry.isDir) return null
       const isRoot = m.dirPath === '' && m.entry.name === m.project
-      const rel = isRoot ? '' : relPath(m.project, m.dirPath, m.entry.name)
+      return isRoot ? '' : relPath(m.project, m.dirPath, m.entry.name)
+    },
+    /* 文件夹 ⋯ 菜单：上传【文件】到该文件夹（指定目标目录）
+     * 与「上传文件夹」分列两项：浏览器同一个 file input 无法同时选文件与文件夹
+     * （webkitdirectory 只认目录），故一次点击只能承担一种。 */
+    doUploadFilesHere() {
+      const rel = this.uploadTargetRel()
+      closeMenu()
+      if (rel === null) return
+      bus.emit('upload:request', { path: rel })
+    },
+    /* 文件夹 ⋯ 菜单：上传【整个文件夹】到该文件夹（指定目标目录） */
+    doUploadFolderHere() {
+      const rel = this.uploadTargetRel()
+      closeMenu()
+      if (rel === null) return
       bus.emit('upload:request-dir', { path: rel })
     },
     /* 树根 ⋯ 菜单：邀请成员（admin，privhub-files-invite 插件弹窗） */
@@ -875,7 +891,8 @@ const PanelV3 = {
         <div v-if="!store.ctxMenu.entry.isDir && (isOfficeMenu || isMdMenu || isTextMenu)" class="ctx-item" @click="doEdit">✏️ 编辑</div>
         <div class="ctx-item" @click="doRename">✏️ 重命名</div>
         <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doMkdirHere">＋ 新建子文件夹</div>
-        <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadHere">📁 上传到该文件夹</div>
+        <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadFilesHere">⬆ 上传文件到该文件夹</div>
+        <div v-if="store.ctxMenu.entry.isDir" class="ctx-item" @click="doUploadFolderHere">📁⬆ 上传文件夹到该文件夹</div>
         <div v-if="isRootMenu && isAdmin" class="ctx-item" @click="doInvite">📨 邀请成员</div>
         <div class="ctx-item danger" @click="doDelete">🗑 删除</div>
       </div>

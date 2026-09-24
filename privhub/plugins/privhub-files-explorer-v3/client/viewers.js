@@ -45,7 +45,7 @@
  * **不是事件**的线（锚点选择器 `.v3-viewer-host` / `.v3-editor-host`，由宿主模板创建、
  * 插件自己往里建节点）与一份**句柄而不是事件**的注册表（`window.PrivHub.viewers`）——
  * 它们不走事件路由，别按事件名去找。**当前没有 `v3:viewer-host` 这个事件**（0 处 emit / 0 处 on），
- * viewer 的挂载点由宿主**写出**（`panel.js:782` 的 `<div class="v3-viewer-host" data-viewer="none"></div>`），
+ * viewer 的挂载点由宿主**写出**（`panel.js:798` 的 `<div class="v3-viewer-host" data-viewer="none"></div>`），
  * 不是发出来的；本表的信息项那一行就是这条事实本身，机器断言会守着它（见下）。
  *
  * **第三类：`scope=out`** —— 内容区是这些事件的一端，**另一端在那一片地之外**
@@ -61,23 +61,24 @@
  * | `md:editor-lifecycle` | 插件 → 宿主 | `{ kind, project, path, reason, bytes? }` | 顺序取证：`save-capture` / `editor-close` → 宿主 relay 进 `viewers.lifecycle`（与 viewer 挂载/卸载**同一份流水**） | 发：`edit-md` 的 `noteLife()`；收：`panel.js` 的 `noteEditorLifecycle()` | bus |
  * | `v3:md-root` | 宿主 → 插件 | `{ el, project, key, reason }` | 渲染根交接：`el` = md 预览根的**节点引用**，可为 `null`（此刻没有渲染根）。在 `$nextTick` 里发（渲染**之后**） | 发：`panel.js` 的 `noticeMdRoot()`；收：`privhub-files-comments` | bus |
  * | `md:interrupt` | 宿主 → 插件 | `{}` | 「编辑器要没了，静默保存」（**没有回包**，同步派发）。发点必须排在改 `store.activeKey` **之前** | 发：`tabs.js:53/69/84`、`panel.js:228`（切目录）；收：`edit-md`（→ `leaveInline`）＋ `viewers.js`（保存意图取证点） | bus |
- * | `md:changed` | 插件 → 宿主 | `{ project, path }` | 「这个文件的正文变了，去重载」（保存 / 回滚成功后） | 发：`edit-md`、`privhub-files-versions`；收：`panel.js:668` | out |
+ * | `md:changed` | 插件 → 宿主 | `{ project, path }` | 「这个文件的正文变了，去重载」（保存 / 回滚成功后） | 发：`edit-md`、`privhub-files-versions`；收：`panel.js:684` | out |
  * | `md:opened` | 插件 → 宿主 | `{ project, path }` | 「编辑器开了这个文件」。**当前无监听方**（有发无听，`08-连线契约.md` §4.1 已备案） | 发：`edit-md` 的 `openEditor()` | bus |
  * | `file:saved` | 插件 → 宿主 | `{ project, path, name }`（**无 `doc`**） | 「已落盘」→ Git 即时备份钩子。⚠ 后端有个**同名**事件要 `{project,path,doc}`，只是名字撞了，不是同一条契约 | 发：`edit-md` 的 `save()`；前端当前无监听方 | bus |
  * | `entry:open` | 多方 → 插件 | `{ entry, project, path }` | 「开这个文件」→ 编辑器开（浮层/内嵌由舱位决定） | 发：`detail.js` / `ops.js` / `panel.js`；收：`edit-md` | out |
  * | `md:auto-edit` | 宿主 → 插件 | `{ entry, project, path }` | 「内容区打开了一个可编辑文本 → 自动进编辑态」（体积超限时宿主**不发**，改只读呈现） | 发：`content.js:82`；收：`edit-md` | bus |
- * | `md:dirty` | 插件 → 宿主 | `{ project, path, dirty }` | 脏标记 → 标签标题那个 ● | 发：`edit-md`；收：`panel.js:683` | out |
- * | `v3:tab-opened` | 宿主内部 | `{ project, path, name }` | 打开标签的旁路通知。处理函数是**空函数**（占位） | `tabs.js:64` 发、`panel.js:688` 收 | out |
+ * | `md:dirty` | 插件 → 宿主 | `{ project, path, dirty }` | 脏标记 → 标签标题那个 ● | 发：`edit-md`；收：`panel.js:699` | out |
+ * | `v3:tab-opened` | 宿主内部 | `{ project, path, name }` | 打开标签的旁路通知。处理函数是**空函数**（占位） | `tabs.js:64` 发、`panel.js:704` 收 | out |
  * | `office:edit` | 内容区 → office-ui | `{ entry, project, path }` | 「用 Office 浮层编辑这个文件」 | 发：`detail.js:134`、`ops.js:270`、`panel.js:433`；收：`privhub-files-office-ui` | out |
  * | `file:comments` | 内容区 → comments | `{ entry, project, path }` | 「打开这个文件的批注面板」 | 发：`detail.js:147`；收：`privhub-files-comments` | out |
  * | `file:versions` | 内容区 → versions | `{ entry, project, path }` | 「看这个文件的版本历史」 | 发：`detail.js:150`；收：`privhub-files-versions` | out |
  * | `md:genpage` | 内容区 → mdpage | `{ entry, project, path }` | 「把这份 md 生成为页面」 | 发：`detail.js:148`；收：`privhub-files-mdpage` | out |
  * | `html:publish` | 内容区 → publish | `{ entry, project, path }` | 「发布这份 html」 | 发：`detail.js:149`；收：`privhub-files-publish` | out |
  * | `fav:add` | 内容区 → favorites | `{ entry, project, path }` | 「把这一项加进收藏」 | 发：`detail.js:104`、`ops.js:201`；收：`privhub-shell-favorites` | out |
- * | `trash:changed` | 内容区 → trash-ui | `{ id, project, path }` | 「回收站变了，刷新」 | 发：`ops.js:180`、`panel.js:645/679`；收：`privhub-trash-ui` 等 | out |
- * | `files:refresh` | 内容区 → 目录树 | `{ project, path }` | 「文件列表变了，刷目录树缓存」 | 发：`ops.js:253`（另有 `privhub-files-template`）；收：`panel.js:681` → `refreshTree()` | out |
- * | `upload:request-dir` | 内容区 → upload | `{ project, path }` | 「往这个目录传文件」 | 发：`panel.js:532`、`tree.js:103`；收：`privhub-files-upload` | out |
- * | `invite:open` | 内容区 → invite | `{ project }` | 「打开邀请面板」 | 发：`panel.js:539`；收：`privhub-files-invite` | out |
+ * | `trash:changed` | 内容区 → trash-ui | `{ id, project, path }` | 「回收站变了，刷新」 | 发：`ops.js:180`、`panel.js:661/695`；收：`privhub-trash-ui` 等 | out |
+ * | `files:refresh` | 内容区 → 目录树 | `{ project, path }` | 「文件列表变了，刷目录树缓存」 | 发：`ops.js:253`（另有 `privhub-files-template`）；收：`panel.js:697` → `refreshTree()` | out |
+ * | `upload:request` | 内容区 → upload | `{ path }` | 「往这个目录传【文件】」（与下一行的区别：这条开的是**文件**选择框，那条开的是**文件夹**选择框；浏览器同一个 file input 无法两者通吃） | 发：`panel.js:541`；收：`privhub-files-upload` | out |
+ * | `upload:request-dir` | 内容区 → upload | `{ path }` | 「往这个目录传【整个文件夹】（含子目录）」 | 发：`panel.js:548`、`tree.js:103`；收：`privhub-files-upload` | out |
+ * | `invite:open` | 内容区 → invite | `{ project }` | 「打开邀请面板」 | 发：`panel.js:555`；收：`privhub-files-invite` | out |
  * | `dataview:new` | 目录树 → dataview | `{ project, path }` | 「在这里新建数据视图」 | 发：`tree.js:101`；收：`privhub-files-dataview` | out |
  * | `file:trash` | 内容区 → （无监听） | `{ id, project, path }` | 「删了这些文件」。**有发无听**（`08-连线契约.md` §4.1 已备案；骨架那一发 payload 形状与这里不一致） | 发：`ops.js:181`；收：**无** | out |
  * | `v3:viewer-host` | —— | —— | **不存在这个事件**（0 处 emit / 0 处 on）。viewer 的挂载点是**选择器** `.v3-viewer-host`（`HOST_SELECTOR`），由宿主模板写出、插件只往里建节点 | —— | info |

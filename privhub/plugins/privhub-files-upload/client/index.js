@@ -3,10 +3,12 @@
  *
  * 职责：
  *   - 全局拖拽：拖入文件/文件夹 → 递归收集（webkitGetAsEntry）→ 上传
- *   - 文件选择：监听 bus 'upload:request'（F07 面板「＋添加文件」按钮）→ 打开选择框
+ *   - 文件选择：监听 bus 'upload:request'（F07 面板「＋添加文件」按钮，以及文件夹 ⋯ 菜单
+ *     「⬆ 上传文件到该文件夹」带 payload.path）→ 打开选择框
  *   - 上传进度：更新 nav.uploading 等，emit 'upload:progress'（F12 队列消费）
  *
- * 目标目录 = 当前导航位置（nav.project / nav.path），同名覆盖。
+ * 目标目录 = payload.path（文件夹 ⋯ 菜单指定的目录）或当前导航位置（nav.project / nav.path），
+ * 同名文件由服务端返回 409 拒绝（不静默覆盖）。
  *
  * @module privhub-files-upload/client
  */
@@ -49,27 +51,36 @@ const UploadController = {
         Promise.all(entries.map(en => walk(en, ''))).then(() => resolve(files))
       })
     },
+    /* 取出并清空「本次上传的目标目录」（相对项目根）；无指定则回退到当前导航目录。
+     * ⚠ 必须在选择框回调里【立即取走】：用户取消选择框不会触发任何事件，
+     *   残留的目标目录会让下一次上传落到错误位置（确认框写的目录与实际落地目录不一致）。 */
+    takeDirTarget() {
+      const t = this._dirTarget
+      this._dirTarget = null
+      return t === null || t === undefined ? nav.path || '' : String(t)
+    },
     async handleFiles(fileList) {
       const files = Array.from(fileList)
+      const base = this.takeDirTarget()
       if (!files.length || !nav.project) return
-      const dest = nav.path ? nav.project + '/' + nav.path : nav.project
+      const dest = base ? nav.project + '/' + base : nav.project
       if (!confirm('上传 ' + files.length + ' 个文件到「' + dest + '」？同名文件将被覆盖。')) return
-      await this.uploadAll(files)
+      await this.uploadAll(files, base)
     },
     /* 文件夹选择：webkitdirectory 的 File 带 webkitRelativePath（含顶层文件夹名），
        赋给 _relPath 后复用递归上传管道（目录自动创建、同名覆盖）。
-       目标目录：bus payload.path（文件夹 ⋯ 菜单「上传到该文件夹」）或当前导航目录 */
+       目标目录：bus payload.path（文件夹 ⋯ 菜单「📁⬆ 上传文件夹到该文件夹」）或当前导航目录 */
     handleDirFiles(fileList) {
       const files = Array.from(fileList).map((f) => {
         f._relPath = f.webkitRelativePath || f.name
         return f
       })
       if (!files.length || !nav.project) return
-      const base = this._dirTarget !== null && this._dirTarget !== undefined ? this._dirTarget : nav.path || ''
+      const base = this.takeDirTarget()
       const top = files[0]._relPath.split('/')[0]
       const dest = (base ? base + '/' : '') + top
       if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + nav.project + '/' + dest + '」？同名文件将被覆盖。')) return
-      void this.uploadAll(files)
+      void this.uploadAll(files, base)
     },
     /* 确保目录树存在（递归上传需要） */
     async ensureDirs(dirs) {
@@ -79,10 +90,10 @@ const UploadController = {
         } catch { /* 已存在则忽略 */ }
       }
     },
-    async uploadAll(files) {
+    async uploadAll(files, baseArg) {
       nav.uploading = true; nav.uploadDone = 0; nav.uploadTotal = files.length
       // 目标目录：本次上传指定（文件夹 ⋯ 菜单）或当前导航目录
-      const base = this._dirTarget !== null && this._dirTarget !== undefined ? this._dirTarget : nav.path || ''
+      const base = baseArg !== undefined && baseArg !== null ? String(baseArg) : nav.path || ''
       let okCount = 0
       const fails = []
       // 预收集需要创建的目录（相对项目根，含目标目录前缀；按深度排序去重）
@@ -143,13 +154,20 @@ const UploadController = {
     this._onDrop = async (e) => {
       e.preventDefault()
       if (!nav.project) return
+      /* 拖拽一律落到【当前导航目录】：不受菜单里“待定的目标目录”影响
+       * （否则：先用菜单选目标→取消选择框→再拖文件，会落到旧目标） */
+      this._dirTarget = null
       const files = await this.collectEntries(e.dataTransfer)
       await this.handleFiles(files)
     }
     document.addEventListener('dragover', this._onDragOver)
     document.addEventListener('drop', this._onDrop)
-    this._offReq = bus.on('upload:request', () => { this.$refs.fileInput && this.$refs.fileInput.click() })
-    // payload.path：文件夹 ⋯ 菜单「上传到该文件夹」指定的目标目录（相对项目根）；缺省 = 当前导航目录
+    // payload.path：文件夹 ⋯ 菜单「⬆ 上传文件到该文件夹」指定的目标目录（相对项目根）；缺省 = 当前导航目录
+    this._offReq = bus.on('upload:request', (payload) => {
+      this._dirTarget = payload && payload.path !== undefined && payload.path !== null ? String(payload.path) : null
+      this.$refs.fileInput && this.$refs.fileInput.click()
+    })
+    // payload.path：文件夹 ⋯ 菜单「📁⬆ 上传文件夹到该文件夹」指定的目标目录；缺省 = 当前导航目录
     this._offReqDir = bus.on('upload:request-dir', (payload) => {
       this._dirTarget = payload && payload.path !== undefined && payload.path !== null ? String(payload.path) : null
       this.$refs.dirInput && this.$refs.dirInput.click()

@@ -1,6 +1,12 @@
 /**
  * privhub-files-office — Office 文档读取插件（G1）
- * 提取逻辑在 src/extract.mjs（纯 ESM 动态加载）；本文件不 import 任何 TS 模块（规避 tsx CJS 混编）。
+ * 提取逻辑在 src/extract.mjs（纯 ESM 动态加载）。
+ *
+ * ⚠ `package.json` 必须保留 `"type": "module"`：本文件要从 `privhub-core/src/file-exts.ts`
+ *   导入共享扩展名集合（不带扩展名的相对导入）。缺了它，本目录下的 `.ts` 会被 tsx 当 CJS
+ *   处理，那句 `import` 被转成 `require('../../privhub-core/src/file-exts')` ⇒ 解析不到 `.ts`
+ *   ⇒ 整个插件加载失败（`[assembly] 插件加载失败`，且只在服务端日志里，界面上看不出来）。
+ *   同族插件 office-ui / office-ai 未声明 type，因此它们刻意不 import 任何 TS 模块。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { extname } from 'node:path'
