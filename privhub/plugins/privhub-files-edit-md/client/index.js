@@ -210,13 +210,22 @@ const MdEditor = {
       versions: [],
       restoring: false,
       meta: {},
-      previewOpen: true, // inline 预览分栏开关
+      /* 编辑器三态（本批改）：'edit' 纯编辑（默认）| 'preview' 纯预览 | 'split' 分屏。
+       * ⚠ 每次打开文件都由 `openEditor()` 复位成 'edit'，**不做持久化**（不记上次选择）；
+       *   迁前这里是 `previewOpen: true`，且 `openEditor()` 里 `= this.isMd`
+       *   ⇒ md 一打开就是「编辑 + 预览」双栏，没有纯编辑态可言。 */
+      viewMode: 'edit',
     }
   },
   computed: {
     canEdit() {
       return this.canEditProject(this.project)
     },
+    /* 三态的显隐口径（模板只认这两个 computed，不把三元表达式散进模板）：
+     * 纯编辑 = 只有编辑栏；纯预览 = 只有预览栏；分屏 = 两栏并排。
+     * 两者都是「不等于对面那一态」⇒ 任意两态互切都不会出现两栏同时消失。 */
+    showSrc() { return this.viewMode !== 'preview' },
+    showPre() { return this.viewMode !== 'edit' },
     previewHtml() {
       return renderMarkdown(this.bodyText)
     },
@@ -296,7 +305,9 @@ const MdEditor = {
       this.name = e.name
       this.isMd = isMdName(e.name)
       this.showVersions = false
-      this.previewOpen = this.isMd // txt 等纯文本默认单栏编辑（无 md 预览）
+      /* 三态一律从「纯编辑」起手（md 与 .txt 同口径，不做持久化）。
+       * 迁前这一行是 `this.previewOpen = this.isMd` —— md 一打开就是双栏。 */
+      this.viewMode = 'edit'
       /* 新一轮编辑开始：会话号 +1。
        * 上一轮（可能是切标签时**已发出、还没回包**的那次静默保存）的写回动作靠它拦住 ——
        * 否则 A 的保存回包会把 A 的正文写进正在编辑 B 的编辑器：下一次保存就把 A 的内容
@@ -371,12 +382,63 @@ const MdEditor = {
       this.status = '未保存修改…'
     },
     onSrcKeydown(ev) {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); void this.save() }
+      if (!ev) return
+      if ((ev.ctrlKey || ev.metaKey) && String(ev.key || '').toLowerCase() === 's') { ev.preventDefault(); void this.save() }
     },
-    togglePreview() { this.previewOpen = !this.previewOpen },
-    /* ---- 取「自己的节点」一律走 `ref`，不再走 `$el.querySelector` ----
+    /* ---- Ctrl+S：三态（纯编辑 / 纯预览 / 分屏）都必须能保存（本批第二号坑） ----
      *
-     * 【为什么不能在 teleport 形态里用 `$el.querySelector`】
+     * 迁前键处理是挂在**源码 textarea** 上的（`@keydown="onSrcKeydown"`，迁前 `:708`）。三态之后
+     * 纯预览态那一栏是 `v-if` 卸掉的 ⇒ textarea 根本不在 DOM 里 ⇒ 挂在它上面的监听**收不到事件**，
+     * 快捷键**静默失效**（不报错、不提示 —— 正是本项目最忌讳的那种毛病）。
+     *
+     * 两条路可选，取舍写在这里：
+     *   ① 把键处理挪到「两栏共同的外层容器」上：写法最简单，但**只在焦点落在那棵子树里**才有效。
+     *      纯预览态就算点一下预览区把焦点带进来，焦点一旦跑到工具栏按钮 / 地址栏 / 其它面板上，
+     *      事件根本不经过那棵树 ⇒ 仍然是「有时候不好使」。
+     *   ② 组件级**文档监听**（本批采用，见 `bindDocKeys`）：只要编辑器开着（`this.open`），
+     *      无论焦点在哪、当前是哪一态，Ctrl+S 都落在同一个处理函数上。
+     *  ⇒ 选 ②：把「能不能保存」与「哪一栏可见 / 焦点在哪」彻底解耦，这是三态下都成立的**充分**做法。
+     *  ⚠ **不许两处都挂**：同一个 Ctrl+S 会冒泡到两处 ⇒ 保存发两次（两个 PUT）。
+     */
+    bindDocKeys() {
+      if (this._onDocKey) return
+      const d = typeof document !== 'undefined' ? document : null
+      /* 形态判断在先：环境（或单测里的 DOM 桩）没给 addEventListener 时**什么都不做、不抛错** ——
+       * 「退化成不监听」可接受，「挂载时抛错」会让整块界面打不开（本项目的头号事故类型）。 */
+      if (!d || typeof d.addEventListener !== 'function') return
+      this._onDocKey = (ev) => { if (this.open) this.onSrcKeydown(ev) }
+      d.addEventListener('keydown', this._onDocKey)
+    },
+    unbindDocKeys() {
+      const d = typeof document !== 'undefined' ? document : null
+      if (this._onDocKey && d && typeof d.removeEventListener === 'function') d.removeEventListener('keydown', this._onDocKey)
+      this._onDocKey = null
+    },
+    /* 三态切换：点的是「自己那一态」的按钮 ⇒ 再点一次回纯编辑；点另一态 ⇒ 直接过去。
+     * ⚠ 语义（已定，按这个做）：纯预览**不是**退出编辑态 —— 正文（doc）与编辑会话（_session）
+     *   一个字都不动，dirty 也保留，点回纯编辑接着改。退出编辑态只有「✕ 只读」那一条路。 */
+    setView(mode) {
+      const next = this.viewMode === mode ? 'edit' : mode
+      if (next === this.viewMode) return
+      /* 阅读位置：编辑栏会被卸掉重建（v-if），重建后 scrollTop 归零 ⇒ 切之前记一份，切回来还原。 */
+      const keepTop = this.showSrc ? (this.refSrc() || {}).scrollTop : null
+      this.viewMode = next
+      this.$nextTick(() => {
+        this.refreshMde()
+        if (typeof keepTop !== 'number') return
+        const ta = this.refSrc()          // null 安全（ref 没到位就这一帧不同步，不抛错）
+        if (ta) { ta.scrollTop = keepTop; this.syncScroll() }
+      })
+    },
+    /* EasyMDE / CodeMirror 量不到 display:none 容器里的行高：从隐藏态回到可见态要 refresh 一次，
+     * 否则工具栏与光标会错位。**存在性判断在先**：没初始化过 EasyMDE（内嵌模式没有它）时什么都不做。 */
+    refreshMde() {
+      const cm = this.mde && this.mde.codemirror
+      if (cm && typeof cm.refresh === 'function') cm.refresh()
+    },
+    /* ---- 取「自己的节点」一律走 `ref`，不再在 `$el` 上做后代查询 ----
+     *
+     * 【为什么不能在 teleport 形态里靠「组件根节点 + 后代查询」找自己的节点】
      * 内嵌模式下编辑器的节点被 `teleport` 到**宿主舱位** `.v3-editor-host`（模板第一支），
      * 它已经不在本组件子树的锚点里了；`this.$el` 指的是哪一块（目标容器？锚点？）取决于
      * Vue 内部怎么给「根节点是 teleport 的组件」赋 `$el` —— 那是实现细节，本插件不该赌。
@@ -617,6 +679,10 @@ const MdEditor = {
     },
   },
   mounted() {
+    /* Ctrl+S 走**文档级**监听（三态共用一条路，理由见 bindDocKeys 上方那段取舍）。
+     * 挂在 mounted 而不是 openEditor：组件活着的整个期间只挂一次，摘在 beforeUnmount；
+     * 处理函数里用 `this.open` 闸住，编辑器没开时一个键都不吞。 */
+    this.bindDocKeys()
     // payload = { entry, project, path }（骨架 openEntry emit；显式编辑入口）
     this._off = bus.on('entry:open', (payload) => {
       this._manualReadonly = false
@@ -652,6 +718,7 @@ const MdEditor = {
     /* 组件被整体卸载（登出 / 骨架换视图）同样等于「编辑器要没了」：
      * 先捕获数据、先发出保存，再摘监听。这是本文件里最后一道丢内容防线。 */
     this.leaveInline('unmount')
+    this.unbindDocKeys()
     if (this._off) this._off()
     if (this._offAuto) this._offAuto()
     if (this._offInt) this._offInt()
@@ -668,8 +735,13 @@ const MdEditor = {
           <span :style="{ color: dirty ? 'var(--warn)' : 'var(--accent)', fontSize: '12px' }">{{ dirty ? '● 未保存修改' : (saving ? '保存中…' : '') }}</span>
           <span :style="{ color: /失败|错误|取消/.test(status) ? 'var(--danger)' : 'var(--muted)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '45%' }">{{ status }}</span>
           <span style="flex:1"></span>
+          <!-- 三态按钮排：保存 ｜ 预览 ｜ 分屏 ｜ 只读。选中样式复用骨架既有的 .icon-btn.on
+               （index.html 里就有：color/border=var(--accent)、底色 rgba(90,130,200,.1)）——
+               不新增 CSS、不引入新主题。再点一次选中态即回「纯编辑」。 -->
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
-          <button class="icon-btn" @click="togglePreview()" :title="previewOpen ? '隐藏预览' : '显示预览'">{{ previewOpen ? '👁 预览开' : '👁 预览关' }}</button>
+          <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
+          <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
+          <button class="icon-btn" title="退出编辑（只读预览）" @click="exitInline()">✕ 只读</button>
           <button v-if="isMd" class="icon-btn" @click="loadVersions()">🕘 版本</button>
           <button class="icon-btn" title="Git 备份（立即提交当前版本）" @click="gitBackup()">⏺ 备份</button>
           <template v-if="isMd">
@@ -677,7 +749,6 @@ const MdEditor = {
             <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
             <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
           </template>
-          <button class="icon-btn" title="退出编辑（只读预览）" @click="exitInline()">✕ 只读</button>
         </div>
         <!-- 版本抽屉 -->
         <div v-if="showVersions" style="padding:6px 14px;border-bottom:1px solid var(--line);max-height:160px;overflow:auto;background:var(--bg);flex-shrink:0">
@@ -693,9 +764,12 @@ const MdEditor = {
             <button class="small-btn" :disabled="restoring" @click="restore(v)">↩ 回滚到此版本</button>
           </div>
         </div>
-        <!-- 编辑 + 实时预览 分栏 -->
+        <!-- 编辑 + 实时预览：哪一栏在，由 viewMode 决定（纯编辑 / 分屏 / 纯预览）
+             ⚠ 两栏都用 v-if（不是 v-show）：纯预览态编辑栏**真的不在 DOM 里** —— 这正是
+               「迁前把 Ctrl+S 挂在 textarea 上 ⇒ 纯预览态快捷键失效」的成因，
+               快捷键已改走组件级文档监听（bindDocKeys），不依赖这一栏在不在。 -->
         <div style="flex:1;display:flex;min-height:0">
-          <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <div v-if="showSrc" style="flex:1;display:flex;flex-direction:column;min-width:0">
             <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0;display:flex;align-items:center;gap:8px">
               <span>{{ isMd ? 'Markdown 源码' : '文本源码' }}</span><span style="color:var(--warn)" v-if="dirty">●</span>
               <span style="flex:1"></span><span>Ctrl+S 保存</span>
@@ -705,14 +779,16 @@ const MdEditor = {
               class="md-src"
               v-model="doc"
               @input="onSrcInput"
-              @keydown="onSrcKeydown"
               @scroll="syncScroll"
               spellcheck="false"
               style="flex:1;resize:none;border:none;outline:none;padding:12px 16px;background:var(--bg);color:var(--text);font-family:Consolas,'Courier New',monospace;font-size:13.5px;line-height:1.65"
             ></textarea>
           </div>
-          <div v-if="previewOpen" style="flex:1;display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--line)">
-            <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0">实时预览（双链 [[文件名]] 可点击）</div>
+          <div v-if="showPre" style="flex:1;display:flex;flex-direction:column;min-width:0" :style="viewMode === 'split' ? 'border-left:1px solid var(--line)' : ''">
+            <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0;display:flex;align-items:center;gap:8px">
+              <span>实时预览（双链 [[文件名]] 可点击）</span>
+              <span style="flex:1"></span><span>Ctrl+S 保存</span>
+            </div>
             <div class="md-inline-preview md-preview" ref="pre" v-html="previewHtml" @click="onPreviewClick" style="flex:1;overflow:auto;padding:14px 18px;background:var(--panel2);color:var(--text);font-size:14px;line-height:1.7"></div>
           </div>
         </div>
@@ -735,8 +811,12 @@ const MdEditor = {
           <strong>{{ name }}</strong>
           <span style="color:var(--muted);font-size:12px">{{ project }}/{{ path }}</span>
           <span style="flex:1"></span>
+          <!-- 浮层与内嵌同一套三态按钮排（同一批语义、同一个 viewMode）。 -->
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
+          <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
+          <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
           <button class="icon-btn" @click="loadVersions()">🕘 版本</button>
+          <button class="icon-btn" title="Git 备份（立即提交当前版本）" @click="gitBackup()">⏺ 备份</button>
           <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
           <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
           <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
@@ -756,13 +836,18 @@ const MdEditor = {
             <button class="small-btn" :disabled="restoring" @click="restore(v)">↩ 回滚到此版本</button>
           </div>
         </div>
-        <!-- 编辑 + 预览 -->
+        <!-- 编辑 + 预览：与内嵌同一套三态（viewMode），只是浮层里编辑区是 EasyMDE 的宿主。
+             ⚠⚠ 浮层这个编辑栏**必须是 v-show，不许改成 v-if**：
+             initMde() 用 document.getElementById('privhub-md-editor') 取节点，
+             栏一被卸载，EasyMDE 拿到的就是 null / 指向已销毁的节点 —— 浮层编辑器当场哑掉，
+             而且不报错（本项目最忌讳的那种静默毛病）。
+             （阴性对照：把它换成 v-if ⇒ 段 N 的「EasyMDE 挂载点仍在 DOM 里」当场变红。） -->
         <div style="flex:1;display:flex;min-height:0">
-          <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--line)">
-            <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">编辑区（Markdown · 工具栏排版 · frontmatter 自动补齐 created）</div>
+          <div v-show="showSrc" style="flex:1;display:flex;flex-direction:column" :style="viewMode === 'split' ? 'border-right:1px solid var(--line)' : ''">
+            <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">编辑区（Markdown · 工具栏排版 · frontmatter 自动补齐 created）· Ctrl+S 保存</div>
             <textarea id="privhub-md-editor" spellcheck="false" style="display:none"></textarea>
           </div>
-          <div style="flex:1;display:flex;flex-direction:column">
+          <div v-show="showPre" style="flex:1;display:flex;flex-direction:column">
             <div style="padding:6px 14px;font-size:12px;color:var(--muted);background:var(--bg)">预览（双链 [[文件名]] 可点击定位）</div>
             <div class="md-preview" v-html="previewHtml" @click="onPreviewClick" style="flex:1;overflow:auto;padding:14px 18px;background:var(--panel2);color:var(--text);font-size:14px;line-height:1.7"></div>
           </div>

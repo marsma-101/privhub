@@ -276,51 +276,79 @@
       locale: 'zhCN',
       name: name,
       sheetOrder: out.map((x) => x.id),
-      sheets: out,
+      /* ⚠ `sheets` 必须是**按 sheetId 索引的对象**，不能是数组（别"顺手"简化回去）。
+       * Univer 的 `_parseWorksheetSnapshots()` 用 `for (const id in sheets)` 遍历，再把每个
+       * 工作表 `worksheets.set(id, …)`。数组的 `for…in` 给的是**数字下标** '0','1'…，
+       * 与 `sheetOrder` 里的 's0','s1'… 对不上 ⇒ 按 id 取工作表一律 undefined ⇒
+       * 内部 `.getSheetId() / .getCellMatrix()` 抛错、网格整片画不出来。这是 GD-002 的根因。 */
+      sheets: Object.fromEntries(out.map((x) => [x.id, x])),
       styles: {},
     }
   }
   async function loadXlsx() {
-    const r = await api('/privhub/api/office/read?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path))
-    if (!r.ok) { $('loading').textContent = '❌ 读取失败：' + (r.error || '未知'); setStatus('读取失败', 'locked'); return }
-    const snapshot = rowsToSnapshot(r.content.sheets || [])
-    const { createUniver, UniverSheetsCorePreset, LocaleType, zhCNLocale } = window.Office2Univer
-    const created = createUniver({
-      locale: LocaleType.ZH_CN,
-      locales: { [LocaleType.ZH_CN]: zhCNLocale },
-      presets: [
-        UniverSheetsCorePreset({
-          container: 'sheet',
-          toolbar: false,
-          formulaBar: false,
-          footer: false,
-          statusBarStatistic: false,
-          contextMenu: true,
-        }),
-      ],
-    })
-    univer = created.univer
-    univerAPI = created.univerAPI
-    if (typeof univerAPI.createUniverSheet === 'function') univerAPI.createUniverSheet(snapshot)
-    else univer.createUnit(univerAPI.Enum.UniverInstanceType.UNIVER_SHEET, snapshot)
-    // 默认只读（编辑需取锁）
-    const sheet = univerAPI.getActiveWorkbook().getActiveSheet()
-    if (sheet && typeof sheet.setEditable === 'function') sheet.setEditable(false)
-    $('loading').style.display = 'none'
-    $('sheet').style.display = 'block'
-    setStatus('只读预览', '')
+    try {
+      const r = await api('/privhub/api/office/read?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path))
+      if (!r.ok) { $('loading').textContent = '❌ 读取失败：' + (r.error || '未知'); setStatus('读取失败', 'locked'); return }
+      const snapshot = rowsToSnapshot(r.content.sheets || [])
+      const { createUniver, UniverSheetsCorePreset, LocaleType, zhCNLocale } = window.Office2Univer
+      /* 先让容器可见、再建 Univer：画布尺寸按**创建那一刻**的容器尺寸算，
+       * 容器还是 display:none 就按 0×0 初始化 ⇒ 网格画不出来（症状：工具条在、格子区全白）。
+       * ⚠ 这两行不许挪到建表之后 —— 挪回去 Excel 预览就又白了（tests/personal-ui.mjs ⑦ 守着）。 */
+      $('loading').style.display = 'none'
+      $('sheet').style.display = 'block'
+      const created = createUniver({
+        locale: LocaleType.ZH_CN,
+        locales: { [LocaleType.ZH_CN]: zhCNLocale },
+        presets: [
+          UniverSheetsCorePreset({
+            container: 'sheet',
+            toolbar: false,
+            formulaBar: false,
+            footer: false,
+            statusBarStatistic: false,
+            contextMenu: true,
+          }),
+        ],
+      })
+      univer = created.univer
+      univerAPI = created.univerAPI
+      // 建表：拿返回值当工作簿（0.25 的 createUniverSheet 同步返回 FWorkbook），不再裸取 getActiveWorkbook()
+      let book = null
+      if (typeof univerAPI.createUniverSheet === 'function') book = univerAPI.createUniverSheet(snapshot)
+      else univer.createUnit(univerAPI.Enum.UniverInstanceType.UNIVER_SHEET, snapshot)
+      if (!book && typeof univerAPI.getActiveWorkbook === 'function') book = univerAPI.getActiveWorkbook()
+      if (!book) throw new Error('工作簿创建失败')
+      // 默认只读（编辑需取锁）
+      const sheet = book.getActiveSheet()
+      if (sheet && typeof sheet.setEditable === 'function') sheet.setEditable(false)
+      setStatus('只读预览', '')
+    } catch (e) {
+      /* 失败必须看得见：不许再静默卡在「正在加载文档…」（零日志零提示 = 本项目最贵的那类事故） */
+      $('sheet').style.display = 'none'
+      $('loading').style.display = 'flex'
+      $('loading').textContent = '❌ 表格加载失败：' + (e.message || e)
+      setStatus('加载失败', 'locked')
+      throw e
+    }
   }
 
   /* ---------- 启动 ---------- */
   ;(async function init() {
     $('fname').textContent = name
-    if (ext === 'docx') {
-      await reloadDocx()
-    } else if (ext === 'xlsx') {
-      await loadXlsx()
-    } else {
-      $('loading').textContent = '该类型暂不支持 Office 原生预览'
-      setStatus('不支持', 'locked')
+    try {
+      if (ext === 'docx') {
+        await reloadDocx()
+      } else if (ext === 'xlsx') {
+        await loadXlsx()
+      } else {
+        $('loading').textContent = '该类型暂不支持 Office 原生预览'
+        setStatus('不支持', 'locked')
+        return
+      }
+    } catch {
+      /* loadXlsx 已在它自己的 catch 里给出可见原因，这里只负责拦住它 ——
+       * 否则会变成未处理的 Promise 拒绝，也就是"静默"的本体。
+       * docx 分支的 reloadDocx 自带 catch，不会走到这里。 */
       return
     }
     // 锁状态提示

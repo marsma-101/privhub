@@ -1,7 +1,7 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.1.1**
+**当前版本：3.1.3**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -19,6 +19,104 @@
 `GET /privhub/api/health` 上报的就是它。改版本号只需改这一处。
 
 > 历史沿革：3.0.1 之前的提交记录见 `git log`，本文件自 3.0.1 起逐条记录。
+
+---
+
+## [3.1.3] — 2026-09-30
+
+### 缺陷修复 · xlsx 内容区预览两连修（GD-001 / GD-002）
+
+内容区点开 `.xlsx` 先后暴露两个独立根因，均在 `privhub-files-office2/client/view.js`，
+改动只涉及 xlsx 分支，**docx 分支一字未动**。
+
+**GD-001 · 容器隐藏时建表，画布按 0×0 初始化 → 网格画不出来**
+
+- 根因：`view.html` 的 `#sheet` 容器默认 `display:none`，旧代码在隐藏容器上调
+  `createUniver()`，Univer 画布按创建那一刻的容器尺寸初始化为 0×0；之后才把容器置为
+  `display:block`，已经晚了。且全链零 try/catch，任何一步抛错都变成未处理拒绝，
+  界面永远停在「正在加载文档…」，静默无提示。
+- 修法（`view.js`）：把「隐藏 loading / 显示 `#sheet`」两行**上移到 `createUniver()` 之前**
+  （加注释禁止挪回，断言守着）；`loadXlsx()` 整体包 try/catch——失败时藏回网格、恢复
+  loading、显示可见中文原因「❌ 表格加载失败：…」+ 状态栏置「加载失败」并重新抛出；
+  `init()` 两个分支补失败出口接住重抛，消灭静默本体；工作簿改用 `createUniverSheet()`
+  返回值并加 null 防御（保留旧版 `createUnit` 兜底分支）。
+
+**GD-002 · 快照 sheets 传数组，Univer 按数字下标取表 → 只剩小蓝框**
+
+- 根因：GD-001 顺序修复后真机仍只见一个选中框。`rowsToSnapshot()` 返回的 `sheets` 是
+  **数组**，而 Univer 的 `_parseWorksheetSnapshots()` 用 `for (const id in sheets)` 遍历——
+  数组吐出的键是 `'0','1'…`，与 `sheetOrder` 里的 `'s0','s1'…` 完全错位，按 id 取工作表
+  一律 undefined，内部 `getSheetId()/getCellMatrix()/getConfig()` 连环抛错；异常发生在
+  Univer 内部，GD-001 的 catch 接不到。源码级证据取自本项目实际加载的 `univer.bundle.js`。
+- 修法（`view.js` 1 行 + 5 行防回退注释）：
+  `sheets: Object.fromEntries(out.map((x) => [x.id, x]))`——按 sheetId 索引的对象。
+
+**测试**：`tests/personal-ui.mjs` 新增 5 条断言（GD-001 顺序/失败可见 2 条、GD-002 快照
+形状 3 条），个人空间界面回归 353 → **358 通过 / 0 失败**；全量回归 11 套全绿
+（惊蛰当次记录，含阴性对照：各自把修复挪回时对应断言精确变红）。惊蛰在 3180 真机完成
+修复前后截图取证（网格满尺寸、JS 异常 0、docx 无回归）；**霜降独立终验本批次经主人
+09-30 当次指示豁免**（主人已人眼确认），验收闭环以主人确认为准。
+
+**已知问题（未修）**：xlsx 内容区仅显示约前 1000 行、超出不可见——**GD-003**，已开卡，
+与本批两单合并验收，修复中。
+
+---
+
+## [3.1.2] — 2026-09-23
+
+### 界面修复 · W3：编辑器三态（纯编辑 / 纯预览 / 分屏，默认纯编辑）
+
+**动机**：`privhub-files-edit-md` 的编辑器只有「预览开 / 预览关」两态，且 `openEditor()` 里
+`previewOpen = isMd` ⇒ **md 一打开就是双栏**，「纯编辑」这个形态在界面上根本不存在；
+内嵌与浮层两个形态还各有一套栏位写法。本批把两态换成**三态**并**默认纯编辑**，两个形态统一，
+**不改接口、不改数据、不动别的插件**。
+
+| # | 现状（改前） | 改法 | 口径 |
+|---|---|---|---|
+| **A** | `data().previewOpen: true`（`:213`）；`openEditor()` 里 `= this.isMd`（`:299`） | 换成 `viewMode: 'edit' \| 'preview' \| 'split'`；打开文件一律 `= 'edit'`（md 与 `.txt` 同一句）；加 computed `showSrc` / `showPre` | **默认一律纯编辑、不持久化**（不记上次选择） |
+| **B** | 顶部只有一个 `👁 预览开/预览关`（`:669`）、`togglePreview()` 取反（`:376`） | 按钮排 `💾 保存 ｜ 👁 预览 ｜ ◫ 分屏 ｜ ✕ 只读`；`setView(mode)`：点自己那一态 ⇒ 回纯编辑、点另一态 ⇒ 直接过去。选中样式**复用骨架既有的 `.icon-btn.on`**（`index.html:102`） | **不新增 CSS、不引入新主题**；「✕ 只读」仍是**唯一**带 `confirm` 的退出编辑态入口 |
+| **C** | 三态语义未定义 | 「👁 预览」= **编辑器内换栏**：编辑栏隐起、只留渲染预览，正文 / `dirty` / `_session` 全部保留 ⇒ 点回编辑接着改 | 纯预览**不是**退出编辑态（`open` 与 `mode` 都不变），断言守着 |
+| **D** | 内嵌两栏：编辑栏常驻、预览栏 `v-if`（`:698-712`/`:714`） | 两栏改 `v-if="showSrc"` / `v-if="showPre"`（**卸节点**） | 纯预览态 `refSrc()` 必须归 null（上一批的 null 安全契约）—— 编辑栏要真的不在树里 |
+| **E** | 浮层两栏（`:760-790`）无三态、无 `ref` | 编辑栏改 `v-show="showSrc"`、预览栏 `v-show="showPre"`，头部补同一套三态按钮排 + `⏺ 备份` | ⚠ **浮层编辑栏必须是 `v-show`**：`initMde()` 用 `document.getElementById('privhub-md-editor')` 取节点，卸载即哑（阴性 NC2 实测） |
+| **F** | Ctrl+S 挂在源码 textarea 上（`:708`） | 删掉该绑定，改 `bindDocKeys()` / `unbindDocKeys()`：`mounted` 挂、`beforeUnmount` 摘，处理函数用 `this.open` 闸住 | **组件级文档监听**：三态下"能不能保存"与"哪一栏可见 / 焦点在哪"彻底解耦（取舍见报告 §2.1）；⚠ 不许两处都挂（否则保存发两次） |
+| **G** | 切态重建 textarea ⇒ 阅读位置归零 | `setView()` 记 `scrollTop`、`$nextTick` 还原；切态后 `mde.codemirror.refresh()` | ref 取不到就这一帧不同步（不抛错）|
+
+**断言与阴性对照（三条，都贴了真实输出，原始文件在 `docs/reviews/evidence-2026-09-22/`）**：
+
+- `tests/personal-ui.mjs` **310 → 353**：新增 **43 条**全在新段 `N`，判据分三层 ——
+  ① 渲染层：真 Vue 编译器编译**真模板**后渲成 vnode 树，看三态下哪几栏真的在场（`ref="src"` / `ref="pre"`）；
+  ② 行为层：K 段那套沙箱跑 edit-md 真身（默认态 / 切态不丢正文 / 三态 Ctrl+S / 浮层三态 / `.txt` 三态）；
+  ③ 源码层（**三条范围不同，别混着说**）：`$el.querySelector` 与 `document.querySelector(` 是**含注释 0 命中**；
+  `@keydown` 是**剥注释后（`MD_BARE`）0 命中**，**注释里刻意保留 1 处**历史说明（「迁前键处理是挂在源码 textarea 上的…」，解释这条坑的来历，不删）。
+  （本条口径由复核轮纠错后改准：初版把 `@keydown` 也写成"含注释"，是错的。）
+  **本批未改写、未删除任何既有断言**（既有源码级断言一条未削弱，L 段仍绿）。
+- 阴性对照：① `_negative-control-ui3-NC1.txt` —— 默认态改回"打开即分屏" ⇒ **350 通过 / 3 失败**（红的正是三条默认态断言；`.txt 默认也是纯编辑` **仍绿**，精度可见）；
+  ② `_negative-control-ui3-NC2.txt` —— 浮层挂载点从 `v-show` 改回 `v-if` ⇒ **351 / 2**（实测 `节点在树里=false、getElementById 拿到的=null`）；
+  ③ `_negative-control-ui3-NC3.txt` —— 把 Ctrl+S 挪回 textarea ⇒ **347 / 6**（含【Ctrl+S·纯预览】与【源码·单点】）。
+  三条做完**逐份还原**并核哈希（`client/index.js` 与 NC 前逐位一致），还原后 353 / 0。
+
+**回归对照**：`cd privhub && node tests/run-all.mjs --spawn` 改动前后**失败清单均为空、逐条同名**（各 0 条），退出码 0；
+逐套断言 86 / 12 / 76 / **310 → 353** / 16 / 50 / 3 / 27 / 42 / 69 / 79。
+静态与冷启动段（**十套**，不含 HTTP 那行汇总）逐条相加：**684 → 727**（+43 全部来自 `personal-ui`）。
+基线 `docs/reviews/_baseline-ui3.txt`、收工 `docs/reviews/_after-ui3.txt`（两份都是本批自己起手实测重跑的）。
+
+#### 未实测 / 判不了的（如实列）
+
+- **观感一律未实测**：按钮选中态在真机上长什么样、工具栏加了两个按钮会不会挤、分屏边框与纯预览留白 —— 一条都没看过。
+  仓库没有浏览器测试，前端走 CDN，本机没有可挂载的 Vue 运行时环境 ⇒ 只能说"复用既有类与既有 CSS 变量"，**不能说"看着正常"**。
+- **真浏览器里的键盘行为未实测**：证明的是"文档级监听挂上了、三态都能触发保存、`open=false` 不动作、卸载摘干净"；**没有真按过 Ctrl+S**，
+  因此"焦点在 CodeMirror 里时 Ctrl+S 会不会被它自己吃掉"**判不了**（EasyMDE 工具栏不含 save 项，`【推断】`无冲突）。
+- **内嵌编辑栏用 `v-if` 的副作用**：切态重建 textarea ⇒ `scrollTop` 做了还原，但**光标位置与 undo/redo 历史会丢**（未实测用户感受）。
+  这是"纯预览态 `refSrc()` 必须归 null"的代价；若要保撤销栈，改法是两栏都 `v-show` + 换栏 refocus（代价是相关断言要改口径）—— 留主子拍板。
+- **EasyMDE 在 `display:none` 容器里的表现未实测**：切态调了 `codemirror.refresh()`，`【推断】`够用，未在真浏览器验证。
+- **浮层三态未在真机跑过**（N 段的 EasyMDE 是桩）；`.txt` 的浮层形态本就不存在（`mode='skip'`，既有行为，未改）。
+- 与本批无关但如实记录：全量输出里有一条**改动前后逐字相同**的服务端 stderr —— `DELETE /privhub/api/publish` 报 `TypeError: storage.writeText is not a function`（`plugins/privhub-files-publish/src/index.ts:44`），不是本批引入，但看着像真 bug。
+- **其它文档里的版本字样待另一条线同步**：`README.md`、`README.en.md`、`docs/` 根下的报告、`privhub/部署说明.md` 里仍有 `3.1.1` 字样 ——
+  那是**另一条线的版本同步地界**，本批**一律不碰**（版本号唯一来源 `privhub/package.json` 已升到 3.1.2，本文件也已新开 `[3.1.2]` 段）。
+
+**纪律留痕**：`frontend/index.html` **一字未动**；不动 manifest / 插槽 / 打包链 / 别的插件；`data/` 与 `data-files/` 只读（未解密任何真实数据）；
+**未做 git commit / push / stash**（`git log` 实测 HEAD 未移动 ⇒ `privhub-git-backup` 本批**没有**自动提交）；未用 workflow / ralph；未启动子智能体。
+版本号 **3.1.1 → 3.1.2**（主子拍板；唯一来源 `privhub/package.json` 已同步，本条即 `[3.1.2]` 段）。报告：`docs/reviews/15-编辑预览三态.md`。
 
 ---
 

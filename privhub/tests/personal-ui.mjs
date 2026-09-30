@@ -374,6 +374,38 @@ console.log('\n── F 顶栏层数与重叠（用户反馈：三层顶栏、�
   // ⑥ office 预览页：iframe 内不重复显示文件名
   ok(/#bar\s+\.fname\s*\{\s*display:\s*none/.test(o2View), 'office 预览页默认隐藏文件名（避免重复）')
   ok(/standalone/.test(o2View) && /standalone/.test(o2Js), '单独打开 office 预览页时仍显示文件名（standalone 兜底）')
+
+  // ⑦ xlsx 预览显示不出来（工单 GD-20260927-01）
+  /* 病根：`view.html` 里 `#sheet` 初始是 `display:none`，而 `loadXlsx()` 直接在其上
+   * `createUniver(...)`。Univer 画布按**创建那一刻**的容器尺寸算 ⇒ 隐藏容器 = 0×0
+   * ⇒ 网格画不出来（症状：工具条在、格子区全白）。docx 分支不受影响，因为 docx-preview
+   * 是纯 DOM 渲染、没有画布尺寸这回事 —— 这正是「只有 Excel 坏」的原因。
+   * 这里钉的是**顺序本身**（不是行号）：`#sheet` 置 block 的语句必须出现在 `createUniver(` 之前。 */
+  const o2ViewBare = stripJsComments(o2Js)
+  const iSheetBlock = o2ViewBare.search(/\$\(\s*'sheet'\s*\)\.style\.display\s*=\s*'block'/)
+  const iCreateUniver = o2ViewBare.indexOf('createUniver(')
+  ok(iSheetBlock > -1 && iCreateUniver > -1 && iSheetBlock < iCreateUniver,
+    `office2 预览页：\`#sheet\` 先置 display:block（位置 ${iSheetBlock}）再 createUniver（位置 ${iCreateUniver}）—— 反了画布就是 0×0、Excel 预览空白`)
+  /* 同一条链上的第二个缺陷：全链零错误处理，任何异常都变成未处理的 Promise 拒绝，
+   * `#loading` 永远停在「正在加载文档…」，零日志零提示。这里钉「失败必须给出可见中文出口」。 */
+  ok(/表格加载失败/.test(o2ViewBare),
+    'office2 预览页：xlsx 加载失败时给出可见的中文原因（修前零日志静默卡在「正在加载文档…」）')
+
+  // ⑧ xlsx 快照的数据形状（工单 GD-002）
+  /* 病根：`rowsToSnapshot()` 把 `sheets` 造成**数组**，而 Univer 的
+   * `_parseWorksheetSnapshots()`（vendor/univer.bundle.js）用 `for (const id in sheets)` 遍历、
+   * 再 `worksheets.set(id, …)`。**数组的 for…in 给的是数字下标 '0','1'…**，而 `sheetOrder`
+   * 里是 's0','s1'… ⇒ 两张表对不上 ⇒ 按 id 取工作表一律 undefined ⇒
+   * 内部 `.getSheetId()/.getCellMatrix()/.getConfig()` 连环抛错、网格整片画不出来。
+   * 症状：只剩一个小蓝框（单元格选中框）+ 大片空白，**且控制台有异常、界面上却没有提示**
+   * （异常发生在 Univer 内部，不在我们的 catch 能覆盖的那条链上）。
+   * ⇒ `sheets` 必须是**按 sheetId 索引的对象**。 */
+  ok(/sheets:\s*Object\.fromEntries\(\s*out\.map\(/.test(o2ViewBare),
+    'office2 预览页：xlsx 快照的 `sheets` 构造为「按 sheetId 索引的对象」（Univer 用 for…in 遍历它，数组会退化成数字下标）')
+  ok(!/sheets:\s*out\s*[,\n]/.test(o2ViewBare),
+    'office2 预览页：`sheets` 不得直接塞数组 `out`（GD-002 根因：数组下标 0/1… 与 sheetOrder 的 s0/s1… 对不上）')
+  ok(/sheetOrder:\s*out\.map\(\(x\)\s*=>\s*x\.id\)/.test(o2ViewBare),
+    'office2 预览页：`sheetOrder` 与 `sheets` 的键是同一批 id（两边一旦不是同源，取值就落空）')
 }
 
 console.log('\n── G 内容区所有权契约（docx 残留防治，方案 §9.2 A1~A4）──')
@@ -1791,9 +1823,279 @@ let kDone = null
     ok(sandboxErrors.length === 0 && errs.length === 0,
       '全程零异常、零 console.error' + (sandboxErrors.length || errs.length ? '：' + sandboxErrors.concat(errs).join(' | ') : ''))
   })().catch((e) => { ok(false, 'K 场景执行失败：' + e.message + '\n' + (e.stack || '')) })
-}
+
 /* K 是异步场景（要等保存回包），必须等它跑完再进下一段，否则断言会漏记在总结之后 */
 await kDone
+
+/* ================= N. 编辑器三态：纯编辑（默认）/ 纯预览 / 分屏 =================
+ *
+ * 本批把 edit-md 的「预览开 / 预览关」两态换成**三态**，并规定**默认一律纯编辑**（不持久化），
+ * 内嵌与浮层两个形态统一。三号坑（Ctrl+S 在三态下都要能用、浮层 EasyMDE 挂载点不许被卸载、
+ * 模板串里不许出现反引号）各自都有断言守着。
+ *
+ * 判据分三层，缺任何一层都不算数：
+ *   ① 【渲染层·真编译真渲染】用真 Vue 编译器把 edit-md 的**真模板**编译后渲染成 vnode 树
+ *      （模板是字符串、无构建链，这是本仓库能对模板做的最近似"真渲染"的检查）：
+ *      三态下哪几栏真的在场，看 vnode 上的 `ref`（模板里写没写 `ref="src"` / `ref="pre"` 一目了然）。
+ *   ② 【行为层】把 edit-md 真身放进 K 段那套沙箱（真注册表 + 宿主桩 + 独立总线）跑起来：
+ *      默认态、切态不丢正文、三态下 Ctrl+S 都能保存、纯预览态 refSrc() 归 null 且不抛错、
+ *      浮层同样是三态、.txt 同样三态。
+ *   ③ 【源码层】加严，**三条的范围各不相同，别混着说**：
+ *      · `$el.querySelector` 与 `document.querySelector(` —— **含注释** 0 命中（连注释一起归零）；
+ *      · `@keydown` —— **剥注释后**（`MD_BARE`）0 命中；**注释里刻意保留 1 处历史说明**
+ *        （`client/index.js` 的 "迁前键处理是挂在源码 textarea 上的…"），它解释的就是这条坑的来历，不删。
+ *
+ * ⚠ **观感一律不判**（间距 / 配色 / 滚动条 / 真浏览器里的键盘行为）：仓库里没有浏览器测试，
+ *   前端走 CDN，本机也没有可用的 Vue 本地副本以外的运行环境。这一段能证明的是
+ *   **状态机 + 真模板渲染出的节点 + 源码事实**，不能证明"看着正常"。
+ *   前端交互测试归另一条线，本段不去模拟。
+ */
+console.log('\n── N 编辑器三态：纯编辑 / 纯预览 / 分屏（默认纯编辑）──')
+{
+  /* ---- N0 渲染层：把真模板编译后渲成 vnode 树 ---- */
+  /** 收集 vnode（含 slot 函数、teleport 子节点）；注释节点（v-if 为假）也在树里，只是没有 props。 */
+  const collectV = (v, out = []) => {
+    if (v == null || typeof v !== 'object') return out
+    if (Array.isArray(v)) { for (const c of v) collectV(c, out); return out }
+    out.push(v)
+    const ch = v.children
+    if (Array.isArray(ch)) for (const c of ch) collectV(c, out)
+    else if (ch && typeof ch === 'object') {
+      for (const k of Object.keys(ch)) {
+        const f = ch[k]
+        if (typeof f === 'function') { try { collectV(f(), out) } catch { /* 需要真实实例的插槽 */ } } else collectV(f, out)
+      }
+    }
+    return out
+  }
+  const renderEditMd = (vm) => {
+    const tpl = templateAfter(MD_SRC, 'const MdEditor')
+    const errors = []
+    const compiled = Vue.compile(tpl, { onError: (e) => errors.push(e.message || String(e)) })
+    const render = typeof compiled === 'function' ? compiled : compiled.render
+    if (errors.length || typeof render !== 'function') throw new Error('edit-md 模板编译失败：' + errors.join('; '))
+    return collectV(render(vm, []))
+  }
+  /** vnode 上的 ref 名（Vue 把 `ref="src"` 收成 vnode.ref = { r: 'src' }）。 */
+  const refNames = (vm) => renderEditMd(vm).map((v) => (v.ref && v.ref.r) || '').filter(Boolean)
+  /** 渲染出来的 vnode 里有没有这个 id 的 textarea、有没有预览根（浮层那两栏的判据）。 */
+  const idInTree = (vm, id) => renderEditMd(vm).some((v) => v.type === 'textarea' && v.props && v.props.id === id)
+  const preInTree = (vm) => renderEditMd(vm).some((v) => v.type === 'div' && v.props && /md-preview/.test(String(v.props.class || '')))
+  /** 渲染用的实例：真 data + 真 methods + 真 computed（computed 挂成 getter，读的是当前状态）。 */
+  const mkRenderVm = (over) => {
+    const vm = Object.assign({}, md.MdEditor.methods, md.MdEditor.data())
+    for (const [k, f] of Object.entries(md.MdEditor.computed || {})) {
+      Object.defineProperty(vm, k, { configurable: true, get: () => f.call(vm) })
+    }
+    for (const [k, v] of Object.entries(over || {})) {
+      if (Object.getOwnPropertyDescriptor(vm, k) && Object.getOwnPropertyDescriptor(vm, k).get) continue
+      vm[k] = v
+    }
+    return vm
+  }
+  const inlineVm = (viewMode) => mkRenderVm({ open: true, mode: 'inline', viewMode, isMd: true, doc: '# x', status: '', dirty: false, saving: false, project: 'P', path: 'a.md', name: 'a.md' })
+  const floatVm = (viewMode) => mkRenderVm({ open: true, mode: 'float', viewMode, isMd: true, doc: '# x', status: '', dirty: false, saving: false, project: 'P', path: 'a.md', name: 'a.md' })
+  const LABEL = { edit: '纯编辑', preview: '纯预览', split: '分屏' }
+
+  /* 三态在**真模板**里各渲染出哪几栏（内嵌形态）——这一层不跑组件，只跑 Vue 编译器。 */
+  ok(refNames(inlineVm('edit')).join(',') === 'src',
+    '【三态·纯编辑】内嵌模板只渲染编辑栏（实测 vnode 上的 ref：' + (refNames(inlineVm('edit')).join(',') || '(无)') + '）')
+  ok(refNames(inlineVm('split')).join(',') === 'src,pre',
+    '【三态·分屏】内嵌模板两栏都在（实测：' + refNames(inlineVm('split')).join(',') + '）')
+  ok(refNames(inlineVm('preview')).join(',') === 'pre',
+    '【三态·纯预览】内嵌模板只剩预览栏 —— 编辑栏**整个不在树里**（实测：' + (refNames(inlineVm('preview')).join(',') || '(无)') + '）'
+    + '｜这正是「迁前 Ctrl+S 挂在 textarea 上 ⇒ 纯预览态快捷键静默失效」的成因')
+
+  /* EasyMDE 的挂载点：浮层那个 textarea 的 id，从**组件自己的代码**里取（不另抄一份字面量）。 */
+  const EASY_ID = ((/getElementById\(\s*'([^']+)'\s*\)/.exec(MD_BARE) || [])[1]) || ''
+  ok(!!EASY_ID, '从 initMde() 的源码里取出 EasyMDE 挂载点 id（实测：「' + (EASY_ID || '(没取到)') + '」）')
+  const easyIdsInTemplate = renderEditMd(floatVm('edit')).filter((v) => v.type === 'textarea' && v.props && v.props.id).map((v) => String(v.props.id))
+  ok(easyIdsInTemplate.length === 1 && easyIdsInTemplate[0] === EASY_ID,
+    '浮层模板渲染出的 textarea id 与 initMde() 取的是**同一个**（实测模板：「' + (easyIdsInTemplate.join(',') || '(无)') + '」／代码：「' + EASY_ID + '」）—— 两边改名不同步在这里当场变红')
+
+  /* ---- N1 行为层：一台独立的 edit-md（K 段同一套沙箱工厂，独立总线，与 K 段互不串味） ---- */
+  const NS = makeSandbox()
+  /* 假 DOM 补两件事：keydown 监听（K 段的桩没有 addEventListener，组件在那里**退化成不监听**，
+   * 这条退化路径由 N5 单独钉）＋ getElementById（EasyMDE 挂载点）。
+   * 「节点在不在 DOM 里」**由渲染层的 vnode 树说了算**（idInTree），不是测试自己拍脑袋 ——
+   * 于是「v-if 把节点卸掉 ⇒ EasyMDE 拿到 null」这条链在沙箱里也真能跑出来。 */
+  const keydowns = []
+  const N_DOM = { easy: true }
+  const easyNode = { id: EASY_ID }
+  NS.K.document.addEventListener = (ev, fn) => { if (ev === 'keydown') keydowns.push(fn) }
+  NS.K.document.removeEventListener = (ev, fn) => { const i = keydowns.indexOf(fn); if (i >= 0) keydowns.splice(i, 1) }
+  NS.K.document.getElementById = (id) => (id === EASY_ID && N_DOM.easy ? easyNode : null)
+  const mdeInits = []
+  let mdeRefreshes = 0
+  NS.K.EasyMDE = function (opts) {
+    mdeInits.push(opts)
+    this.value = () => ''
+    this.codemirror = { on: () => {}, refresh: () => { mdeRefreshes++ } }
+    this.toTextArea = () => {}
+  }
+  vm.runInContext(
+    MD_SRC.replace(/export\s+default\s*\{/, 'globalThis.__mdExportN = {') + '\n;globalThis.__mdN = { MdEditor };\n',
+    NS.K, { filename: 'edit-md/client/index.js#N' })
+  const mdN = NS.K.__mdN
+  ok(!!(mdN && mdN.MdEditor && mdN.MdEditor.methods), 'N 段沙箱里 edit-md 真身再次跑起来（用的是同一份源码文本，不是另抄的实现）')
+
+  const ticksN = []
+  const mkInstN = () => {
+    const i = Object.assign({}, mdN.MdEditor.methods, mdN.MdEditor.data())
+    /* computed 在真组件里由 Vue 挂到实例上；沙箱里没有 Vue，得自己挂成 getter。
+     * ⚠ 少挂一个的症状就是「实例上读不到三态判据」——本轮实测踩过一次：8 条红全是这个。 */
+    for (const [k, f] of Object.entries(mdN.MdEditor.computed || {})) {
+      Object.defineProperty(i, k, { configurable: true, get: () => f.call(i) })
+    }
+    i.$nextTick = (fn) => { ticksN.push(fn) }
+    i.$refs = {}
+    let op = false
+    Object.defineProperty(i, 'open', { configurable: true, get: () => op, set: (v) => { op = v; events.push('nopen=' + v) } })
+    return i
+  }
+  const drainTicks = () => { for (const f of ticksN.splice(0)) f() }
+  const notThrows = (fn) => { try { fn(); return true } catch (e) { return '抛错：' + (e && e.message) } }
+  /** 把实例切到**指定**那一态（setView 是开关语义：点自己那一态回纯编辑，故这里先比一下）。 */
+  const atView = (inst, m) => { if (inst.viewMode !== m) inst.setView(m); drainTicks() }
+  const putCount = () => apiCalls.filter((c) => c.method === 'PUT').length
+
+  const nDone = (async () => {
+    /* ---- N2 默认一率纯编辑 + 三态切换不丢内容 ---- */
+    const n1 = mkInstN()
+    NS.showFile('P', 'a.md')
+    NS.host.setDock(true)
+    NS.host.syncEditorHost('mount')
+    docReply = { ok: true, doc: '# A1\n\n原正文', mtime: 3001 }
+    const kdBefore = keydowns.length
+    mdN.MdEditor.mounted.call(n1)
+    ok(keydowns.length === kdBefore + 1,
+      '【Ctrl+S·挂载】组件 mounted 挂的是**文档级** keydown 监听（实测监听数 ' + kdBefore + ' → ' + keydowns.length + '）')
+    await n1.openEditor({ entry: { name: 'a.md', isDir: false }, project: 'P', path: '' }, true)
+    ok(n1.mode === 'inline' && n1.open === true, '前置：md 在内嵌模式下打开（mode=' + n1.mode + '）')
+    ok(n1.viewMode === 'edit',
+      '【默认态·要害】**打开 md ⇒ 默认是纯编辑**（实测 viewMode=' + n1.viewMode + '；迁前是 previewOpen = isMd ⇒ 一打开就双栏）')
+    ok(n1.showSrc === true && n1.showPre === false, '纯编辑态的显隐口径：编辑栏在、预览栏不在')
+    drainTicks()
+    ok(notThrows(() => drainTicks()) === true, '打开后的 $nextTick（focus / 同步滚动）在 $refs 空时不抛错')
+
+    n1.doc = '# A1\n\n改于纯编辑态'
+    n1.onSrcInput()
+    const sessN = n1._session
+    n1.$refs = { src: { scrollTop: 40, scrollHeight: 400, clientHeight: 200 } }
+    n1.setView('preview'); drainTicks()
+    ok(n1.viewMode === 'preview' && n1.showSrc === false && n1.showPre === true,
+      '【切态·纯预览】编辑栏收起、只剩渲染预览（实测 viewMode=' + n1.viewMode + '）')
+    ok(n1.open === true && n1.mode === 'inline',
+      '【纯预览 ≠ 退出编辑态】编辑器仍开着（open=' + n1.open + '、mode=' + n1.mode + '）—— 退出编辑态只有「✕ 只读」那一条路')
+    ok(n1.doc === '# A1\n\n改于纯编辑态' && n1.dirty === true && n1._session === sessN,
+      '【纯预览·不丢内容】未保存正文 / dirty / 编辑会话号一个字没动（实测 doc=' + JSON.stringify(String(n1.doc).slice(0, 20)) + '、dirty=' + n1.dirty + '、_session=' + n1._session + '）')
+    n1.$refs = {}   // 纯预览态：编辑栏不在树里 ⇒ $refs.src 不存在（这正是"挂 textarea 上会失效"的成因）
+    ok(n1.refSrc() === null && n1.refPre() === null, '【null 安全】纯预览态 refSrc() 返回 null（$refs 里没有 src）且不抛错')
+    ok(notThrows(() => n1.syncScroll()) === true, '【null 安全】同步滚动在 ref 不到位时什么都不做（上一批的 null 安全没有被削弱）')
+
+    n1.setView('split'); drainTicks()
+    ok(n1.viewMode === 'split' && n1.showSrc === true && n1.showPre === true, '【切态·分屏】两栏并排（今天的默认形态）')
+    n1.setView('split'); drainTicks()
+    ok(n1.viewMode === 'edit' && n1.showSrc === true && n1.showPre === false, '【切回】分屏按钮再点一次 ⇒ 回纯编辑单栏')
+    n1.setView('preview'); n1.setView('edit'); drainTicks()
+    ok(n1.viewMode === 'edit' && n1.showSrc === true && n1.showPre === false, '【切回】从纯预览切回纯编辑，正常回来')
+
+    /* ---- N3 Ctrl+S：三态下都必须能保存（文档级监听，不看哪一栏在场 / 焦点在哪） ---- */
+    const fireKey = () => {
+      const ev = { ctrlKey: true, key: 's', prevented: 0, preventDefault() { this.prevented++ } }
+      for (const fn of keydowns.slice()) fn(ev)
+      return ev
+    }
+    n1.doc = '# A1\n\n三态保存用的正文'
+    for (const m of ['edit', 'preview', 'split']) {
+      atView(n1, m)
+      const before = putCount()
+      const ev = fireKey()
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setImmediate(r))
+      ok(putCount() === before + 1 && ev.prevented === 1,
+        '【Ctrl+S·' + LABEL[m] + '】快捷键触发一次保存（实测新增 PUT ' + (putCount() - before) + ' 次、preventDefault ' + ev.prevented + ' 次）'
+        + (m === 'preview' ? '｜纯预览态编辑栏整个不在 DOM 里，这一条正是迁前会红的地方' : ''))
+    }
+    /* 闸门：编辑器没开时，文档级监听一个键都不许吞（否则等于抢了整个界面的 Ctrl+S） */
+    const wasOpen = n1.open
+    n1.open = false
+    const b2 = putCount()
+    fireKey()
+    await new Promise((r) => setImmediate(r))
+    ok(putCount() === b2, '【Ctrl+S·闸门】编辑器没开时文档级监听不动作（实测新增 PUT ' + (putCount() - b2) + ' 次）')
+    n1.open = wasOpen
+    n1.dirty = false
+    const kdAtUnmount = keydowns.length
+    mdN.MdEditor.beforeUnmount.call(n1)
+    ok(keydowns.length === kdAtUnmount - 1,
+      '【Ctrl+S·卸载】组件 beforeUnmount 把文档级监听摘干净（实测 ' + kdAtUnmount + ' → ' + keydowns.length + '；不摘＝一个已死的组件还攥着整个界面的 Ctrl+S）')
+
+    /* ---- N4 浮层模式：同样是三态，且 EasyMDE 的挂载点不许被卸载 ---- */
+    const n2 = mkInstN()
+    mdN.MdEditor.mounted.call(n2)
+    NS.hideContent()                                   // 宿主说没有舱位 ⇒ md 走浮层兜底
+    docReply = { ok: true, doc: '# F1\n\n浮层正文', mtime: 3101 }
+    await n2.openEditor({ entry: { name: 'f1.md', isDir: false }, project: 'P', path: '' }, true)
+    ok(n2.mode === 'float' && n2.open === true, '前置：无舱位时 md 走浮层（mode=' + n2.mode + '）')
+    ok(n2.viewMode === 'edit', '【浮层·默认态】同样是纯编辑（实测 viewMode=' + n2.viewMode + '）')
+    N_DOM.easy = idInTree(floatVm(n2.viewMode), EASY_ID)
+    drainTicks()                                       // openEditor 的 $nextTick → initMde()
+    ok(mdeInits.length === 1 && mdeInits[0].element === easyNode,
+      '【浮层·EasyMDE】initMde() 拿到的 element 就是浮层那个 textarea（实测：' + (mdeInits[0] ? (mdeInits[0].element === easyNode ? '真节点' : String(mdeInits[0].element)) : '(没初始化)') + '）')
+    for (const m of ['edit', 'preview', 'split']) {
+      atView(n2, m)
+      const vmNow = floatVm(n2.viewMode)
+      N_DOM.easy = idInTree(vmNow, EASY_ID)
+      ok(N_DOM.easy === true && NS.K.document.getElementById(EASY_ID) === easyNode,
+        '【浮层·' + LABEL[m] + '】EasyMDE 的挂载点**仍在 DOM 里**（v-show 只是隐藏，不卸载）—— 换成 v-if 这一条当场变红'
+        + '（实测：模板里这个 id 的节点在树里=' + idInTree(vmNow, EASY_ID) + '、getElementById 拿到的=' + (NS.K.document.getElementById(EASY_ID) === easyNode ? '真节点' : 'null') + '）')
+    }
+    ok(idInTree(floatVm('preview'), EASY_ID) && preInTree(floatVm('preview')),
+      '浮层两栏都用 v-show（三态下两个节点**都留在树里**，只变 display）—— 与内嵌形态**有意不同**：'
+      + '内嵌编辑栏是 v-if 卸掉的（普通 textarea，卸掉更干净，且 Ctrl+S 已不依赖它），'
+      + '浮层编辑栏卸不得（它就是 EasyMDE 的挂载点）（实测浮层纯预览态：EasyMDE 节点在树里=' + idInTree(floatVm('preview'), EASY_ID) + '、预览节点在树里=' + preInTree(floatVm('preview')) + '）')
+    ok(refNames(floatVm('preview')).length === 0 && refNames(inlineVm('preview')).join(',') === 'pre',
+      '两种形态的 ref 分布如实：浮层模板里一个 ref 都没有（EasyMDE 的输入区在 CodeMirror 里）⇒ 浮层的 syncScroll 自然什么都不做；'
+      + '内嵌纯预览态只剩 ref="pre"（实测浮层：' + (refNames(floatVm('preview')).join(',') || '(无)') + '／内嵌：' + refNames(inlineVm('preview')).join(',') + '）')
+    ok(mdeRefreshes >= 2, '切态后会让 CodeMirror 重新量一次（refresh 被调用 ' + mdeRefreshes + ' 次；display:none 的容器量不到行高）')
+    ok(n2.doc === '# F1\n\n浮层正文', '【浮层·切态不丢内容】三态切完，正文原样（实测 doc=' + JSON.stringify(String(n2.doc).slice(0, 16)) + '）')
+    mdN.MdEditor.beforeUnmount.call(n2)
+
+    /* ---- N5 .txt 等纯文本：三态同样可用（只改默认态，不删能力） ---- */
+    const n3 = mkInstN()
+    mdN.MdEditor.mounted.call(n3)
+    NS.showFile('P', 't.txt')
+    NS.host.setDock(true)
+    NS.host.syncEditorHost('mount')
+    previewReply = { ok: true, type: 'text', data: 'plain text' }
+    await n3.openEditor({ entry: { name: 't.txt', isDir: false }, project: 'P', path: '' }, true)
+    ok(n3.isMd === false && n3.mode === 'inline' && n3.viewMode === 'edit',
+      '.txt 默认也是纯编辑（实测 isMd=' + n3.isMd + '、mode=' + n3.mode + '、viewMode=' + n3.viewMode + '）')
+    atView(n3, 'preview')
+    ok(n3.showSrc === false && n3.showPre === true, '.txt 纯预览可用（不删能力）')
+    atView(n3, 'split')
+    ok(n3.showSrc === true && n3.showPre === true, '.txt 分屏可用')
+    atView(n3, 'edit')
+    ok(n3.showSrc === true && n3.showPre === false, '.txt 切回纯编辑')
+    mdN.MdEditor.beforeUnmount.call(n3)
+
+    ok(sandboxErrors.length === 0 && errs.length === 0,
+      'N 段全程零异常、零 console.error' + (sandboxErrors.length || errs.length ? '：' + sandboxErrors.concat(errs).join(' | ') : ''))
+  })().catch((e) => { ok(false, 'N 场景执行失败：' + e.message + '\n' + (e.stack || '')) })
+  await nDone
+
+  /* ---- N6 源码级加严（既有断言不减，只加严） ---- */
+  ok(!/@keydown/.test(MD_BARE),
+    '【源码·单点】代码里（剥注释）再没有任何 @keydown 绑定 —— 键处理只在文档级监听**一处**（两处都挂 ⇒ 同一个 Ctrl+S 保存两次）')
+  ok(!/\$el\.querySelector/.test(MD_SRC),
+    '【加严·含注释】edit-md 整个文件 grep 不到 $el.querySelector —— 0 命中（注释里那两处历史说明已改写措辞，好让这条能连注释一起归零）')
+  ok(!/document\.querySelector\(/.test(MD_SRC),
+    '【加严·含注释】edit-md 整个文件 grep 不到 document.querySelector( —— 0 命中')
+  ok(!/\bpreviewOpen\b/.test(MD_BARE) && !/\btogglePreview\b/.test(MD_BARE),
+    '两态时代的开关（previewOpen / togglePreview）在代码里已归零，只剩注释里的迁移说明')
+}
+}
 
 /* ================= 12b. 铺满形态（本轮修复）：图片 / PDF 铺满内容区 =================
  *
