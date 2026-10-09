@@ -31,7 +31,7 @@ const ProjectTabs = {
   },
   template: `
     <div class="project-tabs">
-      <div class="ptab" :class="{ on: nav.project === null && !nav.trashView && !nav.searchView && !nav.favView }" @click="nav.backToWelcome">🏠 欢迎</div>
+      <div class="ptab" :class="{ on: nav.activeView === 'files' && nav.project === null }" @click="nav.backToWelcome">🏠 欢迎</div>
       <span class="project-select-wrap">
         <span class="project-select-label">选择项目：</span>
         <select class="project-select" :value="nav.project || ''" @change="onSelect" title="选择项目">
@@ -128,15 +128,35 @@ const WelcomeView = {
   computed: {
     isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
     projects() { return this.nav.projectsList || [] },
+    /* 工作台是另一个插件提供的：它没装载时就不显示入口，点了也是空壳 */
+    hasHome() {
+      for (const m of window.PrivHub.manifests || []) {
+        for (const b of (m.barItems || [])) if ((b.view || b.slot) === 'home') return true
+      }
+      return false
+    },
   },
   methods: {
     openProject(name) { this.nav.openProject(name) },
     newProject() { this.nav.newProject() },
+    openHome() { this.nav.setActiveView('home') },
   },
   template: `
     <div class="sidebar project-sidebar">
       <div class="side-head"><span class="side-title">📁 选择项目</span></div>
-      <div v-if="projects.length" class="project-list">
+      <!-- 工作台入口与项目列表同列（同 gap、同 hover）：未选项目时最该看的
+           其实是「我上次在干什么」，所以工作台排在项目之前。 -->
+      <div v-if="hasHome || projects.length" class="project-list">
+        <div
+          v-if="hasHome"
+          class="tree-item project-item"
+          role="button" tabindex="0"
+          title="打开工作台：最近打开 / 我的收藏 / AI 连接状态"
+          @click="openHome"
+          @keydown.enter="openHome"
+        >
+          <span>📊</span><span class="name">工作台</span><span class="pc-go">→</span>
+        </div>
         <div
           v-for="p in projects" :key="p"
           class="tree-item project-item"

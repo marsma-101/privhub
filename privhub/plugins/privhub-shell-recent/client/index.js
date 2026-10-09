@@ -55,8 +55,8 @@ const RecentDropdown = {
   template: `
     <div style="position:relative">
       <button class="icon-btn" :class="{ on: open }" @click="open = !open; if (open) load()">🕘 最近</button>
-      <div v-if="open" class="ctx-mask" @click="open = false" style="position:fixed;inset:0;z-index:998"></div>
-      <div v-if="open" style="position:absolute;right:0;top:34px;z-index:999;width:300px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 34px rgba(0,0,0,.18);padding:8px;max-height:420px;overflow:auto">
+      <div v-if="open" class="ctx-mask" @click="open = false" style="position:fixed;inset:0;z-index:var(--z-scrim,998)"></div>
+      <div v-if="open" style="position:absolute;right:0;top:34px;z-index:var(--z-menu,999);width:300px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 34px rgba(0,0,0,.18);padding:8px;max-height:420px;overflow:auto">
         <div style="font-size:12px;color:var(--muted);padding:4px 8px 8px">最近打开（{{ recent.length }}）</div>
         <div v-if="recent.length === 0" style="font-size:12px;color:var(--muted);padding:12px;text-align:center">暂无记录</div>
         <div v-for="e in recent" :key="e.project + '/' + e.path" class="tree-item" @click="go(e)" style="font-size:12.5px">

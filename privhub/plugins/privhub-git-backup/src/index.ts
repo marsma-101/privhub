@@ -156,12 +156,9 @@ async function commitAll(message: string): Promise<string | null> {
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    resolveReal: (project: string, relPath: string) => Promise<string | null>
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（此前本地重抄一份 unknown 影子类型，
+   * 既多余又让 req/res 退化成 unknown——已删）。 */
+  const svc = ctx.privhub
 
   /* D11：启动探测 git。缺失时【显著告警并关闭定时器】，
    * 而不是每 60 秒静默失败——"以为有备份、实际没有"比没有备份更危险。 */
@@ -183,7 +180,8 @@ export function apply(ctx: Context): void {
     }, POLL_MS)
     if (typeof timer.unref === 'function') timer.unref()
   })()
-  ctx.on('dispose', () => { if (timer) clearInterval(timer) })
+  /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
+  ctx.effect(() => () => { if (timer) clearInterval(timer) })
 
   /* 手动/即时备份 */
   svc.route('/privhub/api/gitbackup/commit', async (req, res) => {

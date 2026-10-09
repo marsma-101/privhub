@@ -41,7 +41,8 @@
  * | 智能体覆盖前快照 `files-agent/src/m2.ts` | `VERSION_TEXT_EXTS − ENV_EXTS` | 同上，另减配置族（**有意比 versions 窄**，保持迁前行为） |
  * | 向量化 `svc-rag` | `RAG_TEXT_EXTS` | = 主体文本 **减去** `.env` / `.jsonl` / `.ipynb` / `.tsv`（见下） |
  * | 智能体读写 `files-agent` | `TEXT_EXTS − SENSITIVE_EXTS` | 能力同等，**敏感文件豁免**（该清单在 `files-agent` 内） |
- * | 界面分类 `explorer-v3/client/utils.js` | `IMAGE_EXTS` / `OFFICE_EXTS` / `MARKDOWN_FAMILY` | 前端只能拿到**投影**（见下「前端怎么办」） |
+ * | 界面分类 `explorer-v3/client/utils.js` | `IMAGE_EXTS` / `OFFICE_EXTS` / `MARKDOWN_FAMILY` / `MEDIA_EXTS` | 前端只能拿到**投影**（见下「前端怎么办」）；`MEDIA_EXTS` 上界该文件再派一层「浏览器原生可播」的白名单（见 `AUDIO_EXTS` 注释） |
+| 预览原始流 `privhub-files` 的 `preview-raw` | `IMAGE_EXTS ∪ {pdf} ∪ MEDIA_EXTS` | mime 表**键集**受断言钉死（`tests/file-exts.mjs`）；音视频那一支另要 `Accept-Ranges`（见 `docs/reviews/17-…md`） |
  * | 界面可编辑 `explorer-v3` + `edit-md` | `EDITABLE_TEXT_EXTS` | **有意比预览窄**：编辑要过写接口，见下 |
  * | Office 读取链 `svc-office` | `OFFICE_EXTS`（**同一份**） | 服务层不再自带清单；`files-office` 的提取链同样取它 |
  * | Office 家族（界面识别） | `OFFICE_FAMILY_EXTS` | `explorer-v3` 与 `office-ui` 的**显示侧**取这一份，见下「Office 那一族的口径」 |
@@ -67,7 +68,8 @@
  * |---|---|
  * | `.env` 进全文索引 / 快照 / RAG | 它是配置与密钥载体。迁前 fulltext/versions **没有**它（rag 也没有），本批**保持现状**：只放进【预览】。要不要进索引属安全策略，须主子点头 |
  * | `.jsonl` / `.tsv` / `.ipynb` 进向量化 | 迁前 `svc-rag` **没有**这三个（`.ipynb` 是 JSON、`.jsonl` 是逐行 JSON、`.tsv` 是表格）。本批**保持现状**，不扩权 |
- * | `.eml` / `.avif` / `.tiff` / 音视频 | `docs/reviews/11-…md` §3.3 建议补，但 `.avif` 的浏览器支持**本轮未实测**、音视频要另开前端形态 ⇒ 本批不做，留待专项 |
+ * | `.eml` / `.avif` / `.tiff` | `docs/reviews/11-…md` §3.3 建议补，但 `.avif` 的浏览器支持**本轮未实测**、`.tiff` 浏览器普遍不能原生显示、`.eml` 要解析邮件结构 ⇒ 仍未做 |
+| ~~音视频~~ | **已做**（2026-10-09 专项）：`AUDIO_EXTS` / `VIDEO_EXTS` / `MEDIA_EXTS` 见下方「基础集合」；前端形态见 `docs/reviews/17-音视频预览.md` |
  * | **无扩展名文件**默认当文本 | **明确不做**：本文件只做「按扩展名分类」，不做二进制嗅探（NUL 字节检测）。理由是**没有任何既有触点**需要它（`listFiles` / `preview` / 索引 / 快照全按扩展名走），为它单独给每次预览加一次读字节的开销不划算；且"把二进制当文本读出乱码"比"打不开"更坏。将来真要做，应在 `readFileForPreview` 里做一次嗅探并把这些名字放进 `SNIFF_AS_TEXT`（**注意：无扩展名的名字不是扩展名**，不能塞进下面任何集合） |
  * | 新增扩展名一律进 `EDITABLE_TEXT_EXTS` | 本批只补【预览】。编辑要过 `text/save` 写接口、会造出可编辑入口（交互结构归主子定），不顺手扩 |
  *
@@ -139,6 +141,55 @@ export const TEXT_EXTS: readonly string[] = Object.freeze([
 export const IMAGE_EXTS: readonly string[] = Object.freeze([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico',
 ])
+
+/**
+ * 音频扩展名 —— 界面拿它决定用 `<audio>` 还是 `<video>` 画（两者**不重叠**，见下）。
+ *
+ * ## 取值来历（参照 nowen-note，2026-10-09）
+ *
+ * 逐条比对 nowen-note 的两张表后取的并集（`backend/src/lib/media-mime.ts` 的 mime 表 +
+ * `frontend/src/components/attachmentPreview/AttachmentMediaPreview.tsx` 的
+ * `NATIVE_AUDIO_EXTS`）：`mp3 wav ogg oga aac m4a flac`，另加 `opus`（Ogg Opus，现代浏览器原生可播）。
+ *
+ * ## 「浏览器原生能播」是**另一份**清单，且**不在**这里
+ *
+ * nowen-note 把「是不是媒体」（mime 表，宽）与「浏览器能不能原生播」（`NATIVE_*_EXTS`，保守）
+ * 分成两层，理由是它自己的原话：*宁可降级到"下载提示"也不要黑屏*。
+ * 本仓照抄这个分层，但那份**可播白名单放在前端**（`explorer-v3/client/utils.js`）——
+ * 因为「浏览器能不能解码」是**浏览器事实**、不是扩展名分类事实，放在后端会随着前端升级而失真。
+ * ⇒ 后端这一份只回答「这是不是音视频」，前端再回答「这个能不能直接播」。
+ *
+ * ## `ogg` / `ogv` 为什么分家（**有意让两个集合不重叠**）
+ *
+ * Ogg 是同一种容器，音频常叫 `.ogg`、视频常叫 `.ogv`。nowen-note 两张表都把 `ogg` 收进去了，
+ * 于是同一个扩展名在它那里既能判成 audio 又能判成 video，靠 mime 再分流。
+ * 本仓**只按扩展名**分流（不做 mime 嗅探，见文件头「故意不做的」）⇒ 必须让两集合**互斥**，
+ * 否则 `.ogg` 该用哪个标签就是个说不清的状态。取 `ogg` 归音频、`ogv` 归视频（各自的惯例写法）。
+ * ⚠ **已知边界（如实记）**：名为 `.ogg` 的**视频**、名为 `.webm` 的**纯音频**会被分到另一类标签上。
+ * `<video>` 播纯音频仍能出声（只是多一块黑框），反之 `<audio>` 拿视频容器则不出声 ——
+ * 这一层本批**未实测**，见 `docs/reviews/17-音视频预览.md` §5。
+ */
+export const AUDIO_EXTS: readonly string[] = Object.freeze([
+  'mp3', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'flac',
+])
+
+/**
+ * 视频扩展名 —— 与 `AUDIO_EXTS` **互斥**（理由见上）。
+ *
+ * 取值同样逐条对齐 nowen-note 的 `VIDEO_MIME_BY_EXTENSION`（去掉归了音频的 `ogg`）。
+ *
+ * ⚠ 其中 `mov / qt / 3gp / 3g2 / avi / mkv` **浏览器多数不能原生播放**：它们进这份集合，
+ * 是为了让「这是媒体、只是我播不了」和「这不支持在线查看」**说成两句不同的话** ——
+ * 后者会让用户以为文件有问题。前端据此画的是**兜底说明 + 下载入口**（nowen-note 的原做法），
+ * 不是黑屏。**本批不引入转码**：nowen-note 明确拒绝 ffmpeg.wasm（约 25 MB wasm，移动端会爆）
+ * 与 video.js（约 150 KB），本仓同样不引（`docs/reviews/17-音视频预览.md` §2.1）。
+ */
+export const VIDEO_EXTS: readonly string[] = Object.freeze([
+  'mp4', 'm4v', 'webm', 'ogv', 'mov', 'qt', '3gp', '3g2', 'avi', 'mkv',
+])
+
+/** 音视频总集（= `AUDIO_EXTS ∪ VIDEO_EXTS`；后端 mime 表与 `kindOfExt` 的『媒体』分支取这一份）。 */
+export const MEDIA_EXTS: readonly string[] = Object.freeze(union(AUDIO_EXTS, VIDEO_EXTS))
 
 /** Markdown 家族 —— 渲染器与分块策略按这个家族分流（`svc-rag` 的 `chunkText` 依赖它）。 */
 export const MARKDOWN_EXTS: readonly string[] = Object.freeze(['md', 'markdown'])
@@ -363,6 +414,21 @@ export function isImageExt(ext: string): boolean {
   return IMAGE_EXTS.includes(normExt(ext))
 }
 
+/** 是不是视频（见 `VIDEO_EXTS`：含浏览器播不了的容器，判定的是"是不是媒体"而非"能不能播"）。 */
+export function isVideoExt(ext: string): boolean {
+  return VIDEO_EXTS.includes(normExt(ext))
+}
+
+/** 是不是音频（见 `AUDIO_EXTS`）。 */
+export function isAudioExt(ext: string): boolean {
+  return AUDIO_EXTS.includes(normExt(ext))
+}
+
+/** 是不是音视频 —— 「能当媒体预览」的唯一判据（能不能**播**由前端另判，见 `AUDIO_EXTS` 注释）。 */
+export function isMediaExt(ext: string): boolean {
+  return MEDIA_EXTS.includes(normExt(ext))
+}
+
 /** 是不是 Markdown 家族。 */
 export function isMarkdownExt(ext: string): boolean {
   return MARKDOWN_EXTS.includes(normExt(ext))
@@ -389,17 +455,23 @@ export function officeKindOf(ext: string): string {
 /**
  * 统一分类 —— **语义与 `readFileForPreview` 返回的 `type` 一致**。
  *
- * 返回：`'text'` | `'image'` | `'pdf'` | `'unknown'`。
+ * 返回：`'text'` | `'image'` | `'pdf'` | `'media'` | `'unknown'`。
  * ⚠ 这里**没有** `'too-large'`：那是「体积」问题，不是「类型」问题，
  * 由 `readFileForPreview` 在读之前判（判定顺序有意义，见该函数注释）。
  *
  * ⚠ 也**没有**「无扩展名兜底成 text」：无扩展名 = `''` ⇒ 落到 `'unknown'`，
  * 与「明确不做二进制嗅探」这条决定一致（见文件头）。
+ *
+ * ⚠ `'media'` 是 2026-10-09（音视频批）新增的一档：它表示「这是音视频，界面该用
+ * `<video>`/`<audio>` 分支画」，**不**表示「浏览器一定能播」（见 `AUDIO_EXTS` 注释的分层）。
+ * `music.mp3` 此前落到 `'unknown'`（`tests/file-exts.mjs` 原有一条断言钉的就是它），
+ * 本次随契约同步改为 `'media'`（见 `docs/reviews/17-音视频预览.md` §3 的记账）。
  */
-export function kindOfExt(ext: string): 'text' | 'image' | 'pdf' | 'unknown' {
+export function kindOfExt(ext: string): 'text' | 'image' | 'pdf' | 'media' | 'unknown' {
   const e = normExt(ext)
   if (isImageExt(e)) return 'image'
   if (e === 'pdf') return 'pdf'
+  if (isMediaExt(e)) return 'media'
   if (isPreviewTextExt(e)) return 'text'
   return 'unknown'
 }

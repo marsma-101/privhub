@@ -119,7 +119,7 @@ const TreeV3 = {
         <button class="icon-btn" style="padding:3px 5px;font-size:13px;margin-left:auto;flex-shrink:0" title="收起侧边栏（腾出中间栏空间）" @click="onCollapseSide">⏴</button>
         <!-- + 下拉：新建文档/数据表/页面 / 上传 -->
         <div v-if="store.newMenu" class="ctx-mask" @click="store.newMenu = false"></div>
-        <div v-if="store.newMenu" style="position:absolute;top:36px;left:0;z-index:1100;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 0;box-shadow:0 10px 30px rgba(0,0,0,.25);min-width:180px">
+        <div v-if="store.newMenu" style="position:absolute;top:36px;left:0;z-index:var(--z-menu,1100);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 0;box-shadow:0 10px 30px rgba(0,0,0,.25);min-width:180px">
           <div class="ctx-item" @click="onNewDoc">📄 新建文档</div>
           <div class="ctx-item" @click="onNewSheet">📊 新建数据表</div>
           <div class="ctx-item" @click="onNewPage">🌐 新建页面</div>

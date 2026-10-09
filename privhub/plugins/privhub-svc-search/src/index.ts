@@ -81,7 +81,8 @@ export class SearchService extends Service {
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'search')
-    ctx.on('dispose', () => { this.docs.clear(); this.postings.clear(); this.totalLen = 0 })
+    /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
+    ctx.effect(() => () => { this.docs.clear(); this.postings.clear(); this.totalLen = 0 })
   }
 
   /* ---------- 文件名搜索（批次①，行为不变） ---------- */

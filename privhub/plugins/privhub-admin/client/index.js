@@ -114,7 +114,7 @@ const UserAdmin = {
             <div class="field">
               <label>负责的项目（勾选其可访问的项目）</label>
               <div style="display:flex;flex-wrap:wrap;gap:8px">
-                <span v-for="p in adminAllProjects" :key="p" class="u-project-chip" style="cursor:pointer;padding:4px 10px" :style="editUser.projects.includes(p) ? 'background:rgba(90,130,200,.25)' : ''" @click="toggleProject(p)">{{ p }}</span>
+                <span v-for="p in adminAllProjects" :key="p" class="u-project-chip" style="cursor:pointer;padding:4px 10px" :style="editUser.projects.includes(p) ? 'background:var(--accent-soft-2, rgba(90,130,200,.25))' : ''" @click="toggleProject(p)">{{ p }}</span>
               </div>
             </div>
           </div>

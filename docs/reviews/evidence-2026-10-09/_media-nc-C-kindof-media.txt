@@ -1,0 +1,130 @@
+══ ⓪ 编译期集合关系（一处定义 + 各处显式派生）══
+     [派生式] TEXT_EXTS                = txt,md,markdown,json,jsonl,js,ts,tsx,html,htm,css,xml,yaml,yml,toml,ini,conf,csv,tsv,log,sql,py,java,c,cpp,go,rs,sh,bat,ps1,vue,ipynb,env
+     [派生式] EDITABLE_TEXT_EXTS       = md,txt,json,csv,log,yaml,yml,ini,py,sh,bat,sql,xml,js,ts,css
+     [派生式] PREVIEW_ONLY_TEXT_EXTS   = tsx,ps1,conf,vue,go,rs,env,jsonl,tsv,markdown,ipynb
+     [派生式] PREVIEW_TEXT_EXTS        = txt,md,markdown,json,jsonl,js,ts,tsx,html,htm,css,xml,yaml,yml,toml,ini,conf,csv,tsv,log,sql,py,java,c,cpp,go,rs,sh,bat,ps1,vue,ipynb,env
+     [派生式] VERSION_TEXT_EXTS        = txt,md,markdown,json,jsonl,js,ts,tsx,html,htm,css,xml,yaml,yml,toml,ini,conf,csv,tsv,log,sql,py,java,c,cpp,go,rs,sh,bat,ps1,vue,ipynb
+     [派生式] RAG_TEXT_EXTS            = txt,md,markdown,json,js,ts,tsx,html,htm,css,xml,yaml,yml,toml,ini,conf,csv,log,sql,py,java,c,cpp,go,rs,sh,bat,ps1,vue
+     [派生式] AGENT_SNAPSHOT_EXTS      = md,txt,json,csv,log,yaml,yml,ini,py,sh,bat,sql,xml,js,ts,css
+  ✅ 预览集 = 基础文本集 ∪ 可编辑集（并集 ⇒ 不存在「能编辑却打不开」的自相矛盾状态）
+  ✅ 索引/快照集 = 预览集 − 配置族（密钥载体不进索引与快照）
+  ✅ 向量化集 = 索引集 − 大数据/表格/笔记本类（本批保持迁前范围，不扩权）
+  ✅ 智能体快照集 = 可编辑集（16 项，含 md；与迁前那份 17 项手写清单只差 html —— html/toml/java/c/cpp/htm 按不扩权留在不快照那一侧）
+  ✅ 媒体集 = 音频集 ∪ 视频集（一处定义 + 显式派生，取值不手写）
+  ✅ 音频集与视频集**互斥**（`ogg` 归音频、`ogv` 归视频：前端按扩展名分流用哪个标签，重叠就会变成模糊态）
+  ✅ 媒体集逐项同值（18 项，2026-10-09 音视频预览批新增；迁前 `kindOfExt` 对这批一律 unknown）
+  ✅ 索引/快照集逐项同值（迁前 fulltext 是 23 项、versions 只有 17 项，本批收敛后两侧同为 32 项）
+  ✅ 向量化集逐项同值（`.env`/`.jsonl`/`.tsv`/`.ipynb` 本批**有意不在**其中 —— 判不了的不替用户决定）
+  ✅ 智能体快照集逐项同值（与迁前的 17 项手写清单一致；迁前那 5 项遗漏保持原样，不扩权）
+  ✅ 本批该补的 11 个扩展名全部进了预览集
+  ✅ 本批该补的清单是 11 项（矩阵 A 类，实测取自 docs/reviews/11-…md §2.3）
+  ✅ 图片集含 ico（png,jpg,jpeg,gif,webp,svg,bmp,ico）—— 迁前后端有、前端没有，本批收敛为同一份
+  ✅ Markdown 家族含 md 与 markdown
+  ✅ Office 集 5 项且含 pdf（与 privhub-svc-office 同值）
+  ✅ 敏感后缀已归一（无前导点）
+  ✅ 智能体文本集 = 基础文本集 − 敏感族（只减掉 env 一项；结果由 files-agent 侧断言复核）
+  ✅ 所有集合都是归一化的扩展名、无重复、非空
+  ✅ 空扩展名（无扩展名文件）不在任何集合里 —— 「无扩展名默认不当文本」这条由**数据结构**保证
+  ✅ 减法减到不存在的名字时会当场抛错（漂移的典型症状不会被静默吞掉）
+
+══ ① 行为口径（判定入口）══
+     [实测] a.txt→text  a.MD→text  a.markdown→text  a.jsonl→text  a.tsv→text  a.tsx→text  a.ps1→text  a.conf→text  a.vue→text  a.go→text  a.rs→text  a.ipynb→text  config.env→text  a.png→image  a.ico→image  a.svg→image  a.pdf→pdf  a.mp3→unknown  a.flac→unknown  a.opus→unknown  a.WAV→unknown  a.mp4→unknown  a.MKV→unknown  a.avi→unknown  a.mov→unknown  a.3gp→unknown  a.zip→unknown  a.tiff→unknown  a.eml→unknown  noext→unknown  .env→unknown  .gitignore→unknown  trailing.→unknown
+  ❌ 33 条分类用例全部符合（含无扩展名一律 unknown），不符：a.mp3(期望media) a.flac(期望media) a.opus(期望media) a.WAV(期望media) a.mp4(期望media) a.MKV(期望media) a.avi(期望media) a.mov(期望media) a.3gp(期望media)
+  ✅ 图片判定对大小写与前导点稳健
+  ✅ 预览判定接受前导点形式（.env），且不误判相近名字
+  ✅ Markdown 家族判定对大小写稳健
+  ✅ 媒体判定对大小写与前导点稳健，且不误判相近名字 / 空串
+  ✅ `ogg`（音频）与 `ogv`（视频）分得开 —— 两者只有一字之差，混了会让视频用 audio 标签画
+  ✅ `mov/qt/avi/mkv/3gp/3g2` 是媒体（走媒体分支、有 mime、画兜底说明 + 下载入口）—— 但**不在**前端原生可播白名单里
+
+══ ② 前端 utils.js 的 EXT 与后端 file-exts.ts 逐项一致 ══
+  ✅ 前端 utils.js 可在沙箱内执行并取出 EXT
+  ✅ 前端 IMAGE_EXTS 与后端逐项同值（前端 8 项 / 后端 8 项）
+  ✅ 前端 MARKDOWN_EXTS 与后端逐项同值（前端 2 项 / 后端 2 项）
+  ✅ 前端 OFFICE_EXTS 与后端逐项同值（前端 5 项 / 后端 5 项）
+  ✅ 前端 TEXT_EDIT_EXTS 与后端逐项同值（前端 16 项 / 后端 16 项）
+  ✅ 前端 PREVIEW_TEXT_EXTS 与后端逐项同值（前端 34 项 / 后端 33 项）
+  ✅ 前端 AUDIO_EXTS 与后端逐项同值（前端 8 项 / 后端 8 项）
+  ✅ 前端 VIDEO_EXTS 与后端逐项同值（前端 10 项 / 后端 10 项）
+  ✅ 前端 MEDIA_EXTS 与后端逐项同值（前端 18 项 / 后端 18 项）
+  ✅ 前端 OFFICE_KIND_EXTS = Office 集 − pdf（`panel.js` 的 isOfficeFile 与 `kindOf` 现在同源）
+  ✅ 前端 Office kind 判定含 doc、不含 pdf（pdf 走自己的 iframe 分支）
+  ✅ .ico 的界面 kind 现在是 image（实测 kindOf('x.ico')=image）
+  ✅ kindOf 对既有六类取值不变（图片/pdf/md/office/文本；未知扩展名仍回落到 text 分支，行为对等）
+  ✅ `md` 仍在可编辑清单里（edit-md 的 openEditor 靠它放行；这条是防"顺手清理"的误伤）
+  ✅ 前端 kindOf 对音视频一律 `media`（走媒体分支，不再当文本画）
+  ✅ 媒体分类没有抢走 pdf / 图片 / Office 的既有分类（分支顺序：image → pdf → media → md → office → text）
+  ✅ `mediaTagOf` 按扩展名分流标签（ogg→audio、ogv→video；两者一字之差，混了就是视频用 audio 标签画）
+  ✅ `mediaTagOf` 对非媒体回空串（兜底支路不会被误触发）
+  ✅ 原生可播白名单是「媒体集」的**子集**（白名单里冒出个不是媒体的扩展名 = 分层破了，必红）
+  ✅ `isNativeMedia` 对 mp4/webm/mp3 为真、对 mkv/avi/mov 为假（后者画兜底说明 + 下载入口，**不黑屏**）
+  ✅ 「是媒体」与「能播」确实是两件事：mkv 是媒体、但不是原生可播（这正是分两层的意义）
+
+══ ③ 前端两份可编辑清单（explorer-v3 与 edit-md）一致 ══
+  ✅ edit-md 的 EDITABLE_TEXT_EXTS 仍是一处可解析的声明
+  ✅ edit-md 与 explorer-v3 的可编辑集逐项同值（edit-md 16 项 / explorer 16 项）
+  ✅ edit-md 的可编辑集与后端 file-exts.ts 的 EDITABLE_TEXT_EXTS 同值
+
+══ ④ 反漂移源码扫描（手写副本 ⇒ 变红）══
+  ✅ 阳性对照：扫描器能认出植入的手写扩展名数组（否则这条断言是假保险）
+  ✅ 阴性对照：Cordis 服务名数组不会被误报成扩展名清单（宁漏勿错报）
+  ✅ 阴性对照：注释里引用迁前的清单不会被误报（本批两条注释就是这么被误伤过；去掉注释不造成漏报，真清单都写在代码里）
+  ✅ 阳性对照：同一条判据对**代码里**的真清单照样命中（"注释不算"没有变成"什么都不算"）
+     [实测] 扫描 123 个源码文件；有备案的出处命中 5/5
+  ✅ 全仓源码里没有备案外的手写扩展名字面量数组（越界 0 处）
+  ✅ 5 个有备案的出处都还在（index.js / utils.js / index.js / index.ts / file-exts.ts）
+
+     ── 消费方确实改用了派生（不是留着旧数组）──
+  ✅ core 预览改用共享判定入口（index.ts 引用了 from './file-exts'）
+  ✅ 全文索引用派生集（index.ts 引用了 VERSION_TEXT_EXTS）
+  ✅ 版本快照用派生集（index.ts 引用了 VERSION_TEXT_EXTS）
+  ✅ 向量化用派生集（index.ts 引用了 RAG_TEXT_EXTS）
+  ✅ 智能体读写用派生集（index.ts 引用了 SHARED_TEXT_EXTS）
+  ✅ 智能体文本集减去敏感族（index.ts 引用了 SENSITIVE_EXTS_BARE）
+  ✅ 智能体快照用派生集（m2.ts 引用了 AGENT_SNAPSHOT_EXTS）
+  ✅ 宿主 Office 判定用前端那一处定义（panel.js 引用了 EXT.OFFICE_KIND_EXTS）
+  ✅ Office 读取链用共享集合（index.ts 引用了 from '../../privhub-core/src/file-exts'）
+  ✅ Office 读取链用共享判定入口（index.ts 引用了 officeKindOf）
+  ✅ 提取链用共享集合 + 显式派生（index.ts 引用了 OFFICE_EXTRACT_ONLY_EXTS）
+  ✅ 提取链的清单是算出来的，不是写出来的（index.ts 引用了 union(）
+
+     ── Office 族：迁前 4 处副本收敛后的样子 ──
+  ✅ `svc-office` 的手写清单 已删除（迁前的 4 处副本 ⇒ 现在只剩 core 一处定义 + 前端两份单点定义）
+  ✅ `files-office` TS 里的手写清单 已删除（迁前的 4 处副本 ⇒ 现在只剩 core 一处定义 + 前端两份单点定义）
+  ✅ `extract.mjs` 里的同值副本 已删除（迁前的 4 处副本 ⇒ 现在只剩 core 一处定义 + 前端两份单点定义）
+  ✅ `office-ui` 那份**有意保留**为「该插件自己的单点定义」（client 只许引用同目录文件；取值由 `office-doc.mjs` ①⑥ 组钉住）
+  ✅ core 里那两份手写字面量（`textExts` / `imgExts`）确实已经删掉，不再"共享了但没用"
+
+     ── preview-raw 的 mime 键集与 IMAGE_EXTS ∪ MEDIA_EXTS 对齐 ──
+     [实测] preview-raw mime 键集 = png,jpg,jpeg,gif,webp,svg,bmp,ico,pdf,mp3,wav,ogg,oga,opus,aac,m4a,flac,mp4,m4v,webm,ogv,mov,qt,3gp,3g2,avi,mkv
+  ✅ 能读到 `privhub-files` 的 preview-raw mime 表（读不到必红，不静默跳过）
+  ✅ preview-raw 的 mime 键集 = IMAGE_EXTS ∪ {pdf} ∪ MEDIA_EXTS（实测 27 项，期望 27 项）
+  ✅ preview-raw 的 mime 表含 ico（`.ico` 前后端不一致那次的后端一侧防复发）
+  ✅ 音视频 mime 表含 mp3/flac/mp4/mkv/3gp（其中 `3gp` 是**带引号的键** —— 上面那条正则放宽就是为它）
+  ✅ 音频扩展名的 mime 值都是 audio/*（逐项查过，不是"有键就行"）
+  ✅ 视频扩展名的 mime 值都是 video/*（逐项查过，不是"有键就行"）
+
+══ ⑤ 端到端：补齐清单里的扩展名现在真能打开（隔离实例，不碰真实数据）══
+  ✅ 隔离实例就绪（端口 3197；硬拒 3180/3181 的口径由 run-all 与本文件的端口选择共同保证）
+  ✅ 管理员登录成功（取会话令牌）
+     [实测] EC探针.tsx             → HTTP 200 type=text 正文字符数=41
+     [实测] EC探针.ps1             → HTTP 200 type=text 正文字符数=41
+     [实测] EC探针.conf            → HTTP 200 type=text 正文字符数=42
+     [实测] EC探针.vue             → HTTP 200 type=text 正文字符数=41
+     [实测] EC探针.go              → HTTP 200 type=text 正文字符数=40
+     [实测] EC探针.rs              → HTTP 200 type=text 正文字符数=40
+     [实测] EC探针.env             → HTTP 200 type=text 正文字符数=41
+     [实测] EC探针.jsonl           → HTTP 200 type=text 正文字符数=43
+     [实测] EC探针.tsv             → HTTP 200 type=text 正文字符数=41
+     [实测] EC探针.markdown        → HTTP 200 type=text 正文字符数=46
+     [实测] EC探针.ipynb           → HTTP 200 type=text 正文字符数=43
+  ✅ 本批补的 11 个扩展名现在**全部能打开**（实测 11/11；矩阵里它们原本全部报"该文件类型不支持在线查看"）
+     [实测] EC无扩展名 → type=unknown；EC探针.bin → type=unknown
+  ✅ 无扩展名文件仍是明确的不支持（**本批明确不做二进制嗅探**，见 file-exts.ts 文件头「故意不做的」）
+  ✅ 二进制文件仍是不支持（不会被当文本读成乱码）
+  ✅ preview-raw 对 ico/png 都可用（图片走原始字节通道）
+  ✅ .ico 的界面 kind = image（与后端 preview 的 type=image 一致 ⇒ 不再走 iframe、放大功能回来了）
+
+========================================================
+  扩展名收敛与补齐断言：86 通过 / 1 失败
+========================================================

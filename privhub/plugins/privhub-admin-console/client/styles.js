@@ -24,11 +24,17 @@ const CSS = `
   --admin-primary: var(--accent, #4a7bd6);
   --admin-danger: var(--danger, #dc2626);
   --admin-warn: var(--warn, #c07a2b);
-  --admin-radius: 8px;
-  --admin-gap: 16px;
+  /* FE-03 P3-1：半径与间距直接引用骨架刻度（值不变，只是不再各写一份）。
+   * 颜色那 7 条 「var(变量, 原值)」 的映射是对的，保留 —— 回退值让本插件
+   * 在骨架尚未升级时仍能独立渲染。 */
+  --admin-radius: var(--r-3, 8px);
+  --admin-gap: var(--sp-4, 16px);
   --admin-row-h: 40px;
-  --admin-primary-soft: rgba(90, 130, 200, .14);
-  --admin-shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 2px 8px rgba(0, 0, 0, .04);
+  /* FE-03 P0-2：本控制台自己的「强调淡底」改为跟随骨架令牌（带原值回退，
+   * 保证控制台在骨架未升级时仍能独立渲染）。迁前是写死的 rgb(90,130,200)，
+   * 那个蓝既不是浅色也不是深色主题的 accent。 */
+  --admin-primary-soft: var(--accent-soft, rgba(90, 130, 200, .14));
+  --admin-shadow: var(--sh-1, 0 1px 2px rgba(0, 0, 0, .06), 0 2px 8px rgba(0, 0, 0, .04));
 
   height: 100%;
   min-height: 0;
@@ -89,7 +95,7 @@ const CSS = `
 .ad-me { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .ad-avatar {
   width: 28px; height: 28px; border-radius: 50%;
-  background: var(--admin-primary); color: #fff;
+  background: var(--accent-solid, var(--admin-primary)); color: #fff;
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 600;
 }
@@ -229,8 +235,8 @@ const CSS = `
 .ad-btn:disabled { opacity: .5; cursor: not-allowed; }
 .ad-btn:disabled:hover { border-color: var(--admin-border); color: var(--admin-text); }
 .ad-btn-sm { padding: 4px 10px; font-size: 12px; }
-.ad-btn-primary { background: var(--admin-primary); border-color: var(--admin-primary); color: #fff; }
-.ad-btn-primary:hover { color: #fff; filter: brightness(1.08); }
+.ad-btn-primary { background: var(--accent-solid, var(--admin-primary)); border-color: var(--accent-solid, var(--admin-primary)); color: #fff; }
+.ad-btn-primary:hover { color: #fff; background: var(--accent-hover, var(--admin-primary)); }
 .ad-btn-danger { background: transparent; border-color: var(--admin-danger); color: var(--admin-danger); }
 .ad-btn-danger:hover { background: var(--admin-danger); color: #fff; border-color: var(--admin-danger); }
 
@@ -402,7 +408,7 @@ const CSS = `
 
 /* ============ 确认弹窗 ============ */
 .ad-mask {
-  position: fixed; inset: 0; z-index: 1300;
+  position: fixed; inset: 0; z-index: var(--z-panel, 1300);
   background: rgba(0, 0, 0, .42);
   display: flex; align-items: center; justify-content: center;
 }
@@ -432,7 +438,7 @@ const CSS = `
 
 /* ============ Toast ============ */
 .ad-toasts {
-  position: fixed; right: 18px; bottom: 18px; z-index: 1400;
+  position: fixed; right: 18px; bottom: 18px; z-index: var(--z-toast, 1400);
   display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
   pointer-events: none;
 }
@@ -492,19 +498,24 @@ const CSS = `
   }
   .admin-root .ad-crumb-item { max-width: 150px; }
 }
-/* <768：列表与详情二选一，进入详情后提供返回列表按钮 */
+/* <768：列表与详情二选一，进入详情后提供返回列表按钮
+ * FE-03 P2-2：本断点原先 12 条全是【裸选择器】，而上面两个断点都带 .admin-root 前缀 ——
+ * 也就是说「文件头声明的『作用域限定在 .admin-root 之内』」在最窄的那个断点上不成立。
+ * 当前没出事的唯一原因是运气（ad- 前缀全仓只有本插件在用），但那不叫作用域。
+ * 补上前缀后行为不变，变的是「名称与事实一致」。 */
 @media (max-width: 767px) {
-  .ad-topbar { gap: 6px; padding: 0 8px; }
-  .ad-search { display: none; }
-  .ad-role-badge, .ad-me-name { display: none; }
-  .ad-content-inner { padding: 10px; }
-  .ad-ld { position: relative; }
-  .ad-ld-list { flex-basis: 100% !important; width: 100% !important; border-right: none; }
-  .ad-ld-grip { display: none; }
-  .ad-ld-detail { display: none; }
-  .ad-ld.show-detail .ad-ld-list { display: none; }
-  .ad-ld.show-detail .ad-ld-detail { display: flex; }
-  .ad-detail-toggle { display: inline-flex; }
+  .admin-root .ad-topbar { gap: 6px; padding: 0 8px; }
+  .admin-root .ad-search { display: none; }
+  .admin-root .ad-role-badge,
+  .admin-root .ad-me-name { display: none; }
+  .admin-root .ad-content-inner { padding: 10px; }
+  .admin-root .ad-ld { position: relative; }
+  .admin-root .ad-ld-list { flex-basis: 100% !important; width: 100% !important; border-right: none; }
+  .admin-root .ad-ld-grip { display: none; }
+  .admin-root .ad-ld-detail { display: none; }
+  .admin-root .ad-ld.show-detail .ad-ld-list { display: none; }
+  .admin-root .ad-ld.show-detail .ad-ld-detail { display: flex; }
+  .admin-root .ad-detail-toggle { display: inline-flex; }
 }
 `
 

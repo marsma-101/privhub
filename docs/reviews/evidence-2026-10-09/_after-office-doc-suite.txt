@@ -1,0 +1,35 @@
+# `node --import tsx/esm tests/office-doc.mjs` —— 收工后（绿）
+# 命令：cd privhub && node --import tsx/esm tests/office-doc.mjs
+# 退出码：0
+# 注：正文/单元格内容类片段在入库时已隐去（用户内容不入库），结构与数字保留原样。
+
+══ ② `.doc` 解析失败：不再有"兜底文案冒充正文"（进程内直调真身）══
+  ✅ `readDoc` 的失败分支回 `ok:false` + `reason`（可区分的原因码）
+  ✅ 失败分支**不允许**返回「只有 text、且 text 是兜底提示句」这种形状（＝"解析失败却报成功"的病根）
+
+══ ③ `svc-office.read()` 契约（失败与成功必须真的分开）══
+  ✅ 失败回包里既没有 content、也没有那句兜底文案（实测 error="无法提取这份 .doc 的正文：本机没有真正的 Python（只有应用商店的占位"…）
+  ✅ 失败回包里既没有 content、也没有那句兜底文案（实测 error="无法提取这份 .doc 的正文：本机没有真正的 Python（只有应用商店的占位"…）
+  ✅ 不支持的扩展名（`.xls`）⇒ reason=unsupported-type（与"解析失败"分开）
+  ✅ 读不出字节 ⇒ reason=read-failed（与"解析失败"分开）
+  ✅ 坏的 pdf 同样如实失败（这四个 kind 的 ok 语义与 .doc 一致：拿不到正文就不许说成功）
+
+  ✅ `.xls` 在读取链外 ⇒ reason=unsupported-type（与"解析失败"分开；这是本批拍的口径，见 `file-exts.ts` 文件头）
+  ✅ 【本批修的界面行为】后端失败 ⇒ 界面进错误态，显示的是**后端给的原因原文**（不是"读取失败"这种含糊话）
+
+══ ⑦ `.doc` 正文直读：合成 FIB + table 流 → 正文（纯函数，无 I/O）══
+  （8 条全绿：单 piece unicode / CP 序不随文件序 / 压缩 piece `a\x92b`→"a'b" / 跳过 Prc /
+   `ccpText` 截断 / 四个 guard 各回 '' / 自证 / 导出存在）
+
+══ ⑧ xlsx 行/列上限：超上限必须回带真实总数（静默截断是本批修的病）══
+     [实测] office-lib.mjs: MAX_ROWS=10000 MAX_COLS=60（迁前 1000 / 60）
+  ✅ MAX_ROWS 已抬离迁前的 1000（实测 10000）—— 用户实测的那张排播表有 3320 行
+  ✅ 未被截断的小表：rows=5 / totalRows=5 / truncatedRows=false
+  ✅ 超上限表：保留 MAX_ROWS 行、totalRows 回带真实总数、truncatedRows=true
+  ✅ 超宽表：每行 60 列、totalCols=63、truncatedCols=true
+  ✅ 被截断时附一句**明说**（实测末两行 "*（仅显示前 1 行（本表共 3320 行））* | "）
+  ✅ 没被截断时**不加**这句（每次都挂一句就成了噪音）
+
+========================================================
+  .doc 如实报错 + Office 族收敛断言：94 通过 / 0 失败
+========================================================

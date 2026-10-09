@@ -328,7 +328,14 @@ async function main() {
     const branch = c.state === 'error' ? '错误提示行'
       : c.office ? 'office → v3-md 文本'
         : c.markdown !== undefined ? 'v3-md（Markdown 渲染）'
-          : c.text !== undefined ? 'v3-text（纯文本只读）'
+          /* 正文分支内部还有一层"怎么画"（content.js 的 structuredView）：
+           * csv/tsv 有表就打表、json 能解析就美化，否则回落 <pre> 纯文本 ——
+           * 三种都是 v3-text 家族，这里如实分列，免得报告把表格说成纯文本。 */
+          : c.text !== undefined ? (c.structured && c.structured.mode === 'table'
+            ? 'v3-text-table（csv/tsv 表格）'
+            : c.structured && c.structured.mode === 'json'
+              ? 'v3-text（JSON 美化）'
+              : 'v3-text（纯文本只读）')
             : c.url ? (kind === 'image' ? 'img.v3-img（本轮起铺满）' : 'iframe.v3-pdf（本轮起铺满）')
               : '（无）'
 

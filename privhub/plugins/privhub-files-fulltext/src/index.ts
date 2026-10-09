@@ -138,6 +138,21 @@ export function apply(ctx: Context): void {
       const url = new URL(req.url ?? '/', 'http://x')
       const q = url.searchParams.get('q') ?? ''
       const projectParam = url.searchParams.get('project') ?? ''
+      // JT-03：个人空间【按设计】不进全文索引（见 indexFile 的隐私说明），
+      // 但此前在个人空间里搜全文会返回空数组且毫无解释，用户会当成"搜索坏了"。
+      // 这里回 200 + 明确提示，前端据此显示横幅（不泄露他人空间：先过 canAccess）。
+      if (projectParam && svc.isPersonalDir(projectParam)) {
+        if (!svc.canAccess(u, projectParam)) return json(res, 403, { ok: false, error: '无权限' })
+        return json(res, 200, {
+          ok: true,
+          hits: [],
+          stats: search.stats(),
+          // 文案避免使用「个人空间」一词：界面按【普通文件夹】对待人名目录（产品决定，
+          // 见 tests/personal-ui.mjs D2），这里只说用户能理解的行为差异。
+          notice: '这个文件夹只有你自己能看，为保护隐私不参与全文检索，请改用「文件名」搜索。',
+          personal: true,
+        })
+      }
       const visible = await svc.visibleProjects(u)
       const hits = await search.searchFulltext(q, projectParam ? { project: projectParam } : {}, visible)
       json(res, 200, { ok: true, hits, stats: search.stats() })

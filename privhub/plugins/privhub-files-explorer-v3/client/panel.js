@@ -169,6 +169,15 @@ const PanelV3 = {
     },
     activeTab() { return store.tabs.find(t => t.key === store.activeKey) || null },
     content() { return store.content },
+    /* 文本分支的正文：结构化子模式为「美化 JSON」时给美化结果，否则给原文。
+     * 表格模式不走这里（模板另有分支）。注意 `content.text` 本身**不被子模式改写** ——
+     * 子模式的结果另存在 `content.structured`，见 content.js 的 structuredView。 */
+    textPreview() {
+      const c = this.content
+      if (!c) return ''
+      if (c.structured && c.structured.mode === 'json') return c.structured.text
+      return c.text === undefined ? '' : c.text
+    },
     showTabs() { return store.tabs.length > 0 },
     /* 是否是「走 Office 内容链」的文件：扩展名取自**前端唯一那一处定义**
      * （`utils.js` 的 `EXT.OFFICE_KIND_EXTS` = Office 读取链集合减去 pdf），不在这里写字面量。
@@ -785,10 +794,34 @@ const PanelV3 = {
             <div v-html="renderMd()" class="v3-md" ref="mdRoot"></div>
           </template>
           <template v-else-if="content.text !== undefined">
-            <pre class="v3-text">{{ content.text }}</pre>
+            <!-- 结构化只读预览（csv/tsv → 表格）：正文分支内部的"怎么画"，见 content.js 的
+                 structuredView。⚠ 两个分支都保留 v3-text 类名 —— 这样 --viewer / --editor
+                 的让位规则（styles.js）与 clearInjected 的清场（panel.js 上方）一字都不用改。
+                 ⚠ 这段注释在模板串【里面】：一律不写反引号（会当场结束模板串，b 批踩过）。 -->
+            <div v-if="content.structured && content.structured.mode === 'table'" class="v3-text v3-text-table">
+              <table class="v3-csv"><tbody><tr v-for="(row, ri) in content.structured.rows" :key="ri"><td v-for="(cell, ci) in row" :key="ci" :class="{ 'v3-csv-head': ri === 0 }">{{ cell }}</td></tr></tbody></table>
+            </div>
+            <pre v-else class="v3-text">{{ textPreview }}</pre>
           </template>
           <template v-else-if="content.url">
+            <!-- 音视频（2026-10-09）：三条支路 —— video / audio / **播不了的兜底说明**。
+                 ⚠ 一律直接把 content.url 交给 src，**不** fetch 成 Blob：Blob 会让整段视频
+                 进内存且丢掉 Range/206（拖动进度条就没了）—— nowen-note 在 Android 上踩过这条。
+                 ⚠ 兜底支路不是"这是坏文件"，是"浏览器解不了这个容器"：说清是哪一种 + 给下载入口，
+                 与"该文件类型不支持在线查看"那句**分开**（后者会让人以为文件有问题）。
+                 ⚠ 这段注释在模板串【里面】：一律不写反引号（会当场结束模板串，b 批踩过），
+                 也要紧挨着 v-if 那一支写 —— 夹在 v-if 与 v-else-if 中间会切断分支链。 -->
             <div v-if="activeTab.kind === 'image'" class="v3-img-wrap"><img class="v3-img" style="cursor:zoom-in" :src="content.url" :alt="activeTab.name" @click="store.lightbox = content.url" /></div>
+            <div v-else-if="activeTab.kind === 'media'" class="v3-media-wrap">
+              <video v-if="content.mediaTag === 'video' && content.native" class="v3-media" :src="content.url" controls preload="metadata"></video>
+              <audio v-else-if="content.mediaTag === 'audio' && content.native" class="v3-media" :src="content.url" controls preload="metadata"></audio>
+              <div v-else class="v3-media-fallback">
+                <div style="font-size:28px">🎬</div>
+                <div style="font-size:13.5px">浏览器不支持该格式的内联播放</div>
+                <div style="font-size:12px;color:var(--muted)">{{ activeTab.name }}</div>
+                <a class="v3-media-dl" :href="content.downloadUrl">⬇ 下载后用本地播放器打开</a>
+              </div>
+            </div>
             <iframe v-else class="v3-pdf" :src="content.url"></iframe>
           </template>
           <!-- 挂载锚点（第二步 a）：**由宿主创建与销毁**，位置永远在这一处。
@@ -899,7 +932,7 @@ const PanelV3 = {
 
       <!-- 图片放大预览（lightbox） -->
       <div v-if="store.lightbox" class="modal-mask" style="background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center" @click.self="store.lightbox = null">
-        <span style="position:fixed;top:16px;right:24px;font-size:24px;color:#fff;cursor:pointer;z-index:1101" @click="store.lightbox = null">✕</span>
+        <span style="position:fixed;top:16px;right:24px;font-size:24px;color:#fff;cursor:pointer;z-index:var(--z-modal-top,1101)" @click="store.lightbox = null">✕</span>
         <img :src="store.lightbox" style="max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)" />
       </div>
 
@@ -944,10 +977,10 @@ const PanelV3 = {
             <div v-if="store.moveState.loading" style="color:var(--muted);font-size:12.5px;padding:12px 0">加载目录…</div>
             <template v-else>
               <div style="font-size:12.5px;max-height:320px;overflow:auto">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ background: store.moveState.target === '' ? 'rgba(90,130,200,.12)' : '' }">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ background: store.moveState.target === '' ? 'var(--accent-soft, rgba(90,130,200,.12))' : '' }">
                   <input type="radio" v-model="store.moveState.target" value="" /> 🏠 项目根目录
                 </label>
-                <label v-for="n in store.moveState.tree" :key="n.path" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ paddingLeft: (8 + n.depth * 18) + 'px', background: store.moveState.target === n.path ? 'rgba(90,130,200,.12)' : '' }">
+                <label v-for="n in store.moveState.tree" :key="n.path" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border-radius:6px" :style="{ paddingLeft: (8 + n.depth * 18) + 'px', background: store.moveState.target === n.path ? 'var(--accent-soft, rgba(90,130,200,.12))' : '' }">
                   <input type="radio" v-model="store.moveState.target" :value="n.path" /> 📁 {{ n.name }}
                 </label>
               </div>

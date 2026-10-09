@@ -30,6 +30,28 @@ import { api } from './deps.js'
 
 /** 基础集合：图片。取值必须与 `file-exts.ts` 的 `IMAGE_EXTS` 逐项同值（断言守着）。 */
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']
+/** 基础集合：音频 / 视频。取值必须与 `file-exts.ts` 的 `AUDIO_EXTS` / `VIDEO_EXTS` 逐项同值。
+ *  两者**互斥**（后端同一口径）：`ogg` 归音频、`ogv` 归视频 —— 前端只按扩展名分流，
+ *  不重叠才不会有"这个扩展名到底用哪个标签"的模糊态。 */
+const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'flac']
+const VIDEO_EXTS = ['mp4', 'm4v', 'webm', 'ogv', 'mov', 'qt', '3gp', '3g2', 'avi', 'mkv']
+/** 派生：音视频总集。取值必须与后端 `MEDIA_EXTS`（= AUDIO ∪ VIDEO）同值。 */
+const MEDIA_EXTS = [...AUDIO_EXTS, ...VIDEO_EXTS]
+
+/**
+ * 派生：**浏览器原生能播**的那一批（nowen-note 的 `NATIVE_*_EXTS`，2026-10-09 照抄其口径）。
+ *
+ * 为什么这份白名单在前端而不在后端：「浏览器能不能解码」是**浏览器事实**，
+ * 不是扩展名分类事实 —— 放后端会随前端升级而失真（见 `file-exts.ts` 的 `AUDIO_EXTS` 注释）。
+ *
+ * 为什么保守：nowen-note 的原话是*宁可降级到"下载提示"也不要黑屏*。
+ * `mov/qt/avi/mkv/3gp/3g2` 不在里面 ⇒ 界面画**兜底说明 + 下载入口**（同一份实现的另一条支路），
+ * **不是**黑屏，也不是一句含糊的"不支持在线查看"。
+ * ⚠ 这里列的是**容器**层面"多数环境认"的集合，具体编解码器（如 mkv 里的 H.264）不一概而论；
+ * 真实可播性**未经浏览器实测**（见 `docs/reviews/17-音视频预览.md` §5）。
+ */
+const NATIVE_VIDEO_EXTS = ['mp4', 'm4v', 'webm', 'ogv']
+const NATIVE_AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'flac']
 /** 基础集合：Markdown 家族。取值必须与 `file-exts.ts` 的 `MARKDOWN_EXTS` 同值。 */
 const MARKDOWN_EXTS = ['md', 'markdown']
 /** 基础集合：Office 读取链（含 PDF）。取值必须与 `file-exts.ts` 的 `OFFICE_EXTS` 同值。
@@ -63,6 +85,23 @@ const PREVIEW_TEXT_EXTS = [
   'env', 'jsonl', 'tsv', 'ipynb',
 ]
 
+/**
+ * 派生：只读预览里按【表格】渲染的扩展名（结构化文本）。
+ *
+ * 语义**只是「怎么画」**，不表示「能不能打开」—— 后者仍由后端 `readFileForPreview`
+ * 回带的 `type` 说了算（这两个扩展名本来就在 `PREVIEW_TEXT_EXTS` 里，能打开）。
+ * 与 `OFFICE_KIND_EXTS` 同类：前端自己的显示口径，后端没有对应概念、也不需要。
+ */
+const TABLE_TEXT_EXTS = ['csv', 'tsv']
+
+/**
+ * 派生：只读预览里按【美化 JSON】渲染的扩展名。
+ *
+ * 同上：只影响画法。解析失败或体量过大时回落到纯文本（`content.js` 的 `structuredView`），
+ * 绝不因为"美化不了"而让文件打不开。
+ */
+const JSON_TEXT_EXTS = ['json']
+
 /** 供断言与同插件其它模块取用的**冻结视图**（本文件是前端这一侧的唯一出处）。 */
 const EXT = Object.freeze({
   IMAGE_EXTS: Object.freeze(IMAGE_EXTS),
@@ -71,6 +110,13 @@ const EXT = Object.freeze({
   OFFICE_KIND_EXTS: Object.freeze(OFFICE_KIND_EXTS),
   TEXT_EDIT_EXTS: Object.freeze(TEXT_EDIT_EXTS),
   PREVIEW_TEXT_EXTS: Object.freeze(PREVIEW_TEXT_EXTS),
+  TABLE_TEXT_EXTS: Object.freeze(TABLE_TEXT_EXTS),
+  JSON_TEXT_EXTS: Object.freeze(JSON_TEXT_EXTS),
+  MEDIA_EXTS: Object.freeze(MEDIA_EXTS),
+  AUDIO_EXTS: Object.freeze(AUDIO_EXTS),
+  VIDEO_EXTS: Object.freeze(VIDEO_EXTS),
+  NATIVE_VIDEO_EXTS: Object.freeze(NATIVE_VIDEO_EXTS),
+  NATIVE_AUDIO_EXTS: Object.freeze(NATIVE_AUDIO_EXTS),
 })
 
 /** 取归一化扩展名：去前导点、转小写；**无扩展名返回空串**（不兜底成任何类型）。 */
@@ -86,22 +132,67 @@ const tabKey = (project, path) => project + '|' + path
 
 /* 界面分类（模板按 kind 选渲染分支）。取值一律来自上面的 EXT，不在这里写字面量。
  * 注意：`kindOf` **不是**「能不能打开」的判据 —— 后端 `readFileForPreview` 的 `type` 才是。
- * 它只回答「这个文件该用 img / iframe / office / 文本哪个分支画」。 */
+ * 它只回答「这个文件该用 img / iframe / office / 文本 / 媒体哪个分支画」。
+ * ⚠ `'media'` 只表示"走媒体分支"，不表示"能播" —— 能不能播由 `mediaTagOf` 再判一次。 */
 function kindOf(name) {
   const ext = extOf(name)
   if (IMAGE_EXTS.includes(ext)) return 'image'
   if (ext === 'pdf') return 'pdf'
+  if (MEDIA_EXTS.includes(ext)) return 'media'
   if (ext === 'md') return 'md'
   if (OFFICE_KIND_EXTS.includes(ext)) return 'office'
   return 'text'
+}
+
+/**
+ * 媒体该用哪个标签画：`'video'`（含"播不了"的兜底支路，见下）/ `'audio'` / `''`（不是媒体）。
+ *
+ * 只按扩展名分流（与后端同一口径，不做 mime 嗅探）：
+ *   · 在 `AUDIO_EXTS` 里 ⇒ `'audio'`（用 `<audio>`）；
+ *   · 其余在 `VIDEO_EXTS` 里 ⇒ `'video'`（用 `<video>`；浏览器播不了时同一支路画兜底说明）。
+ * `'video'` 这个返回值**不代表一定能播** —— 能播与否由 `NATIVE_VIDEO_EXTS` 在组件里另判，
+ * 这样"是媒体"与"能播"两件事在代码里也分开（与后端的分层一致）。
+ */
+function mediaTagOf(name) {
+  const ext = extOf(name)
+  if (AUDIO_EXTS.includes(ext)) return 'audio'
+  if (VIDEO_EXTS.includes(ext)) return 'video'
+  return ''
+}
+
+/** 这个媒体名**能不能被浏览器原生播放**（白名单见 `NATIVE_*_EXTS` 的注释）。 */
+function isNativeMedia(name) {
+  const ext = extOf(name)
+  return NATIVE_AUDIO_EXTS.includes(ext) || NATIVE_VIDEO_EXTS.includes(ext)
 }
 
 function isEditableText(name) {
   return TEXT_EDIT_EXTS.includes(extOf(name))
 }
 
+/**
+ * 只读预览的「结构化渲染模式」：`'table'`（csv/tsv）| `'json'`（json）| `''`（按纯文本）。
+ *
+ * 这是 nowen-note 的 `detectRenderMode` 在本仓的对应物：同一条文本预览分支里，
+ * 按内容形态再分一次「怎么画」。与 `kindOf` 分工一样 —— `kindOf` 决定走哪条大分支
+ * （img / iframe / office / 文本），本函数只在**文本分支内部**决定用表格 / 美化 / 原文。
+ * 空串 = 既有行为（`<pre>` 纯文本），所以不认识的名字不会被改变。
+ */
+function textModeOf(name) {
+  const ext = extOf(name)
+  if (TABLE_TEXT_EXTS.includes(ext)) return 'table'
+  if (JSON_TEXT_EXTS.includes(ext)) return 'json'
+  return ''
+}
+
 function rawUrl(project, path) {
   return '/privhub/api/preview-raw?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
+}
+
+/** 下载直链（`<a href>` 用）。与 `rawUrl` 成对：预览走 `preview-raw`、留存走 `download`。
+ *  媒体兜底支路（浏览器播不了那种格式）给的就是这条 —— 「换个地方打开」是本仓一贯的出路写法。 */
+function downloadUrl(project, path) {
+  return '/privhub/api/download?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
 }
 function relPath(project, dir, name) { return dir ? dir + '/' + name : name }
 
@@ -111,4 +202,4 @@ function uiZoom() {
   return parseFloat(getComputedStyle(document.documentElement).zoom) || 1
 }
 
-export { tabKey, kindOf, EXT, extOf, TEXT_EDIT_EXTS, isEditableText, rawUrl, relPath, uiZoom }
+export { tabKey, kindOf, mediaTagOf, isNativeMedia, textModeOf, EXT, extOf, TEXT_EDIT_EXTS, isEditableText, rawUrl, downloadUrl, relPath, uiZoom }

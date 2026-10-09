@@ -335,6 +335,29 @@ ok(/"view":\s*"agent"/.test(acManifest), '平台插件声明 agent 视图 barIte
 ok(/slotComps\['agent-view'\]/.test(feSrc), '骨架模板挂载 agent-view（否则界面渲染不出来）')
 ok(/view === 'agent'/.test(feSrc), '骨架 barItem 分发包含 agent 视图')
 
+/* 任务看板（PLAN-01）同为「主视图」形态：壳层两行 [kanban] 挂载点缺一不可，
+ * 升级 diff 一旦覆盖，看板点开就是空白。这里把它钉成契约。 */
+const tbManifest = readFileSync(join(ROOT, 'plugins', 'privhub-task-board', 'client', 'manifest.json'), 'utf8')
+ok(/"taskboard-view"/.test(tbManifest), '看板插件声明 taskboard-view slot')
+ok(/"view":\s*"taskboard"/.test(tbManifest), '看板插件声明 taskboard 视图 barItem')
+ok(/slotComps\['taskboard-view'\]/.test(feSrc), '骨架模板挂载 taskboard-view（// [kanban] 挂载点，勿丢）')
+ok(/view === 'taskboard'/.test(feSrc), '骨架 barItem 分发包含 taskboard 视图')
+
+/* 工作台（privhub-shell-home）同样是「主视图」形态，且它还是 client-only 插件 ——
+ * 少一行挂载点就是白屏且不报错，把这四处钉成契约。 */
+const homeManifest = readFileSync(join(ROOT, 'plugins', 'privhub-shell-home', 'client', 'manifest.json'), 'utf8')
+ok(/"slots":\s*\[[^\]]*"home"/.test(homeManifest), '工作台插件声明 home slot')
+ok(/"view":\s*"home"/.test(homeManifest), '工作台插件声明 home 视图 barItem')
+ok(/slotComps\.home/.test(feSrc), '骨架模板挂载 home（// [home] 挂载点，勿丢）')
+ok(/view === 'home'/.test(feSrc), '骨架 barItem 分发包含 home 视图')
+const homeSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell-home', 'client', 'index.js'), 'utf8')
+const homeApis = [...homeSrc.matchAll(/api\('(\/privhub\/api\/[\w/]+)/g)].map((m) => m[1])
+ok(homeApis.length > 0 &&
+  homeApis.every((p) => ['/privhub/api/recent', '/privhub/api/favorites', '/privhub/api/model/config', '/privhub/api/model/status'].includes(p)),
+  `工作台只复用既有接口，不自造路由（${[...new Set(homeApis)].join(', ')}）`)
+ok(!existsSync(join(ROOT, 'plugins', 'privhub-shell-home', 'src', 'index.ts')),
+  '工作台是 client-only 插件（无 src/index.ts，不参与服务端挂载）')
+
 /* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
  * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现
  * 拆成若干职责单一的文件，且【全部留在该插件目录内】——卸载插件时它的前端

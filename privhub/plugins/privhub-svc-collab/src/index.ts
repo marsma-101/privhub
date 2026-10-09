@@ -64,7 +64,8 @@ export class CollabService extends Service {
     this.maxSessions = config.maxSessions > 0 ? config.maxSessions : 500
     this.maxPatches = config.maxPatches > 0 ? config.maxPatches : 100
     // 可逆副作用：卸载时清空会话与补丁，零残留
-    ctx.on('dispose', () => { this.sessions.clear(); this.patches.clear() })
+    /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
+    ctx.effect(() => () => { this.sessions.clear(); this.patches.clear() })
   }
 
   /** 加入文档会话；返回同伴列表与最近补丁；会话满返回 null。 */

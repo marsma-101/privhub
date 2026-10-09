@@ -1,0 +1,10 @@
+{
+  "id": "privhub-task-board",
+  "title": "任务看板",
+  "icon": "📋",
+  "description": "每个项目一个任务看板：列/卡片/拖拽，支持用当前文件建卡（PLAN-01 第 1 期）",
+  "slots": ["taskboard-view"],
+  "barItems": [
+    { "icon": "📋", "title": "任务看板", "slot": "app-iconbar", "view": "taskboard" }
+  ]
+}

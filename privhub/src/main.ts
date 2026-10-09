@@ -170,7 +170,9 @@ async function main(): Promise<void> {
   const ctx = new Context()
 
   /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */
-  const mount = (mod: { name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }, config?: unknown): Promise<unknown> =>
+  /* 返回 PromiseLike：cordis 的 ctx.plugin 返回 Fiber & PromiseLike<Fiber>，
+   * 可 await 但不是原生 Promise；调用方一律 await，语义不变。 */
+  const mount = (mod: { name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }, config?: unknown): PromiseLike<unknown> =>
     ctx.plugin({ name: mod.name, inject: mod.inject, apply: mod.apply }, config)
 
   /* 1. 自研 webServer（core 的 svc.route 依赖 ctx.webServer） */

@@ -15,7 +15,7 @@ import { mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 /* 【扩展名一处定义】本插件不再自己写文本扩展名清单，改为从 `privhub-core/src/file-exts` **显式派生**：
  * 派生式 = `VERSION_TEXT_EXTS`（= 可预览的纯文本 − 配置族 `.env`）。
  * 「要不要存版本快照」与「能不能预览」不是同一个问题，故是**派生**而不是共用同一个集合；
@@ -44,8 +44,9 @@ const TEXT_EXTS = new Set(VERSION_TEXT_EXTS)
 
 /** S7：快照库随 storage 加密（密文/明文自动识别，旧明文文件无缝兼容） */
 async function load(ctx: Context): Promise<Store> {
-  if (!existsSync(FILE)) return {}
-  try { return JSON.parse(await ctx.storage.readText(FILE)) as Store } catch { return {} }
+  /* D4：快照库损坏 → 隔离存证 + 抛错。若静默当空，下一次保存会写一份「只有当前版本」
+   * 的新库，把同一文件的全部历史快照清掉。 */
+  return readJsonStore<Store>(ctx.storage, FILE, {})
 }
 async function save(ctx: Context, store: Store): Promise<void> {
   await mkdir(dirname(FILE), { recursive: true })
@@ -53,12 +54,8 @@ async function save(ctx: Context, store: Store): Promise<void> {
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    resolveReal: (project: string, relPath: string) => Promise<string | null>
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
 
   const isTextFile = (rel: string): boolean => TEXT_EXTS.has(extname(rel).slice(1).toLowerCase())
 
@@ -89,14 +86,20 @@ export function apply(ctx: Context): void {
     const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文件不存在' })
     const content = await ctx.storage.readText(target).catch(() => '')
-    const store = await load(ctx)
     const key = project + '|' + path
-    const arr = store[key] || []
-    arr.push({ at: Date.now(), by: u.username, content })
-    while (arr.length > MAX_PER_FILE) arr.shift()
-    store[key] = arr
-    await save(ctx, store)
-    json(res, 200, { ok: true, at: arr[arr.length - 1].at, total: arr.length })
+    /* D6：`data/versions.json` 是**全项目共用一份**，且本仓有两个写入者
+     * （本插件 + `privhub-files-agent` 的版本快照）。两处都用 `withFileLock(FILE, …)`
+     * 串行化后，「读整份 store → 追加一条 → 写回」才不会把另一个写入者的记录整段抹掉。 */
+    const snap = await svc.withFileLock(FILE, async () => {
+      const store = await load(ctx)
+      const arr = store[key] || []
+      arr.push({ at: Date.now(), by: u.username, content })
+      while (arr.length > MAX_PER_FILE) arr.shift()
+      store[key] = arr
+      await save(ctx, store)
+      return { at: arr[arr.length - 1].at, total: arr.length }
+    })
+    json(res, 200, { ok: true, at: snap.at, total: snap.total })
   }, 'versions-snapshot')
 
   svc.route('/privhub/api/versions/restore', async (req, res) => {
@@ -108,18 +111,23 @@ export function apply(ctx: Context): void {
     const path = String(body.path ?? '')
     const at = Number(body.at)
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const store = await load(ctx)
-    const arr = store[project + '|' + path] || []
-    const ver = arr.find(v => v.at === at)
-    if (!ver) return json(res, 404, { ok: false, error: '版本不存在' })
     const target = await svc.resolveReal(project, path)
     if (target === null) return json(res, 404, { ok: false, error: '文件不存在' })
-    await ctx.storage.writeText(target, ver.content)
-    // 恢复后生成新版本（便于反悔）
-    arr.push({ at: Date.now(), by: u.username, content: ver.content })
-    while (arr.length > MAX_PER_FILE) arr.shift()
-    store[project + '|' + path] = arr
-    await save(ctx, store)
+    /* D6：「回写正文 + 追加一条反悔版本」整体在锁内，否则并发快照会把这次恢复的记录冲掉。 */
+    const done = await svc.withFileLock(FILE, async () => {
+      const store = await load(ctx)
+      const arr = store[project + '|' + path] || []
+      const ver = arr.find(v => v.at === at)
+      if (!ver) return false
+      await ctx.storage.writeText(target, ver.content)
+      // 恢复后生成新版本（便于反悔）
+      arr.push({ at: Date.now(), by: u.username, content: ver.content })
+      while (arr.length > MAX_PER_FILE) arr.shift()
+      store[project + '|' + path] = arr
+      await save(ctx, store)
+      return true
+    })
+    if (!done) return json(res, 404, { ok: false, error: '版本不存在' })
     json(res, 200, { ok: true })
   }, 'versions-restore')
 }

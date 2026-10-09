@@ -23,7 +23,7 @@ import { join, extname, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-edit-md'
 export const inject = ['privhub', 'audit', 'storage', 'eventBus']
@@ -38,8 +38,8 @@ interface VersionRec { at: number; file: string }
 type VersionIndex = Record<string, VersionRec[]> // key: project + '::' + path
 
 async function loadIndex(storage: { readText: (f: string) => Promise<string> }): Promise<VersionIndex> {
-  if (!existsSync(INDEX_FILE)) return {}
-  try { return JSON.parse(await storage.readText(INDEX_FILE)) as VersionIndex } catch { return {} }
+  /* D4：版本索引损坏 → 隔离存证 + 抛错，绝不当作「没有历史」继续写。 */
+  return readJsonStore<VersionIndex>(storage, INDEX_FILE, {})
 }
 async function saveIndex(storage: { writeText: (f: string, d: string) => Promise<void> }, index: VersionIndex): Promise<void> {
   await storage.writeText(INDEX_FILE, JSON.stringify(index, null, 2))
@@ -77,16 +77,21 @@ export function apply(ctx: Context): void {
     await mkdir(VERSIONS_DIR, { recursive: true })
     await ctx.storage.writeBuffer(join(VERSIONS_DIR, file), body)
     const key = project + '::' + path
-    const index = await loadIndex(ctx.storage)
-    const list = index[key] ?? []
-    list.push({ at, file })
-    // 超限删最旧（文件 + 记录）
-    while (list.length > MAX_VERSIONS) {
-      const old = list.shift()
-      if (old) await unlink(join(VERSIONS_DIR, old.file)).catch(() => {})
-    }
-    index[key] = list
-    await saveIndex(ctx.storage, index)
+    /* D6：版本索引是**所有文件共用一份** `index.json`。两个人在不同 .md 上同时保存
+     * 就会各自「读整份索引 → 追加自己那条 → 写回」，后写的把对方刚存的那条版本记录
+     * 丢掉（快照文件还在盘上，但界面上查不到，回滚不了）。整段置锁。 */
+    await svc.withFileLock(INDEX_FILE, async () => {
+      const index = await loadIndex(ctx.storage)
+      const list = index[key] ?? []
+      list.push({ at, file })
+      // 超限删最旧（文件 + 记录）
+      while (list.length > MAX_VERSIONS) {
+        const old = list.shift()
+        if (old) await unlink(join(VERSIONS_DIR, old.file)).catch(() => {})
+      }
+      index[key] = list
+      await saveIndex(ctx.storage, index)
+    })
   }
 
   /* ---- 读取 .md ---- */

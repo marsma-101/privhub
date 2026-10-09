@@ -17,6 +17,8 @@ import { randomBytes } from 'node:crypto'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+/* 只取叶子模块：读取系统 JSON 的统一入口（D4）。 */
+import { readJsonStore, assertStoreWritable, msgOf } from '../../privhub-core/src/json-store'
 
 /** 一个文档模板。 */
 export interface DocTemplate {
@@ -95,22 +97,31 @@ export class MetaService extends Service {
   private readonly templatesFile: string
   private data: MetaData = {}
   private templatesData: DocTemplate[] = []
+  /* D4：这两个文件都是「启动读进内存、之后按需写回」的形状。读坏了必须记住，
+   * 否则内存里的空数据在下次写回时会把损坏但可能可恢复的文件整份覆盖。 */
+  private metaCorrupt = false
+  private templatesCorrupt = false
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'meta')
     const f = config.file.trim()
     this.file = f === '' ? join(rootDir, 'data', 'meta.json') : resolve(f)
     this.templatesFile = join(dirname(this.file), 'templates.json')
-    void this.load().catch(() => { /* 无元数据时按空处理 */ })
-    void this.loadTemplates().catch(() => { /* 加载失败按内置处理 */ })
+    void this.load().catch(() => { /* 失败已在 load 内记录并置标志 */ })
+    void this.loadTemplates().catch(() => { /* 失败已在 loadTemplates 内记录并置标志 */ })
   }
 
   async load(): Promise<void> {
-    if (!existsSync(this.file)) { this.data = {}; return }
     try {
-      const raw = await this.ctx.storage.readText(this.file)
-      this.data = JSON.parse(raw) as MetaData
-    } catch { this.data = {} }
+      this.data = await readJsonStore<MetaData>(
+        this.ctx.storage, this.file, {},
+        (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+      )
+    } catch (e) {
+      this.metaCorrupt = true
+      this.data = {}
+      console.error('[meta] 元数据文件读取失败（写入已拒绝，避免覆盖）：' + msgOf(e))
+    }
   }
 
   /** A12+S7：原子写 + 静态加密（经 ctx.storage 透明加解密）。 */
@@ -119,6 +130,7 @@ export class MetaService extends Service {
   }
 
   private async save(): Promise<void> {
+    assertStoreWritable(!this.metaCorrupt, this.file)
     await this.atomicWrite(this.file, JSON.stringify(this.data, null, 2))
   }
 
@@ -130,13 +142,19 @@ export class MetaService extends Service {
       return
     }
     try {
-      const raw = await this.ctx.storage.readText(this.templatesFile)
-      const parsed = JSON.parse(raw) as DocTemplate[]
-      this.templatesData = Array.isArray(parsed) ? parsed : []
-    } catch { this.templatesData = BUILTIN_TEMPLATES.map((t) => ({ ...t })) }
+      this.templatesData = await readJsonStore<DocTemplate[]>(
+        this.ctx.storage, this.templatesFile, [],
+        (v) => Array.isArray(v),
+      )
+    } catch (e) {
+      this.templatesCorrupt = true
+      this.templatesData = BUILTIN_TEMPLATES.map((t) => ({ ...t }))
+      console.error('[meta] 模板文件读取失败（写入已拒绝，避免覆盖）：' + msgOf(e))
+    }
   }
 
   private async saveTemplates(): Promise<void> {
+    assertStoreWritable(!this.templatesCorrupt, this.templatesFile)
     await this.atomicWrite(this.templatesFile, JSON.stringify(this.templatesData, null, 2))
   }
 

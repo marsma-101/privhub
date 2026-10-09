@@ -156,6 +156,11 @@ function walk(v, out) {
 
 const squash = (s) => String(s).replace(/\s+/g, '')
 
+/* 本仓 core.autocrlf=true，工作区里 LF / CRLF 混着（同一批文件经过不同工具后行尾会变）。
+ * 凡是拿 `[\s\S]*?\n}` 这种行尾锚点去源码里「抠函数真身」的地方，都得先归一化 ——
+ * 否则在 CRLF 文件上匹配长度是 0：轻则断言拿不到真身直接报找不到，重则静默退化成空断言。 */
+const lf = (s) => String(s).replace(/\r\n/g, '\n')
+
 /* ================= 3. 被测源码 ================= */
 
 const SHELL = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'index.js'), 'utf8')
@@ -205,12 +210,12 @@ const NAME = '马泉斌' // 个人空间目录名 = 真实姓名
 const navOf = () => ({ projectsList: [NAME, '公共', 'A项目'], project: NAME, path: '', openProject: NOOP, newProject: NOOP, gotoCrumb: NOOP })
 const userOf = (role = 'user') => ({ username: 'maquanbin', displayName: NAME, role, personalDir: NAME })
 
-function welcomeInstance(role = 'user') {
+function welcomeInstance(role = 'user', hasHome = false) {
   const nav = navOf()
   return instance(SHELL, 'const WelcomeView', {
     data: { nav, auth: { user: userOf(role) } },
-    computed: { isAdmin: role === 'admin', projects: nav.projectsList },
-    methods: { openProject: NOOP, newProject: NOOP },
+    computed: { isAdmin: role === 'admin', projects: nav.projectsList, hasHome },
+    methods: { openProject: NOOP, newProject: NOOP, openHome: NOOP },
   })
 }
 
@@ -246,6 +251,20 @@ try {
   ok(t.includes(NAME), '显示的是真实姓名「' + NAME + '」')
 } catch (e) {
   ok(false, 'A 场景渲染失败：' + e.message)
+}
+
+/* 工作台入口（privhub-shell-home）与项目列表同列：它有它自己的名字，
+ * 绝不能把个人空间挤成第二个「工作台」，也不能被写成「个人空间」字样。 */
+try {
+  const tOn = squash(renderTemplate(SHELL, 'const WelcomeView', welcomeInstance('user', true)).text)
+  const tOff = squash(renderTemplate(SHELL, 'const WelcomeView', welcomeInstance('user', false)).text)
+  ok(tOn.includes('📊工作台'), '工作台插件装载时，侧栏出现「📊 工作台」入口')
+  ok(!tOff.includes('工作台'), '工作台插件未装载时不留死入口（点了只会是空壳）')
+  ok(tOn.includes('📊工作台') && tOn.indexOf('📊工作台') < tOn.indexOf('📂' + NAME),
+    '工作台排在项目列表之前（未选项目时优先给「我上次在干什么」）')
+  ok(!tOn.includes('个人空间'), '工作台入口没有把个人空间概念带回来')
+} catch (e) {
+  ok(false, '工作台入口场景渲染失败：' + e.message)
 }
 
 console.log('\n── B 顶栏下拉：真实姓名，value 也是真实文件夹名 ──')
@@ -1186,7 +1205,7 @@ try {
    * 这里把那两个真身（常量 + 函数）从 panel.js 里取出来跑，断的是**映射行为**。 */
   {
     const stageSrc = /const VIEWER_ON_STAGE_ACTIONS = \{[^}]*\}/.exec(PANEL2)
-    const lfaSrc = /function layoutForAction\(action\)\s*\{[\s\S]*?\n\}/.exec(PANEL2)
+    const lfaSrc = /function layoutForAction\(action\)\s*\{[\s\S]*?\n\}/.exec(lf(PANEL2))
     ok(stageSrc && lfaSrc, '在宿主源码里定位到布局派生的真身（VIEWER_ON_STAGE_ACTIONS + layoutForAction）')
     const layoutForAction = vm.runInNewContext(
       '(function(){' + stageSrc[0] + '\n' + lfaSrc[0] + '\nreturn layoutForAction})()',
@@ -1348,15 +1367,26 @@ let kDone = null
    * 式子仍是 utils.js 里那一行（`OFFICE_EXTS` 去掉 pdf），不是我另写一份清单。 */
   const relPath = utilFn('relPath', /function relPath\(project, dir, name\)[^\n]*/)
   const kindOf = (() => {
-    const src = /function kindOf\(name\) \{[\s\S]*?\n\}/.exec(utilsSrcK)
-    const extSrc = /function extOf\(name\) \{[\s\S]*?\n\}/.exec(utilsSrcK)
+    const src = /function kindOf\(name\) \{[\s\S]*?\n\}/.exec(lf(utilsSrcK))
+    const extSrc = /function extOf\(name\) \{[\s\S]*?\n\}/.exec(lf(utilsSrcK))
     if (!src || !extSrc) return null
     const officeExts = ((/const OFFICE_EXTS = \[([^\]]*)\]/.exec(utilsSrcK) || ['', ''])[1] || '')
       .split(',').map((s) => s.replace(/['"\s]/g, '')).filter(Boolean)
     if (officeExts.length < 4) return null
+    /* 音视频（2026-10-09 批）：`kindOf` 新增了 `MEDIA_EXTS` 那一支，沙箱里必须同样喂进去，
+     * 否则它当场 ReferenceError（本批第一次跑 run-all 时 K 场景就是这么红的）。
+     * 取值**从 utils.js 源码现取**（AUDIO_EXTS ∪ VIDEO_EXTS），不手抄一份 ——
+     * 手抄就又成了"测试自己另造一套口径"，正是本文件反复避免的写法。
+     * 取不到就返回 null（⇒ 上面那条 `if (!kindOf) throw` 当场红，不是静默降级）。 */
+    const extList = (name) => ((new RegExp('const ' + name + ' = \\[([^\\]]*)\\]').exec(lf(utilsSrcK)) || ['', ''])[1] || '')
+      .split(',').map((s) => s.replace(/['"\s]/g, '')).filter(Boolean)
+    const audioExts = extList('AUDIO_EXTS')
+    const videoExts = extList('VIDEO_EXTS')
+    if (audioExts.length < 4 || videoExts.length < 4) return null
     const box = {
       IMAGE_EXTS: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'],
       OFFICE_KIND_EXTS: officeExts.filter((e) => e !== 'pdf').map((e) => e.replace(/['\s]/g, '')),
+      MEDIA_EXTS: [...audioExts, ...videoExts],
     }
     return vm.runInNewContext('(function(){ ' + extSrc[0] + ' ' + src[0] + '; return kindOf })()', box)
   })()

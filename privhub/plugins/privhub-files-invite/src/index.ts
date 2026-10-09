@@ -18,7 +18,8 @@ import { existsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-invite'
 export const inject = ['storage', 'privhub']
@@ -38,8 +39,9 @@ const FILE = join(rootDir, 'data', 'invites.json')
 type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }
 
 async function loadInvites(storage: StorageLike): Promise<Invite[]> {
-  if (!existsSync(FILE)) return []
-  try { return JSON.parse(await storage.readText(FILE)) as Invite[] } catch { return [] }
+  /* D4：邀请码库损坏 → 隔离存证 + 抛错。此前静默当空，紧接着一次「生成邀请」
+   * 就会把已有邀请码全部清空（凭据类数据，不可接受）。 */
+  return readJsonStore<Invite[]>(storage, FILE, [])
 }
 async function saveInvites(storage: StorageLike, list: Invite[]): Promise<void> {
   await storage.writeText(FILE, JSON.stringify(list, null, 2))
@@ -78,15 +80,10 @@ function infoRateLimited(ip: string): boolean {
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string; projects?: string[] } | null
-    isValidProjectName: (n: string) => boolean
-    users: Map<string, { username: string; displayName: string; role: string; projects: string[] }>
-    saveUsers: () => Promise<void>
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
 
-  const adminOnly = (req: unknown, res: unknown): { username: string } | null => {
+  const adminOnly = (req: IncomingMessage, res: ServerResponse): { username: string } | null => {
     const u = svc.requireUser(req, res)
     if (!u) return null
     if (u.role !== 'admin') { json(res, 403, { ok: false, error: '仅管理员' }); return null }
@@ -101,20 +98,26 @@ export function apply(ctx: Context): void {
     const project = url.searchParams.get('project') ?? ''
     const expiresHours = Number(url.searchParams.get('expiresHours') ?? '0')
     if (!svc.isValidProjectName(project)) return json(res, 400, { ok: false, error: '项目名无效' })
-    const list = await loadInvites(ctx.storage)
-    // 同项目已有永久邀请则复用
-    const existing = list.find(i => i.project === project && i.expiresAt === null)
-    if (existing) return json(res, 200, { ok: true, code: existing.code, reused: true })
-    const code = genCode()
-    list.push({
-      code,
-      project,
-      createdBy: u.username,
-      createdAt: Date.now(),
-      expiresAt: expiresHours > 0 ? Date.now() + expiresHours * 3600 * 1000 : null,
+    /* D6：邀请码是**凭据**，「读列表 → 追加 → 写回」整段串行。
+     * 两次并发生成会各自读到旧列表，后写的把刚生成的那个邀请码丢掉
+     * （丢的是凭据：已发出去的码在库里查不到，撤销也撤不掉）。 */
+    const created = await svc.withFileLock(FILE, async () => {
+      const list = await loadInvites(ctx.storage)
+      // 同项目已有永久邀请则复用
+      const existing = list.find(i => i.project === project && i.expiresAt === null)
+      if (existing) return { code: existing.code, reused: true }
+      const code = genCode()
+      list.push({
+        code,
+        project,
+        createdBy: u.username,
+        createdAt: Date.now(),
+        expiresAt: expiresHours > 0 ? Date.now() + expiresHours * 3600 * 1000 : null,
+      })
+      await saveInvites(ctx.storage, list)
+      return { code, reused: false }
     })
-    await saveInvites(ctx.storage, list)
-    json(res, 200, { ok: true, code, reused: false })
+    json(res, 200, { ok: true, code: created.code, reused: created.reused })
   }, 'invite-create')
 
   /* 邀请列表（admin） */
@@ -131,10 +134,15 @@ export function apply(ctx: Context): void {
     if (req.method !== 'DELETE') return json(res, 405, { ok: false, error: 'method not allowed' })
     const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
     const code = url.searchParams.get('code') ?? ''
-    const list = await loadInvites(ctx.storage)
-    const next = list.filter(i => i.code !== code)
-    if (next.length === list.length) return json(res, 404, { ok: false, error: '邀请不存在' })
-    await saveInvites(ctx.storage, next)
+    /* D6：与「生成邀请」共用同一把锁，避免撤销被并发的新增覆盖回去。 */
+    const removed = await svc.withFileLock(FILE, async () => {
+      const list = await loadInvites(ctx.storage)
+      const next = list.filter(i => i.code !== code)
+      if (next.length === list.length) return false
+      await saveInvites(ctx.storage, next)
+      return true
+    })
+    if (!removed) return json(res, 404, { ok: false, error: '邀请不存在' })
     json(res, 200, { ok: true })
   }, 'invite-delete')
 

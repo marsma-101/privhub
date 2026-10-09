@@ -77,12 +77,8 @@ function wrapHtml(title: string, body: string): string {
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    resolveReal: (project: string, relPath: string) => Promise<string | null>
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
 
   svc.route('/privhub/api/mdpage/generate', async (req, res) => {
     const u = svc.requireUser(req, res)

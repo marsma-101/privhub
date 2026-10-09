@@ -96,7 +96,7 @@ const TagsAdmin = {
                   v-for="t in allTags" :key="t.tag"
                   class="u-project-chip"
                   style="cursor:pointer;padding:4px 10px;user-select:none"
-                  :style="currentTags.includes(t.tag) ? 'background:rgba(90,130,200,.35)' : 'background:var(--bg)'"
+                  :style="currentTags.includes(t.tag) ? 'background:var(--accent-soft-2, rgba(90,130,200,.35))' : 'background:var(--bg)'"
                   @click="toggleTag(t.tag)"
                 >{{ t.tag }}<span style="opacity:.6;margin-left:4px">×{{ t.count }}</span></span>
                 <input

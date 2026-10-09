@@ -31,19 +31,10 @@ const EDITABLE = new Set(['.docx', '.xlsx'])
 interface LockEntry { user: string; at: number }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    resolveReal: (project: string, relPath: string) => Promise<string | null>
-  }
-  const storage = ctx.storage as unknown as {
-    readBuffer: (file: string) => Promise<Buffer>
-    writeBuffer: (file: string, data: Buffer) => Promise<void>
-  }
-  const office = ctx.office as unknown as {
-    write: (project: string, relPath: string, content: unknown) => Promise<{ ok: boolean; error?: string }>
-  }
+  /* 单一来源：直接使用 cordis 服务的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
+  const storage = ctx.storage
+  const office = ctx.office
 
   /* ---------- 独占编辑锁（内存 + TTL） ---------- */
   const locks = new Map<string, LockEntry>() // key = project|path

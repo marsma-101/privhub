@@ -11,7 +11,7 @@ const styleEl = document.createElement('style')
 styleEl.textContent = `
 .v3-tn { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; font-size:13px; cursor:pointer; position:relative; }
 .v3-tn:hover { background:var(--panel2); }
-.v3-tn.active { background:rgba(90,130,200,.15); color:var(--accent); }
+.v3-tn.active { background:var(--accent-soft, rgba(90,130,200,.15)); color:var(--accent); }
 .v3-tn .v3-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .v3-tn .v3-dots { visibility:hidden; width:22px; height:22px; border-radius:5px; text-align:center; line-height:20px; font-size:13px; color:var(--muted); flex-shrink:0; }
 .v3-tn:hover .v3-dots { visibility:visible; }
@@ -51,6 +51,7 @@ styleEl.textContent = `
 .v3-content--fill .v3-img-wrap { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; overflow:auto; }
 .v3-content--fill .v3-img { border-radius:0; }
 .v3-content--fill .v3-pdf { flex:1 1 auto; min-height:0; }
+.v3-content--fill .v3-media-wrap { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; overflow:auto; }
 /* 内嵌编辑模式（md/txt）：内容区改纵向布局，编辑区撑满整个中间栏。
  *
  * 第二步 c：状态来自**宿主自己的响应式状态**（panel.js 的 editorLayout，由插件经 bus 报
@@ -78,7 +79,7 @@ styleEl.textContent = `
 .v3-tabops { position:relative; display:flex; align-items:center; gap:4px; padding:0 8px 0 4px; flex-shrink:0; }
 /* ⋯ 菜单：锚在操作区上。操作区没有 overflow，菜单不会被裁掉
  * （标签栏本身 overflow-x:auto，菜单若放它内部会被裁）。 */
-.v3-menu { position:absolute; top:32px; right:6px; z-index:30; min-width:172px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 0; box-shadow:0 10px 28px rgba(0,0,0,.25); }
+.v3-menu { position:absolute; top:32px; right:6px; z-index:var(--z-menu,30); min-width:172px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 0; box-shadow:0 10px 28px rgba(0,0,0,.25); }
 .v3-menu-item { display:flex; align-items:center; gap:8px; padding:6px 12px; font-size:12.5px; cursor:pointer; color:var(--text); white-space:nowrap; }
 .v3-menu-item:hover { background:var(--panel); color:var(--accent); }
 .v3-menu-item .v3-menu-k { margin-left:auto; color:var(--muted); font-size:11.5px; }
@@ -101,6 +102,17 @@ styleEl.textContent = `
 .v3-md blockquote { border-left:3px solid var(--accent); margin:8px 0; padding:2px 12px; color:var(--muted); }
 .v3-md a { color:var(--accent); }
 .v3-text { font-size:var(--v3-preview-font, 13.5px); white-space:pre-wrap; word-break:break-all; color:var(--text); font-family:Consolas,Menlo,monospace; }
+/* 结构化只读预览（csv/tsv → 表格）：nowen-note 的 detectRenderMode 在本仓的对应物。
+ * 外层**沿用 .v3-text 类名**（panel.js 模板里两个分支都带它）—— 于是上面 --viewer / --editor
+ * 的让位规则与 clearInjected 的清场逻辑一字都不用改；这里只覆盖「表格不需要」的那几条
+ * （不折行、不按等宽排版）。
+ * ⚠ 这里**不要写 display** —— 让位规则靠 display:none 生效，这里一旦给 display 就会盖掉它们
+ *   （.v3-content--editor .v3-text 是 0,2,0，比这里的 0,1,0 高，但只在"没给 display"时才轮得到它赢）。
+ * ⚠ 表格字号**不写死**：让它从 .v3-text 继承，A+/A− 的字号控制因此对表格同样有效。 */
+.v3-text-table { white-space:normal; word-break:normal; font-family:inherit; overflow:auto; max-width:100%; }
+.v3-csv { border-collapse:collapse; }
+.v3-csv td { border:1px solid var(--line); padding:4px 9px; max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:top; }
+.v3-csv td.v3-csv-head { background:var(--panel); font-weight:600; }
 /* 图片：宿主亲儿子形态之一。这里只保留「不超出容器」这一条媒体自身约束 ——
  * 装饰性的边框圆角与固定底色一律不加（让图片自己的背景当背景），
  * 铺满时的高度与居中由下面的 .v3-content--fill 那一组决定。
@@ -114,6 +126,16 @@ styleEl.textContent = `
  * 写死高度与实际 chrome 高度无关（标签行/顶栏一变就对不上），边框圆角等于给
  * 浏览器内置 PDF 阅读器套了个相框，页面自己的背景反而显示不出来。 */
 .v3-pdf { width:100%; height:100%; border:0; display:block; }
+/* 音视频（2026-10-09）：宿主亲儿子第三支，与图片/PDF 同一族（铺满形态也走 .v3-content--fill）。
+ * 只给"不超出容器"这一条 —— 与图片同口径：不加边框圆角、不写死高度、不加装饰底色。
+ * ⚠ audio 要单独放开高度：它继承 max-height:100% 会在铺满布局里被压成一条缝（原生控件高度是固定的）。
+ * ⚠ 兜底支路（浏览器播不了那种容器）只放说明与下载入口：不铺满、不留一大片空白。 */
+.v3-media-wrap { text-align:center; }
+.v3-media { max-width:100%; max-height:100%; }
+.v3-media-wrap audio.v3-media { width:100%; max-width:560px; max-height:none; }
+.v3-media-fallback { display:inline-flex; flex-direction:column; align-items:center; gap:8px; padding:28px 24px; color:var(--muted); }
+.v3-media-dl { font-size:12.5px; color:var(--accent); text-decoration:none; border:1px solid var(--line); border-radius:6px; padding:4px 10px; }
+.v3-media-dl:hover { background:var(--panel); }
 .v3-loading { color:var(--muted); font-size:13px; padding:60px 0; text-align:center; }
 /* 大文件只读说明：一行克制的提示（不占位改动布局，滚走即不可见） */
 .v3-readonly-hint { margin:0 0 12px; padding:6px 10px; border-left:3px solid var(--line); background:var(--panel); color:var(--muted); font-size:12.5px; line-height:1.6; border-radius:0 6px 6px 0; }
@@ -136,7 +158,7 @@ detailStyle.textContent = `
 .v3-detail-kv .k { flex-shrink: 0; width: 62px; color: var(--muted); }
 .v3-detail-kv .v { word-break: break-all; }
 .v3-detail-tags { margin-top: 10px; }
-.v3-detail-tags .v3-detail-tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 9px; border-radius: 10px; background: rgba(90,130,200,.14); color: var(--accent); font-size: 11.5px; }
+.v3-detail-tags .v3-detail-tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 9px; border-radius: 10px; background: var(--accent-soft, rgba(90,130,200,.14)); color: var(--accent); font-size: 11.5px; }
 .v3-detail-tags input { width: 100%; padding: 5px 9px; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 12px; outline: none; }
 .v3-detail-actions { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .v3-detail-act { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-size: 11.5px; color: var(--text); position: relative; }

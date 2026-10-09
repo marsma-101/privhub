@@ -47,6 +47,8 @@ const ASK_TOPK = 6
  * （切块 + 远程 embed + 落库），且错的进库会污染问答召回 —— 见 `file-exts.ts` 的「逐用途派生」表。
  * ⚠ **有意保持迁前范围**：`.jsonl/.tsv/.ipynb/.env` 本批**不进** RAG（迁前也不在），属"不扩权"。 */
 import { RAG_TEXT_EXTS, OFFICE_EXTS as SHARED_OFFICE_EXTS } from '../../privhub-core/src/file-exts'
+import type { UserRecord } from '../../privhub-core/src/index'
+import { readJsonStore, readJsonStoreLenient } from '../../privhub-core/src/json-store'
 const TEXT_EXTS = new Set(RAG_TEXT_EXTS)
 const OFFICE_EXTS = new Set(SHARED_OFFICE_EXTS)
 /** 单文档解析上限（Office 由 svc-office 自身 32MB 限制拦截） */
@@ -249,7 +251,7 @@ function nearCandidates(docs: CorpusDoc[]): Array<{ a: string; b: string; score:
         if (!out.some((x) => x.a === a && x.b === b2)) {
           // 相似度 = 共享 band 数 / 总 band
           const score = 0.25 // 至少 1 band 命中（保守标记，人工复核）
-          out.push({ a, b, score })
+          out.push({ a, b: b2, score })
         }
       }
       list.push(d.docId)
@@ -262,17 +264,20 @@ function nearCandidates(docs: CorpusDoc[]): Array<{ a: string; b: string; score:
 /* ============ 存储 ============ */
 
 async function loadManifest(ctx: Context): Promise<Manifest> {
-  try {
-    const raw = JSON.parse(await ctx.storage.readText(MANIFEST_FILE)) as { docs?: Manifest }
-    return raw.docs ?? {}
-  } catch { return {} }
+  /* D4：语料清单是**派生数据**（真身是盘上的语料文件），丢了重建一次即可 ——
+   * 所以用宽容版：隔离存证 + 记日志，但不因此让整个 RAG 功能不可用。
+   * 与下面的 loadCuration（人工整理的记录，丢了找不回来）区别对待。 */
+  const raw = await readJsonStoreLenient<{ docs?: Manifest }>(ctx.storage, MANIFEST_FILE, {})
+  return raw.docs ?? {}
 }
 async function saveManifest(ctx: Context, m: Manifest): Promise<void> {
   await mkdir(CORPUS_DIR, { recursive: true })
   await ctx.storage.writeText(MANIFEST_FILE, JSON.stringify({ version: 1, docs: m }, null, 1))
 }
 async function loadCuration(ctx: Context): Promise<CurationLog> {
-  try { return JSON.parse(await ctx.storage.readText(CURATION_FILE)) as CurationLog } catch { return [] }
+  /* D4：整理记录是**人工成果**、丢了找不回来 —— 损坏时隔离存证并抛错，
+   * 免得下一次追加把之前的记录全部覆盖成只剩这一条。 */
+  return readJsonStore<CurationLog>(ctx.storage, CURATION_FILE, [])
 }
 async function saveCuration(ctx: Context, log: CurationLog): Promise<void> {
   await ctx.storage.writeText(CURATION_FILE, JSON.stringify(log, null, 1))
@@ -728,10 +733,10 @@ function startVecTask(ctx: Context): Promise<VecState> {
 }
 
 async function loadVecState(ctx: Context): Promise<void> {
-  try {
-    const raw = JSON.parse(await ctx.storage.readText(VEC_STATE_FILE)) as VecState
-    vecState = { ...vecState, ...raw }
-  } catch { /* 默认 idle */ }
+  /* D4：向量库状态是**派生数据**（丢了重新向量化即可）——宽容版：隔离存证 + 记日志，
+   * 但不因此让服务起不来。 */
+  const raw = await readJsonStoreLenient<Partial<VecState>>(ctx.storage, VEC_STATE_FILE, {})
+  vecState = { ...vecState, ...raw }
 }
 async function saveVecState(ctx: Context): Promise<void> {
   await mkdir(CORPUS_DIR, { recursive: true })
@@ -819,7 +824,11 @@ async function runVectorize(ctx: Context): Promise<VecState> {
   }
 }
 
-/** 读取某文档全部块（父上下文扩展用） */
+/** 读取某文档全部块（父上下文扩展用）
+ *
+ * D4 有意**不**套用严格读取：这里是 JSONL（一行一块），且整份内容都是从语料文件
+ * 重新解析出来的**派生数据** —— 读坏了返回空、下次摄取重建即可，不会丢任何原始内容。
+ * （对比 `loadCuration`：那是人工成果，必须严格。） */
 async function chunksOfDoc(ctx: Context, docId: string): Promise<ChunkRec[]> {
   const f = chunkFileOf(docId)
   if (!existsSync(f)) return []
@@ -838,7 +847,7 @@ interface RagSource {
 }
 
 /** 混合检索（BM25 + 向量 RRF 融合）+ 权限过滤（visible ∩ ACL view）+ 父上下文 */
-async function ragSearch(ctx: Context, user: { username: string; role: string }, q: string, collection: string, topK = ASK_TOPK): Promise<{ sources: RagSource[]; scopeProjects: string[] }> {
+async function ragSearch(ctx: Context, user: UserRecord, q: string, collection: string, topK = ASK_TOPK): Promise<{ sources: RagSource[]; scopeProjects: string[] }> {
   const visible = await ctx.privhub.visibleProjects(user)
   let scope = visible
   if (collection && collection !== 'all') {
@@ -933,19 +942,37 @@ async function ragSearch(ctx: Context, user: { username: string; role: string },
   return { sources, scopeProjects: scope }
 }
 
-/** 组装问答上下文并调用 LLM（mock 可测） */
-async function ragAsk(ctx: Context, user: { username: string; role: string }, question: string, collection: string): Promise<{ answer: string; sources: RagSource[] }> {
+/** 问答用的对话消息（与 svc-model 的 ChatMessage 同形） */
+type AskMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+/** 语料为空时的如实答复（不调用模型，也不编造） */
+const NO_SOURCE_ANSWER = '未在语料中找到相关资料（或您对这些资料没有查看权限）。请换一种问法，或确认语料已向量化。'
+
+/**
+ * 问答的**检索与组包**阶段：一切权限裁决都在这里（ragSearch 内部按 ACL 过滤）。
+ *
+ * 为什么拆出来：流式与非流式只有「怎么把模型的话送出去」不同，检索、组包、
+ * 权限范围必须**逐字共享**——否则两条路径迟早会分叉，而分叉最可能的地方恰恰是
+ * 「谁能看到哪些资料」这种不该出错的地方。`messages === null` 表示语料为空，
+ * 此时 `answer` 是既定的如实答复，调用方直接送出、不请求模型。
+ */
+async function ragPrepare(ctx: Context, user: UserRecord, question: string, collection: string): Promise<{ messages: AskMessage[] | null; answer: string; sources: RagSource[] }> {
   const { sources } = await ragSearch(ctx, user, question, collection, ASK_TOPK)
-  if (sources.length === 0) {
-    return { answer: '未在语料中找到相关资料（或您对这些资料没有查看权限）。请换一种问法，或确认语料已向量化。', sources: [] }
-  }
+  if (sources.length === 0) return { messages: null, answer: NO_SOURCE_ANSWER, sources: [] }
   const blocks = sources.map((s, i) => `[${i + 1}] 来源 ${s.project}/${s.path}\n${s.snippet}`).join('\n\n')
-  const messages = [
-    { role: 'system' as const, content: '你是「私域枢纽 PrivHub」的知识助手。严格基于提供的资料回答问题，回答中用 [n] 标注来源编号；资料中没有的内容请明确回答「资料中未找到」，不要编造。' },
-    { role: 'user' as const, content: `资料：\n${blocks}\n\n问题：${question}` },
+  const messages: AskMessage[] = [
+    { role: 'system', content: '你是「私域枢纽 PrivHub」的知识助手。严格基于提供的资料回答问题，回答中用 [n] 标注来源编号；资料中没有的内容请明确回答「资料中未找到」，不要编造。' },
+    { role: 'user', content: `资料：\n${blocks}\n\n问题：${question}` },
   ]
-  const answer = await ctx.model.chat(ctx, messages)
-  return { answer, sources }
+  return { messages, answer: '', sources }
+}
+
+/** 组装问答上下文并调用 LLM（mock 可测）。非流式的一次性答复。 */
+async function ragAsk(ctx: Context, user: UserRecord, question: string, collection: string): Promise<{ answer: string; sources: RagSource[] }> {
+  const prep = await ragPrepare(ctx, user, question, collection)
+  if (prep.messages === null) return { answer: prep.answer, sources: prep.sources }
+  const answer = await ctx.model.chat(ctx, prep.messages)
+  return { answer, sources: prep.sources }
 }
 
 /* ============ M3.1：模型服务自动发现 ============ */
@@ -1300,7 +1327,7 @@ export function apply(ctx: Context): void {
     const r = await curate(ctx, admin.username, String(body.action ?? ''), body.docIds, String(body.note ?? ''), Number(body.days) || 0)
     if (!r.ok) return json(res, 400, { ok: false, error: r.error })
     void audit(ctx, admin.username, 'rag-curate', String(body.action ?? ''), (body.docIds ?? []).length + ' docs' + (body.note ? ' note=' + String(body.note) : ''))
-    json(res, 200, { ok: true, affected: r.affected.length })
+    json(res, 200, { ok: true, affected: r.affected })
   }, 'rag-curate')
 
   /* 全量重建（admin） */
@@ -1380,6 +1407,50 @@ export function apply(ctx: Context): void {
     const question = String(body.question ?? '').trim()
     const collection = String(body.collection ?? '')
     if (!question) return json(res, 400, { ok: false, error: 'question 必填' })
+
+    /* 流式分支：**同一个路由、同一段鉴权与权限范围**，只是一个 query/body 开关。
+     * 这样不新增权限面（requireUser + ragPrepare 内的 ACL 过滤原样生效），
+     * 也不会有「有没有人记得给新路由加 ACL 守卫」这类经典漏网。
+     * 只有「把模型的话怎么送出去」不同：一次 JSON 换成逐块 SSE。
+     *
+     * 帧约定（event/data 成对，空行结束一帧）：
+     *   sources → { sources }        先给来源，界面立刻能显示引用了哪几篇，不必等正文
+     *   delta   → { text }           正文增量，可能很多帧
+     *   done    → { answer, sources } 终帧：完整正文（客户端可据此校对拼接结果）
+     *   error   → { error }          出错：检索失败 / 模型报错 / 中途断流都在这里落地
+     */
+    if (body.stream === true) {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        // 反代（nginx 等）默认会把响应整段缓冲到结束才吐，那样「流式」就白做了
+        'x-accel-buffering': 'no',
+      })
+      const send = (event: string, data: unknown): void => {
+        try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n') } catch { /* 客户端已断开 */ }
+      }
+      try {
+        const prep = await ragPrepare(ctx, u, question, collection)
+        send('sources', { sources: prep.sources })
+        let answer: string
+        if (prep.messages === null) {
+          answer = prep.answer          // 语料为空：如实说明，不请求模型
+          send('delta', { text: answer })
+        } else {
+          answer = await ctx.model.chat(ctx, prep.messages, { stream: true, onChunk: (d) => send('delta', { text: d }) })
+        }
+        send('done', { answer, sources: prep.sources })
+        void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + prep.sources.length + ' stream=1')
+      } catch (e) {
+        // 出错也必须让界面知道，否则前端只会看到一个永远停在半句的回答
+        send('error', { error: e instanceof Error ? e.message : '问答失败' })
+      } finally {
+        res.end()
+      }
+      return
+    }
+
     try {
       const r = await ragAsk(ctx, u, question, collection)
       void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + r.sources.length)

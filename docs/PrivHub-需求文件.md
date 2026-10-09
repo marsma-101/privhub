@@ -117,7 +117,7 @@
 
 ### 2026-09 Agent API 智能体接口（C22 完整版 · 方案已确认）
 - 新建 L3 插件 `privhub-files-agent`（对齐 C22「智能体外部 API/MCP」，已落地基础版 office-ai 的完整版）。
-- 已确认决策（详见 `docs/PrivHub-AgentAPI-智能体接口方案.md`）：
+- 已确认决策（详见 `docs/v3/PrivHub-AgentAPI-智能体接口方案.md`）：
   1. 权限模型：**专属空间（.agents/<用户>/<项目>/，隐藏目录，按 key 项目 scope 分区）= 读/写/删/改全能力；项目文件夹 = 只读**（智能体 API 层面硬隔离，写/删/改项目一律 403）。
      > ⚠️ v3.0.1 起：沙箱不再是 `.agents/` 隐藏目录，改为**该账号的「个人空间」`data-files/<真实姓名>/`**（仅本人可见、管理员亦不可见、不进索引、永不自动删除）。详见 `CHANGELOG.md` 的 3.0.1 条目与《PrivHub-AgentAPI-接入指南.md》。
   2. key 体系：`X-Agent-Key` 与用户绑定（data/agent-api.json，S7 加密），**一项目一 key**（project scope，空=全部可见项目含风险提示）；**用户登录后自助申请**（my-keys）+ admin 代生成（keys）；明文仅创建时返回一次，列表只回 mask；支持可选有效期。
@@ -126,7 +126,7 @@
   5. 删除：专属空间删除**进回收站**（复用 .trash 机制，TrashRecord.project='.agents/<用户>'），admin 管理页「专属空间回收站」区块可恢复/彻底删除；用户可见入口（AI 收件箱）二期。
   6. 限额：read text ≤4MB / base64 ≤20MB；write text ≤4MB / 二进制 ≤200MB；fork ≤200MB 流式；每 key 限流 180 req/min（写类 40/min）；全量审计（user=ai:<label>，detail 附 via username + project scope）。
 - 实施：M1 agent 后端 API → M2 office-ai 改造 + 前端管理页 → M3 测试 + 接入文档 + 本日志；M4 二期（/search、MCP、AI 收件箱）。
-- **2026-09-03 升级：方案重制为企业级 v3**（`docs/PrivHub-AgentAPI-智能体接口方案.md` 当前内容 = v3，v2 决策全部保留）：
+- **2026-09-03 升级：方案重制为企业级 v3**（`docs/v3/PrivHub-AgentAPI-智能体接口方案.md` 当前内容 = v3，v2 决策全部保留）：
   - 密钥治理：哈希存储（sha256，明文永不落盘）、状态机（active/suspended/revoked/expired + 轮换宽限期）、IP 条件访问、审批流开关、到期强制（可配）、mask 展示、明文一次性返回。
   - 授权：scope 矩阵（project/directory/all）+ 敏感文件扩展名豁免（.key/.pem/.env 等禁止经 API 读写）。
   - 可靠：X-Idempotency-Key 幂等写（24h 记录）+ If-Match/ETag 乐观并发 + per-path 写锁 + 版本快照（对接 versions 格式，替代 .bak 5 份）+ dryRun 预览。
@@ -175,7 +175,7 @@
 4. 测试：`check-acl-guard-ext.mjs` **21/21**（deny 全拒 / read 放行视图 / doc PUT·text/save·打标签 403 / trash id resolver 403 / 无规则语义不受破坏）；回归：M1 47/47、M2 23/23、check-acl、check-trash-perm、check-md、check-fulltext、check-office 全绿。
 5. 已知边界：comments 写类（reply/status 按评论 id 定位）暂不纳入文件级 ACL（记录后续治理）；trash-clean 为 adminOnly；agent 路由自带完整裁决（不入守卫避免双判）。
 
-### 2026-09-05 RAG 方案定稿（docs/PrivHub-RAG-方案.md）
+### 2026-09-05 RAG 方案定稿（docs/v3/PrivHub-RAG-方案.md，已实施归档）
 - 已确认决策：① **数据不出网红线**（语料与模型调用限定内网）；② **模型接入=运维配置式**（不选型，只认 OpenAI 兼容 baseURL+模型名，新增 L2 privhub-svc-model，LLM 与 embedding 可分离指向）；③ **数据质量优先**（P1 语料治理先行：解析/清洗/去重/策展/人工裁决）；④ 原文不动，派生语料可重建可审计；⑤ 人工裁决闭环（保留 canonical/合并/剔除/过期，全自动不做破坏性决策）；⑥ 内容不预整合、元数据规范化（编目卡原则）；⑦ Key 管理 UI 并入 RAG 界面第一期；⑧ 向量库 P2 定（推荐 sqlite-vec）。
 - 实施：M0 模型接入 → M1 语料治理 → M2 RAG 界面一期（含 Key 管理）/ AI 接入区块 → M3 检索问答 → M4 评估闭环。
 - **2026-09-05 M0+M1 交付**：新增 `privhub-svc-model`（L2，OpenAI 兼容接入层：配置经 /api/model/config 动态写入、/v1/models 自检、embedding 批处理、chat 流式、mock 离线模式、错误映射 MODEL_TIMEOUT/AUTH/NOT_FOUND/UNREACHABLE）与 `privhub-svc-rag`（L3，P1 语料治理：file:changed/file:saved 事件驱动摄取、解析矩阵 md/txt/office/pdf/html、frontmatter 策展元数据（rag:false 自声明不进语料）、精确重复(内容哈希)+版本族+MinHash 近似候选 → 待裁决、策展台账 rag-curation.json（keep-canonical/exclude/expire/merge 及反操作）、结构感知分块（标题优先+CJK 重叠窗）、语料 rag-corpus jsonl（S7）、全量重建幂等、user 视图项目权限过滤）。测试 `check-rag-m1.mjs` **26/26 全绿**；实测基线 176 文档/511 块（公共项目存量数据全量入语料）。

@@ -22,16 +22,22 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rm, realpath
 import { join, resolve, extname, sep, dirname, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 /* 【扩展名一处定义】全仓的扩展名分类都取自本模块（详见该文件头：一处定义 + 各处显式派生）。 */
-import { isImageExt, isPreviewTextExt } from './file-exts'
+import { isImageExt, isMediaExt, isPreviewTextExt } from './file-exts'
+import { readJsonStore } from './json-store'
 
 export const name = 'privhub-core'
 export const inject = ['webServer', 'storage']
 
 export type Role = 'admin' | 'user'
+
+/* D4：系统 JSON 数据文件的统一读取入口（损坏 → 隔离 + 抛错，绝不静默当空数据）。
+ * 从这里转出，方便各插件沿用「一处 import core」的既有写法。 */
+export { readJsonStore, readJsonStoreLenient, assertStoreWritable, CorruptDataError, UserVisibleError } from './json-store'
 
 export interface UserRecord {
   username: string
@@ -321,8 +327,10 @@ export class PrivHubStore extends Service {
     this.sessionTtlMs = (config.sessionTtlDays > 0 ? config.sessionTtlDays : 7) * 24 * 3600 * 1000
   }
 
-  /** 注册一条 exact 路由（业务插件共用入口，可随插件停用回收）。 */
-  route(path: string, handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>, label: string): void {
+  /** 注册一条 exact 路由（业务插件共用入口，可随插件停用回收）。
+   *  label 可选：多数调用点只传 path+handler（历史各插件影子类型也把它标成可选），
+   *  缺省取 path 本身作为副作用标签，便于自检与回收记录。 */
+  route(path: string, handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>, label: string = path): void {
     this.ctx.effect(() => this.ctx.webServer.register({ kind: 'exact', path, handler }), label)
   }
 
@@ -737,8 +745,11 @@ export class PrivHubStore extends Service {
   /** 读取文件内容用于预览（仅允许数据根内部）
    *
    *  返回的 `type` 是【互斥的原因】，不是「能不能看」：
-   *  `text` 文本可读 / `image` / `pdf` 走原始字节流 / `too-large` 类型支持但体积超上限 /
-   *  `unknown` 确实不支持预览。前端据此分别给话，不再把「超限」说成「类型不支持」。 */
+   *  `text` 文本可读 / `image` / `pdf` / `media`（音视频）走原始字节流 /
+   *  `too-large` 类型支持但体积超上限 / `unknown` 确实不支持预览。
+   *  前端据此分别给话，不再把「超限」说成「类型不支持」。
+   *  ⚠ 音视频（`media`）只保证"这是音视频"，**不保证浏览器能播** ——
+   *  能不能原生解码由前端那份白名单判（见 `file-exts.ts` 的 `AUDIO_EXTS` 注释）。 */
   async readFileForPreview(project: string, relPath: string): Promise<{ data: string; type: string; size?: number; limit?: number } | null> {
     const target = this.resolveInProject(project, relPath)
     if (target === null || !existsSync(target)) return null
@@ -774,6 +785,12 @@ export class PrivHubStore extends Service {
       return { data, type: 'text' }
     }
     if (isImageExt(ext)) return { data: '', type: 'image' }
+    /* 音视频（2026-10-09）：与图片/PDF 同一种处理 —— **不把字节读进 JSON**，
+     * 界面拿 `preview-raw` 的直链交给 `<video>`/`<audio>`，由浏览器自己按 Range 分段取。
+     * 判定要放在文本分支之后（`isMediaExt` 与文本集无交集，顺序其实无碍，但
+     * 与图片/PDF 排在一起才读得懂"这三类都是直链类"）。
+     * ⚠ 这里**不判体积**：几十 MB 的视频要能播，而"读进内存"这条路根本没走（见上）。 */
+    if (isMediaExt(ext)) return { data: '', type: 'media' }
     if (ext === 'pdf') return { data: '', type: 'pdf' }
     /* 语义收敛：走到这里只可能是【真的不支持在线预览的扩展名】。
      * 文本格式的「体积超限」已在上面的 too-large 分支返回，不再落到这里。 */
@@ -848,13 +865,9 @@ export class PrivHubStore extends Service {
 
   /* ---------- 回收站 ---------- */
 
-  /** 载入回收站记录列表。 */
+  /** 载入回收站记录列表（D4：损坏时隔离存证并抛错，不静默当空）。 */
   async loadTrash(): Promise<TrashRecord[]> {
-    if (!existsSync(this.trashFile)) return []
-    try {
-      const raw = await this.ctx.storage.readText(this.trashFile)
-      return JSON.parse(raw) as TrashRecord[]
-    } catch { return [] }
+    return readJsonStore<TrashRecord[]>(this.ctx.storage, this.trashFile, [])
   }
   async saveTrash(list: TrashRecord[]): Promise<void> {
     await this.atomicWrite(this.trashFile, JSON.stringify(list, null, 2))
@@ -874,9 +887,12 @@ export class PrivHubStore extends Service {
       const name = basename(target)
       const id = `${Date.now()}_${randomBytes(4).toString('hex')}`
       const dest = join(this.trashDir, id + '_' + name)
+      /* D4：先读记录再动实体。loadTrash 现在会在 trash.json 损坏时抛错 ——
+       * 若把 rename 放在它前面，抛错后会出现「文件已进 .trash、但回收站里查不到」
+       * 的半截状态。先读后动，读失败就什么都没发生。 */
+      const list = await this.loadTrash()
       await mkdir(this.trashDir, { recursive: true })
       await rename(target, dest)
-      const list = await this.loadTrash()
       list.push({
         id, project, relPath, name, isDir,
         deletedBy: operator, deletedAt: Date.now(),
@@ -961,10 +977,18 @@ export function apply(ctx: Context, config: Config): void {
   const started = Date.now()
   let version = 'unknown'
   void (async () => {
-    try {
-      const raw = await readFile(join(rootDir, 'package.json'), 'utf8')
-      version = (JSON.parse(raw) as { version?: string }).version ?? 'unknown'
-    } catch { /* 取不到就用 unknown */ }
+    /* JT-09：版本号有两个来源。先看数据根（部署包会把 package.json 放在那），
+     * 取不到再回退到【本模块所在的应用目录】—— 测试/自定义 PRIVHUB_ROOT 的场景下
+     * 数据根通常没有 package.json，以前这里只剩 'unknown'，界面就没法报版本。 */
+    const readVer = async (p: string): Promise<string | null> => {
+      try {
+        const raw = await readFile(p, 'utf8')
+        return (JSON.parse(raw) as { version?: string }).version ?? null
+      } catch { return null }
+    }
+    version = (await readVer(join(rootDir, 'package.json')))
+      ?? (await readVer(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json')))
+      ?? 'unknown'
   })()
   store.route('/privhub/api/health', async (_req, res) => {
     json(res, 200, {

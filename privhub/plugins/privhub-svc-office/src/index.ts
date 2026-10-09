@@ -80,8 +80,16 @@ export interface OfficeWriteResult {
 /** xlsx 表格内容（单元格坐标 a1 风格 → 值）。 */
 export interface XlsxSheetData {
   name: string
-  /** rows: 二维数组（行→列→值） */
+  /** rows: 二维数组（行→列→值）—— 超过行列上限时只留前 N 行/列 */
   rows: (string | number | boolean | null)[][]
+  /** 本表**实际**行数（不受截断影响）；界面用「仅显示前 N 行（本表共 M 行）」时取这里 */
+  totalRows: number
+  /** 本表**实际**列数（同上，供超宽时的说明用） */
+  totalCols: number
+  /** 行是否被上限截断（`rows.length` < `totalRows`） */
+  truncatedRows: boolean
+  /** 列是否被上限截断（`totalCols` > 每行保留的列数） */
+  truncatedCols: boolean
 }
 
 declare module '@deepseek-ai/cordis' {

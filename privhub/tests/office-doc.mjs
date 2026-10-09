@@ -18,7 +18,7 @@
  *   本批收敛成「一处定义（`privhub-core/src/file-exts.ts`）+ 各处显式派生」，
  *   并把「读取链」与「家族」拆成两个集合（口径见该文件头「Office 那一族的口径」）。
  *
- * ## 六组断言（前三组在进程内、④⑤组起隔离实例，⑥组把前端真身装进 vm）
+ * ## 八组断言（①②③⑦⑧ 在进程内、④ 起隔离实例、⑤⑥ 把前端真身装进 vm）
  *
  *   ① **口径**：共享集合的取值与关系（读取链 5 项、家族 = 读取链 ∪ {xls,ppt}）；
  *   ② **`readDoc` 的三态**：假 `.doc`（RTF 伪装 / 空 OLE2 / 纯文本伪装）**一律失败**且**带原因**，
@@ -31,10 +31,20 @@
  *      （`ok:true` + 兜底文案）与一个「现在这种」回包（`ok:false` + 原因），
  *      验两条都不产出"提示句正文"、错误态给的是后端的 `error`；
  *   ⑥ **防漂移**：4 处副本收敛后的样子（谁再写一份手写清单，这里 + `file-exts.mjs` ④ 组会红）。
+ *   ⑦ **`.doc` 正文直读**（2026-10-09 新增）：手搓 FIB + table 流喂 `parseWordPieceText`，
+ *      钉住「跳过修订标记处理」这条路认得 [MS-DOC] 的 Clx / PlcPcd / 压缩位；
+ *   ⑧ **xlsx 行/列上限**（2026-10-09 新增）：超过上限 ⇒ 保留前 N 行**并回带真实总数**，
+ *      前端 `officeToMd` 据此附一句「仅显示前 N 行（本表共 M 行）」——
+ *      **静默截断**（迁前 `readXlsx` 到 1000 行就悄悄不给了）正是本批修的病。
  *
- * ## 阴性对照（真实输出贴在本批报告 `docs/reviews/13-…md` 里）
+ * ## 阴性对照（真实输出贴在本批报告里）
  *   · 把 `readDoc` 改回"失败兜底成那句文案 + ok:true" ⇒ ②③④⑥ 变红；
- *   · 在 `files-office/src/index.ts` 里再塞一份手写 Office 清单 ⇒ ⑥ 与 `file-exts.mjs` ④ 组变红。 *
+ *   · 在 `files-office/src/index.ts` 里再塞一份手写 Office 清单 ⇒ ⑥ 与 `file-exts.mjs` ④ 组变红；
+ *   · 把 `MAX_ROWS` 改回 1000 ⇒ ⑧ 组变红（⑦ 组不受影响：它测的是纯函数，不是上限）；
+ *   · 删掉 `readDoc` 的 ①b（piece 表直读）⇒ **⑦ 组仍绿**（纯函数还在），
+ *     因为"真件能不能读出来"这件事套件里没有真 .doc 样本可喂（用户数据不入库）——
+ *     那一条的证据是**现场端到端**（拿真实数据文件跑产品函数 `readDoc`，原始输出见报告
+ *     `docs/reviews/16-表格行上限与doc正文直读.md`）。这里如实说明，不假称套件覆盖了它。 *
  *   node tests/office-doc.mjs          （需要 tsx：它 import 那份 .ts；run-all 已按脚本名放行）
  *
  * @module tests/office-doc
@@ -600,6 +610,193 @@ ok([...('/* 全仓的 OFFICE_EXTS = doc docx xlsx pptx pdf，见 file-exts.ts */
   '阴性对照：注释里引用取值、Cordis 服务名数组都不会被误报（宁漏勿错报）')
 for (const rel of ALLOWED_OFFICE_SINGLE_POINTS) {
   ok(existsSync(join(ROOT, rel)), `备案的单点定义还在：${rel}`)
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ⑦ `.doc` 正文直读（piece 表）—— 合成 FIB + table，直接断言解析结果
+ *
+ * 为什么是"合成样本"而不是"真 .doc"：真实 .doc 全在用户数据里（加密 + 隐私），
+ * **不入测试库**。所以这里手搓 [MS-DOC] 的那两段结构喂给纯函数；
+ * "真件也能读出来"的证据是现场跑的（见文件头「阴性对照」末条）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\n══ ⑦ `.doc` 正文直读：合成 FIB + table 流 → 正文（纯函数，无 I/O）══')
+
+const u16 = (n) => { const b = Buffer.alloc(2); b.writeUInt16LE(n >>> 0); return b }
+const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b }
+
+/**
+ * `WordDocument` 流：**FIB 在 0，正文在各自的 fc** —— 两者是同一个流，
+ * 这一点是 [MS-DOC] 的结构事实，也是本组样本必须照做的形状（写错就解析不出来）。
+ * `parts`：`[{ fc, text, compressed }]`，`compressed` = 每字符 1 字节的 Latin-1 段。
+ */
+function makeWordStream(parts, { ccpText, fcClx, lcbClx }) {
+  let end = 0
+  for (const p of parts) end = Math.max(end, p.fc + (p.compressed ? p.text.length : p.text.length * 2))
+  const b = Buffer.alloc(Math.max(end, 0x400))
+  for (const p of parts) {
+    if (p.compressed) Buffer.from(p.text, 'latin1').copy(b, p.fc)
+    else b.write(p.text, p.fc, 'utf16le')
+  }
+  b.writeUInt16LE(0xa5ec, 0)          // magic（[MS-DOC] 2.4.1 FibBase.wIdent）
+  b.writeUInt16LE(0x0200, 0x0a)       // fWhichTblStm=1
+  b.writeUInt32LE(0x0400, 0x18)       // fcMin
+  b.writeUInt32LE(ccpText, 0x4c)      // ccpText
+  b.writeUInt32LE(fcClx, 0x01a2)      // fcClx
+  b.writeUInt32LE(lcbClx, 0x01a6)     // lcbClx
+  return b
+}
+
+/** Clx：可选的 `Prc` 前缀 + 一个 `Pcdt`（PlcPcd = (n+1) 个 CP + n 个 8 字节 PCD）。 */
+function makeClx(pieces, { prcBytes = 0 } = {}) {
+  const n = pieces.length
+  const plc = Buffer.alloc(4 * (n + 1) + 8 * n)
+  let cp = 0
+  for (let i = 0; i <= n; i++) {
+    plc.writeUInt32LE(cp, i * 4)
+    if (i < n) cp += pieces[i].chars
+  }
+  for (let i = 0; i < n; i++) {
+    const off = 4 * (n + 1) + i * 8
+    plc.writeUInt16LE(0, off)                                     // PCD flags
+    /* bit30 置位 = 每字符 1 字节，此时存的是真实偏移 ×2（[MS-DOC] 2.8.1 Pcd.fc） */
+    plc.writeUInt32LE(pieces[i].compressed ? (0x40000000 | (pieces[i].fc * 2)) : pieces[i].fc, off + 2)
+    plc.writeUInt16LE(0, off + 6)                                 // prm
+  }
+  const parts = []
+  if (prcBytes) parts.push(Buffer.concat([Buffer.from([0x01]), u16(prcBytes), Buffer.alloc(prcBytes)]))
+  parts.push(Buffer.concat([Buffer.from([0x02]), u32(plc.length), plc]))
+  return Buffer.concat(parts)
+}
+
+/** 把一段 Clx 放进 table 流（`at` 就是 FIB 里的 fcClx）。 */
+function makeTable(clx, at) {
+  const b = Buffer.alloc(Math.max(at + clx.length, 0x400))
+  clx.copy(b, at)
+  return b
+}
+
+ok(typeof lib.parseWordPieceText === 'function',
+  '`office-lib.mjs` 导出了 `parseWordPieceText`（**纯函数**：两个 Buffer 进、字符串出）')
+if (typeof lib.parseWordPieceText === 'function') {
+  const P = lib.parseWordPieceText
+
+  /* a) 单段 UTF-16LE 正文：`\r` 是段落标记，clean() 之后是 `\n` */
+  const tA = '合成样本\r第一段\r'
+  const clxA = makeClx([{ fc: 0x200, chars: tA.length, compressed: false }])
+  const wsA = makeWordStream([{ fc: 0x200, text: tA }], { ccpText: tA.length, fcClx: 0x40, lcbClx: clxA.length })
+  const outA = P(wsA, makeTable(clxA, 0x40))
+  ok(outA === '合成样本\n第一段\n',
+    `单段 UTF-16LE 正文取回原文（实测 ${JSON.stringify(outA)}）`)
+
+  /* b) 两段在文件里**逆序**存放：拼接顺序由 CP 决定，与存放位置无关 */
+  const clxB = makeClx([{ fc: 0x200, chars: 3, compressed: false }, { fc: 0x300, chars: 3, compressed: false }])
+  const wsB = makeWordStream([{ fc: 0x300, text: 'BBB' }, { fc: 0x200, text: 'AAA' }], { ccpText: 6, fcClx: 0x20, lcbClx: clxB.length })
+  const outB = P(wsB, makeTable(clxB, 0x20))
+  ok(outB === 'AAABBB',
+    `多段按 CP 顺序拼接（文件里 BBB 在前、AAA 在后 ⇒ 仍得 "AAABBB"，实测 ${JSON.stringify(outB)}）`)
+
+  /* c) 压缩段：每字符 1 字节 + CP1252 补表（0x92 → ’）→ 再经 filter() 归一成 ' */
+  const clxC = makeClx([{ fc: 0x200, chars: 3, compressed: true }])
+  const wsC = makeWordStream([{ fc: 0x200, text: 'a\x92b', compressed: true }], { ccpText: 3, fcClx: 0x10, lcbClx: clxC.length })
+  const outC = P(wsC, makeTable(clxC, 0x10))
+  ok(outC === "a'b",
+    `压缩段按 1 字节/字符解码并走 CP1252 补表（字节 a,0x92,b ⇒ ${JSON.stringify(outC)}）`)
+
+  /* d) Clx 前面的 Prc（flag=1）必须跳过 —— 真实文档里它很常见 */
+  const clxD = makeClx([{ fc: 0x200, chars: 3, compressed: false }], { prcBytes: 7 })
+  const wsD = makeWordStream([{ fc: 0x200, text: 'XYZ' }], { ccpText: 3, fcClx: 0x08, lcbClx: clxD.length })
+  const outD = P(wsD, makeTable(clxD, 0x08))
+  ok(outD === 'XYZ',
+    `Clx 前面的 Prc（flag=1，7 字节）被跳过、仍找得到 Pcdt（实测 ${JSON.stringify(outD)}）`)
+
+  /* e) 只取 ccpText 个字符：piece 表里超出正文的部分（脚注/页眉等）不算正文 */
+  const clxE = makeClx([{ fc: 0x200, chars: 6, compressed: false }])
+  const wsE = makeWordStream([{ fc: 0x200, text: 'abcdef' }], { ccpText: 3, fcClx: 0x40, lcbClx: clxE.length })
+  const outE = P(wsE, makeTable(clxE, 0x40))
+  ok(outE === 'abc',
+    `正文按 FIB 的 ccpText 截断（piece 有 6 字、ccpText=3 ⇒ 实测 ${JSON.stringify(outE)}）`)
+
+  /* f) 认不出来就回空串：**不猜、不抛**（调用方据此继续走后面的链） */
+  ok(P(Buffer.alloc(0x1b0), makeTable(clxA, 0x40)) === '' &&
+    P(wsA, Buffer.alloc(4)) === '' &&
+    P(makeWordStream([], { ccpText: 0, fcClx: 0x40, lcbClx: clxA.length }), makeTable(clxA, 0x40)) === '' &&
+    P(null, null) === '',
+    'magic 不对 / table 流不够长 / ccpText=0 / 非 Buffer ⇒ 一律回空串（不抛错）')
+  /* 自证：上面几条不是"函数没生效的空断言" —— 同一个函数在 a) 里确实取回了正文 */
+  ok(typeof outA === 'string' && outA.length > 0,
+    '（自证）同一函数确有产出，故 f) 的"回空串"是真判据而非假绿')
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ⑧ xlsx 行/列上限：超过就**明说**（迁前是静默截断）
+ *
+ * 现场来历：`data-files/A项目/_内联_…/2026年9月28日-9月30日排播表.xlsx` 的「排播」表
+ * **3320 行**，而 `readXlsx` 的 `MAX_ROWS = 1000` 一到就 `return`，**界面不知道有这回事**
+ * ⇒ 用户看到的就是「表格只能显示 1000 行，更多的没有显示」。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\n══ ⑧ xlsx 行/列上限：超上限必须回带真实总数（静默截断是本批修的病）══')
+
+/** 从源码抠数值常量：只取**第一行**并剪掉同行注释（字符类要收 `*` `/`，
+ *  否则会把紧随其后的 `/**` 一起吞掉 → `Function()` 抛错 → 静默回 null → 断言假绿）。 */
+function readConstFromSource(file, constName) {
+  const src = readFileSync(file, 'utf8')
+  const m = new RegExp('(?:export\\s+)?const\\s+' + constName + '\\s*=\\s*([0-9*\\s()/+-]+)', 'm').exec(src)
+  if (!m) return null
+  let expr = m[1].split('\n')[0]
+  for (const mark of ['//', '/*']) { const i = expr.indexOf(mark); if (i >= 0) expr = expr.slice(0, i) }
+  try {
+    const v = Function('"use strict";return (' + expr.trim() + ')')()
+    return typeof v === 'number' && v > 0 ? v : null
+  } catch { return null }
+}
+
+const CAP_ROWS = readConstFromSource(LIB_FILE, 'MAX_ROWS')
+const CAP_COLS = readConstFromSource(LIB_FILE, 'MAX_COLS')
+console.log(`     [实测] office-lib.mjs: MAX_ROWS=${CAP_ROWS} MAX_COLS=${CAP_COLS}（迁前 1000 / 60）`)
+ok(CAP_ROWS !== null && CAP_COLS !== null,
+  `从源码读到两个上限常量（读不到必红，不静默跳过）`)
+ok(CAP_ROWS !== null && CAP_ROWS > 1000,
+  `MAX_ROWS 已抬离迁前的 1000（实测 ${CAP_ROWS}）—— 用户实测的那张排播表有 3320 行`)
+
+/** 现场造一个真 xlsx（用项目自带依赖，不下载任何东西）。 */
+async function generatedXlsx(rowCount, colCount) {
+  const ExcelJS = (await import('exceljs')).default
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('S')
+  for (let r = 0; r < rowCount; r++) ws.addRow(Array.from({ length: colCount }, (_, c) => 'r' + r + 'c' + c))
+  return Buffer.from(await wb.xlsx.writeBuffer())
+}
+
+if (CAP_ROWS !== null && CAP_COLS !== null) {
+  const small = (await lib.readXlsx(await generatedXlsx(5, 2))).sheets[0]
+  ok(small.rows.length === 5 && small.totalRows === 5 && small.truncatedRows === false,
+    `小表原样回（实测 ${JSON.stringify({ rows: small.rows.length, totalRows: small.totalRows, truncatedRows: small.truncatedRows })}）`)
+
+  const over = CAP_ROWS + 5
+  const big = (await lib.readXlsx(await generatedXlsx(over, 2))).sheets[0]
+  ok(big.rows.length === CAP_ROWS && big.totalRows === over && big.truncatedRows === true,
+    `${over} 行 ⇒ 保留 ${CAP_ROWS} 行，**并回带** totalRows/truncatedRows（实测 ${JSON.stringify({ rows: big.rows.length, totalRows: big.totalRows, truncatedRows: big.truncatedRows })}）`)
+
+  const wide = (await lib.readXlsx(await generatedXlsx(2, CAP_COLS + 3))).sheets[0]
+  ok(wide.rows[0].length === CAP_COLS && wide.totalCols === CAP_COLS + 3 && wide.truncatedCols === true,
+    `超宽同理（${CAP_COLS + 3} 列 ⇒ 每行留 ${CAP_COLS} 个，回带 totalCols=${wide.totalCols}）`)
+}
+
+{
+  /* 前端把"被截断"这件事**画出来**：后端给的是数字，句子在 `officeToMd` 里生成 */
+  const m = await loadContentModule({ ok: true, kind: 'xlsx', content: { sheets: [] } })
+  const mdTrunc = m.officeToMd('xlsx', {
+    sheets: [{ name: '排播', rows: [['a', 'b']], totalRows: 3320, totalCols: 2, truncatedRows: true, truncatedCols: false }],
+  })
+  const mdWhole = m.officeToMd('xlsx', {
+    sheets: [{ name: '排播', rows: [['a', 'b']], totalRows: 2, totalCols: 2, truncatedRows: false, truncatedCols: false }],
+  })
+  ok(/仅显示前 1 行/.test(mdTrunc) && /3320/.test(mdTrunc),
+    `被截断时附一句**明说**（实测末两行 ${JSON.stringify(mdTrunc.split('\n').slice(-2).join(' | '))}）`)
+  ok(!/仅显示/.test(mdWhole),
+    '没被截断时**不加**这句（每次都挂一句就成了噪音）')
 }
 
 console.log(`\n${'='.repeat(56)}`)

@@ -6,7 +6,10 @@
   "description": "私域枢纽 PrivHub：纯 Cordis 底座 + 自研插件（文件管理系统）",
   "scripts": {
     "start": "start.bat",
-    "dev": "node --import tsx/esm src/main.ts --port 3180"
+    "dev": "node --import tsx/esm src/main.ts --port 3180",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/run-all.mjs --spawn",
+    "check": "npm run typecheck && node tests/run-all.mjs --spawn"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -24,5 +27,9 @@
     "tsx": "^4.22.4",
     "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
   }
 }

@@ -70,9 +70,19 @@ function readConstFromSource(file, constName) {
   const re = new RegExp('(?:export\\s+)?const\\s+' + constName + '\\s*=\\s*([0-9*\\s()/+-]+)', 'm')
   const m = re.exec(src)
   if (!m) return null
+  /* 只取第一行，并剪掉同一行里跟上的注释。
+   * 为什么要剪：字符类为了容纳 `10 * 1024 * 1024` 这种算式必须收 `*` 与 `/`，
+   * 于是它必然也吃掉紧随其后的 `/**` —— 「下一行是块注释」的常量会被整段吞进来，
+   * Function 解析当场抛错、这里静默回 null，而调用处的 `|| 兜底值` 会让断言照常变绿：
+   * 读源码这道阴性对照就废了（本批新增的 MAX_TABLE_ROWS 正踩在上面，实测匹配到 "1000\\n/**"）。 */
+  let expr = m[1].split('\n')[0]
+  for (const mark of ['//', '/*']) {
+    const i = expr.indexOf(mark)
+    if (i >= 0) expr = expr.slice(0, i)
+  }
   try {
-    // 只允许纯算式（本文件两处阈值都是 "10 * 1024 * 1024" 这种形式）
-    const v = Function('"use strict";return (' + m[1].trim() + ')')()
+    // 只允许纯算式（本文件这几处阈值都是 "10 * 1024 * 1024" 这种单行形式）
+    const v = Function('"use strict";return (' + expr.trim() + ')')()
     return typeof v === 'number' && v > 0 ? v : null
   } catch { return null }
 }
@@ -294,6 +304,9 @@ async function makeContentSandbox() {
         size: c.size,
         autoEditEvents: autoEditEvents.length,
         sandboxError,
+        /* 结构化只读预览（本批新增）：`structured` 为 null = 走原来的 <pre> 纯文本 */
+        structured: c.structured === undefined ? null : c.structured,
+        text: c.text,
       }
     },
   }
@@ -489,6 +502,74 @@ async function main() {
     '闸内小文本不带只读说明（不给正常文件加噪音）')
   ok(tooBigRes.autoEditEvents === 0 && tooBigRes.state === 'error',
     `超出查看上限的文本仍是明确的错误态、且不尝试进编辑（state=${tooBigRes.state}，事件 ${tooBigRes.autoEditEvents} 次）`)
+
+  /* ---------- ⑧ 结构化只读预览：csv/tsv → 表格、json → 美化（本批新增）----------
+   *
+   * 与 ⑤ 共用同一个沙箱（content.js 真身 + 桩接口），断的是**内容区拿到什么状态**。
+   * 这一步只回答「怎么画」，不回答「能不能打开」—— 所以每一条都同时钉住
+   * 「解析不成立时既有纯文本行为没被破坏」（structured 为 null）。
+   * 阈值从源码读（MAX_TABLE_ROWS / MAX_TABLE_COLS），于是"把上限拆掉"也会在这里变红。
+   * 阴性对照：把 content.js 的 structuredView 恒返回 null ⇒ 下面带 mode 的断言全红。 */
+  console.log('\n── ⑧ 结构化只读预览：csv/tsv 表格、json 美化（不改动既有纯文本行为）──')
+  const MAX_ROWS = readConstFromSource(CONTENT_SRC, 'MAX_TABLE_ROWS')
+  const MAX_COLS = readConstFromSource(CONTENT_SRC, 'MAX_TABLE_COLS')
+  ok(MAX_ROWS > 0 && MAX_COLS > 0,
+    `从 content.js 读到表格上限常量（MAX_TABLE_ROWS=${MAX_ROWS} / MAX_TABLE_COLS=${MAX_COLS}）—— 读不到必红，不静默跳过`)
+
+  const csvRes = await sandbox.load('PV表.csv', { type: 'text', data: 'name,qty\napple,3\npear,5\n' })
+  ok(csvRes.structured && csvRes.structured.mode === 'table',
+    `csv 走表格子模式（mode=${csvRes.structured && csvRes.structured.mode}）`)
+  ok(csvRes.structured && csvRes.structured.rows.length === 3,
+    `表格行数含表头（实测 ${csvRes.structured && csvRes.structured.rows.length} 行，期望 3）`)
+  ok(csvRes.structured && csvRes.structured.rows[1] && csvRes.structured.rows[1][0] === 'apple' && csvRes.structured.rows[1][1] === '3',
+    `单元格按分隔符切开且顺序正确（第 2 行 = ${JSON.stringify(csvRes.structured && csvRes.structured.rows[1])}）`)
+  ok(csvRes.text === 'name,qty\napple,3\npear,5\n',
+    '原文照旧原样留在 content.text（子模式不改写它）')
+
+  const quoted = await sandbox.load('PV引号.csv', { type: 'text', data: 'a,b\n"x,1","he said ""hi"""\n' })
+  ok(quoted.structured && quoted.structured.rows[1] && quoted.structured.rows[1][0] === 'x,1',
+    `引号内的分隔符不算分隔符（实测第 2 行第 1 格 = ${JSON.stringify(quoted.structured && quoted.structured.rows[1] && quoted.structured.rows[1][0])}）`)
+  ok(quoted.structured && quoted.structured.rows[1] && quoted.structured.rows[1][1] === 'he said "hi"',
+    `双写引号还原成一个引号（实测 = ${JSON.stringify(quoted.structured && quoted.structured.rows[1] && quoted.structured.rows[1][1])}）`)
+
+  const multiline = await sandbox.load('PV换行.csv', { type: 'text', data: 'a,b\n"line1\nline2",2\n' })
+  ok(multiline.structured && multiline.structured.rows.length === 2 && multiline.structured.rows[1][0] === 'line1\nline2',
+    `引号内的换行不切成新行（实测行数 ${multiline.structured && multiline.structured.rows.length}，该格含换行=${!!(multiline.structured && multiline.structured.rows[1][0].includes('\n'))}）`)
+
+  const tsvRes = await sandbox.load('PV制表.tsv', { type: 'text', data: '名称\t数量\n苹果\t3\n' })
+  ok(tsvRes.structured && tsvRes.structured.mode === 'table' && tsvRes.structured.rows[1][1] === '3',
+    `tsv 按制表符切列（mode=${tsvRes.structured && tsvRes.structured.mode}，第 2 行 = ${JSON.stringify(tsvRes.structured && tsvRes.structured.rows[1])}）`)
+  const tsvAsCsv = await sandbox.load('PV制表.csv', { type: 'text', data: '名称\t数量\n苹果\t3\n' })
+  ok(tsvAsCsv.structured === null,
+    '同一份内容改叫 .csv 时不硬凑成表（只有一个"列" ⇒ 回落纯文本）')
+
+  const jsonRes = await sandbox.load('PV数据.json', { type: 'text', data: '{"名称":"苹果","数量":3}' })
+  ok(jsonRes.structured && jsonRes.structured.mode === 'json',
+    `json 走美化模式（mode=${jsonRes.structured && jsonRes.structured.mode}）`)
+  ok(jsonRes.structured && jsonRes.structured.text.includes('\n') && jsonRes.structured.text.includes('"苹果"'),
+    '美化结果带缩进换行且原值不变')
+  ok(jsonRes.text === '{"名称":"苹果","数量":3}', '原文同样不被改写（美化结果另存）')
+
+  const badJson = await sandbox.load('PV坏.json', { type: 'text', data: '{这不是 JSON' })
+  ok(badJson.structured === null && badJson.state === 'ready',
+    `解析不了的 json 回落纯文本且**仍然能打开**（structured=null，state=${badJson.state}）—— 本组最重要的一条`)
+  const oneCol = await sandbox.load('PV单列.csv', { type: 'text', data: 'a\nb\nc\n' })
+  ok(oneCol.structured === null, '单列 csv 不硬凑成表（回落纯文本）')
+
+  const overRows = Array.from({ length: MAX_ROWS + 2 }, (_, i) => 'a' + i + ',b' + i).join('\n') + '\n'
+  const overRes = await sandbox.load('PV超行.csv', { type: 'text', data: overRows })
+  ok(overRes.structured === null,
+    `超过 ${MAX_ROWS} 行整体回落纯文本（不显示半张表）`)
+  const colsOver = 'h' + Array.from({ length: MAX_COLS + 2 }, (_, i) => ',c' + i).join('') + '\n1\n'
+  const wideRes = await sandbox.load('PV超宽.csv', { type: 'text', data: colsOver })
+  ok(wideRes.structured === null,
+    `超过 ${MAX_COLS} 列整体回落纯文本（不静默丢列）`)
+
+  const txtRes = await sandbox.load('PV纯文本.txt', { type: 'text', data: 'hello privhub\nsecond line\n' })
+  ok(txtRes.structured === null && txtRes.state === 'ready',
+    `普通文本的既有行为一字未变（structured=null，state=${txtRes.state}）`)
+  ok(txtRes.autoEditEvents === 1,
+    `可编辑文本照旧自动进编辑态（事件 ${txtRes.autoEditEvents} 次）—— 子模式只影响只读呈现，不碰编辑链`)
 
   cleanRoot()
 

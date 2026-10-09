@@ -162,6 +162,31 @@ export function apply(ctx: Context): void {
       r.oldName + ' -> ' + r.newName + (r.renamedDir ? '（文件夹已同步改名）' : ''))
   }, 'me-display-name')
 
+  /* 修改本人密码（JT-01：此前只有管理员重置他人密码的入口，用户改不了自己的）
+   * 需要【当前密码】二次确认；改完让本人其它会话失效（当前会话保留）。 */
+  svc.route('/privhub/api/me/password', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const current = String(body.currentPassword ?? '')
+    const next = String(body.newPassword ?? '')
+    if (!verifyPassword(current, u.password)) return json(res, 400, { ok: false, error: '当前密码不正确' })
+    if (next.length < 6) return json(res, 400, { ok: false, error: '新密码至少 6 位' })
+    if (next === current) return json(res, 400, { ok: false, error: '新密码不能与当前密码相同' })
+    u.password = hashPassword(next)
+    // 泄露面收窄：改密后除当前会话外的其它会话（可能落在他人设备上）立即失效
+    const keep = tokenOf(req)
+    for (const [token, entry] of svc.sessions) {
+      if (entry.username === u.username && token !== keep) svc.sessions.delete(token)
+    }
+    await svc.saveUsers()
+    await svc.saveSessions()
+    json(res, 200, { ok: true })
+    void audit(u.username, 'password-change', u.username, '本人修改密码，其它会话已失效')
+  }, 'me-password')
+
   /* 退出登录 */
   svc.route('/privhub/api/logout', async (req, res) => {
     const t = tokenOf(req)

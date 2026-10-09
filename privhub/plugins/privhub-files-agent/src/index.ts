@@ -25,7 +25,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { join, extname } from 'node:path'
 import { stat, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { tokenOf } from '../../privhub-core/src/index'
+import { tokenOf, readJsonStore } from '../../privhub-core/src/index'
 /* 【扩展名一处定义】本插件的文本清单改为从 `privhub-core/src/file-exts` **显式派生**：
  * 派生式 = `TEXT_EXTS − SENSITIVE_EXTS`（能力与预览同等，但**敏感文件豁免**）。
  * 为什么是"减"而不是另写一份：迁前这份是手写数组，且比 core 预览清单少了 `.java/.c/.cpp/.toml/.htm`，
@@ -158,14 +158,32 @@ export interface AgentKey {
 interface KeysFile { version: number; keys: AgentKey[] }
 
 async function loadKeys(ctx: Context): Promise<AgentKey[]> {
-  try {
-    const raw = await ctx.storage.readText(KEYS_FILE)
-    const parsed = JSON.parse(raw) as KeysFile
-    return Array.isArray(parsed.keys) ? parsed.keys : []
-  } catch { return [] }
+  /* D4：密钥库损坏 → 隔离存证 + 抛错。此前静默当空，一次「新建密钥」就会把
+   * data/agent-keys.json 里**所有已有密钥**覆盖掉（凭据类数据，最不可接受的一种）。 */
+  const parsed = await readJsonStore<KeysFile>(ctx.storage, KEYS_FILE, { version: 2, keys: [] })
+  return Array.isArray(parsed.keys) ? parsed.keys : []
 }
 async function saveKeys(ctx: Context, keys: AgentKey[]): Promise<void> {
   await ctx.storage.writeText(KEYS_FILE, JSON.stringify({ version: 2, keys }, null, 2))
+}
+
+/**
+ * D6：密钥库的**所有**读-改-写统一经此串行化。
+ *
+ * `data/agent-keys.json` 全系统共用一份，却有八处写入者：管理员签发/吊销/挂起/恢复/轮换、
+ * 用户自助签发/吊销，以及鉴权时把过期密钥惰性标记为 expired。任何一处不带锁，
+ * 并发下都会「读到旧列表 → 整份写回」，把别人刚签发的密钥抹掉 —— 表现为
+ * 「管理员刚发的 Key 立刻 401，而库里查不到」，即凭据丢失且无从吊销，比丢一条记录严重得多。
+ *
+ * 回调里绝不可再调用本函数（会对自己重入取锁而死锁）；需要新记录时先 `buildKey` 构造、再在锁内 push。
+ */
+async function mutateKeys<T>(ctx: Context, fn: (keys: AgentKey[]) => T | Promise<T>): Promise<T> {
+  return ctx.privhub.withFileLock(KEYS_FILE, async () => {
+    const keys = await loadKeys(ctx)
+    const out = await fn(keys)
+    await saveKeys(ctx, keys)
+    return out
+  })
 }
 
 /* ============ 审计（S1 双写） ============ */
@@ -204,7 +222,11 @@ async function authAgent(ctx: Context, req: IncomingMessage, env: Env): Promise<
   const rec = keys.find((k) => constEq(k.keyHash.replace(/^sha256:/, ''), sha256(raw)))
   if (!rec) return { errStatus: 401, errCode: 'AGENT-4010', errHint: '无效密钥（未找到匹配记录）' }
   if (rec.expiresAt > 0 && Date.now() > rec.expiresAt) {
-    if (rec.status === 'active') { rec.status = 'expired'; void saveKeys(ctx, keys) }
+    if (rec.status === 'active') {
+      /* D6：惰性状态翻转也是写密钥库 —— 必须走同一把锁，否则会把并发的签发结果覆盖掉。
+       * 锁内按 id 重新定位，避免用锁外读到的旧快照写回。 */
+      void mutateKeys(ctx, (ks) => { const r = ks.find((x) => x.id === rec.id); if (r) r.status = 'expired' })
+    }
     return { errStatus: 401, errCode: 'AGENT-4011', errHint: '密钥已过期（自然月周期），请续期或联系管理员（到期前可一键续期）' }
   }
   if (rec.status === 'revoked') return { errStatus: 401, errCode: 'AGENT-4012', errHint: '密钥已吊销，请联系管理员' }
@@ -390,8 +412,6 @@ export function apply(ctx: Context, config?: M2Config): void {
   /* E1 事件声明 */
   ctx.eventBus.declareEmit('audit:logged', 'privhub-files-agent', '写操作成功审计广播（S1 闭环）')
   const svc = ctx.privhub
-  const route = (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>, label: string): void =>
-    svc.route(path, wrap(handler), label)
 
   /* ---------- 发现与身份 ---------- */
 
@@ -449,8 +469,7 @@ export function apply(ctx: Context, config?: M2Config): void {
         'curl -X POST -H "X-Agent-Key: pha_xxx" -H "content-type: application/json" -H "X-Idempotency-Key: k-12345678" -d \'{"path":"note.md","content":"hi"}\' http://<host>:3181/privhub/api/agent/v1/write',
       ],
     }, { 'x-request-id': env.rid })
-  }, 'agent-schema'))
-
+  }), 'agent-schema')
   svc.route('/privhub/api/agent/v1/me', withAgent(async (ctx, env, a, req, res, extra) => {
     const u = a.user
     /* 只列出「真正的项目」：个人空间不算项目，它作为沙箱单独给出。
@@ -469,8 +488,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       sandboxPath: sandbox === null ? null : sandbox + '/' + (scopeRel ? scopeRel + '/' : ''),
       projectReadOnly: true,
     }, extra)
-  }, 'agent-me'))
-
+  }), 'agent-me')
   svc.route('/privhub/api/agent/v1/projects', withAgent(async (ctx, env, a, req, res, extra) => {
     /* 只暴露「真正的项目」，并按密钥 scope 收窄。
      * 个人空间【不在此列出】——它是沙箱，不是项目；把别人的或自己的个人空间
@@ -488,8 +506,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       sandboxPath: sandbox === null ? null : sandbox + '/',
       projectReadOnly: true,
     }, extra)
-  }, 'agent-projects'))
-
+  }), 'agent-projects')
   /* ---------- 读 ---------- */
 
   svc.route('/privhub/api/agent/v1/list', withAgent(async (ctx, env, a, req, res, extra) => {
@@ -522,8 +539,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     const slice = entries.slice(offset, offset + limit)
     const nextCursor = offset + limit < entries.length ? Buffer.from(String(offset + limit)).toString('base64') : null
     json(res, 200, { ok: true, entries: slice, total: entries.length, nextCursor }, extra)
-  }, 'agent-list'))
-
+  }), 'agent-list')
   svc.route('/privhub/api/agent/v1/read', withAgent(async (ctx, env, a, req, res, extra) => {
     const url = new URL(req.url ?? '/', 'http://x')
     const rr = rate.check({ key: a.key.id, user: a.user.username, ip: String(req.socket.remoteAddress ?? '') })
@@ -569,8 +585,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     try { data = utf8.decode(slice) } catch { data = new TextDecoder('gbk').decode(slice) }
     void audit(ctx, 'ai:' + a.key.name, 'agent-read', auditTarget, 'via=' + a.user.username + ' enc=text size=' + buf.length + (truncated ? ' truncated' : ''))
     json(res, 200, { ok: true, type: 'text', data, size: buf.length, truncated, etag: fileEtag(buf.length, slice.subarray(0, 65536).toString('base64')) }, extra)
-  }, 'agent-read'))
-
+  }), 'agent-read')
   /* ---------- 写（仅专属空间；项目写 = 403 硬隔离） ---------- */
 
   const fmtBytes = (n: number): string => (n < 1024 * 1024 ? (n / 1024).toFixed(0) + 'KB' : (n / 1024 / 1024).toFixed(1) + 'MB')
@@ -583,7 +598,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       return null
     }
     const hit = await idem.check(ctxRef, a.key.id, ik, sha256m(JSON.stringify(body)))
-    if (hit.conflict) {
+    if (!hit.hit && hit.conflict) {
       json(res, 409, { ok: false, code: 'AGENT-4092', error: '幂等键冲突', hint: '该幂等键已用于不同的请求体，请更换 X-Idempotency-Key', requestId: env.rid }, extra)
       return null
     }
@@ -706,8 +721,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     } finally {
       g.g.release()
     }
-  }, 'agent-write'))
-
+  }), 'agent-write')
   /* fork：项目（只读）→ 专属空间 */
   svc.route('/privhub/api/agent/v1/fork', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
@@ -779,8 +793,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     } finally {
       g.g.release()
     }
-  }, 'agent-fork'))
-
+  }), 'agent-fork')
   /* rename：沙箱内 */
   svc.route('/privhub/api/agent/v1/rename', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
@@ -815,8 +828,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     } finally {
       g.g.release()
     }
-  }, 'agent-rename'))
-
+  }), 'agent-rename')
   /* delete：沙箱 → 回收站 */
   svc.route('/privhub/api/agent/v1/delete', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
@@ -851,8 +863,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     } finally {
       g.g.release()
     }
-  }, 'agent-delete'))
-
+  }), 'agent-delete')
   /* M2：沙箱版本历史（复用 versions.json 数据格式） */
   svc.route('/privhub/api/agent/v1/versions', withAgent(async (ctx, env, a, req, res, extra) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -865,14 +876,16 @@ export function apply(ctx: Context, config?: M2Config): void {
     const key = sandbox + '|' + scopeRelOf(a) + path
     let arr: Array<{ at: number; by: string; content: string }> = []
     try {
-      const f = join(rootDir, 'data', 'versions.json')
-      if (existsSync(f)) { const store = JSON.parse(await ctx.storage.readText(f)) as Record<string, Array<{ at: number; by: string; content: string }>>; arr = store[key] || [] }
-    } catch { /* 无历史 */ }
+      /* D4：走统一入口 —— 只看不改的路径也照样隔离存证 + 记日志（原因不再无声消失）。 */
+      const store = await readJsonStore<Record<string, Array<{ at: number; by: string; content: string }>>>(
+        ctx.storage, join(rootDir, 'data', 'versions.json'), {},
+      )
+      arr = store[key] || []
+    } catch { /* 无历史（含版本库损坏：原因已由 readJsonStore 记入系统日志） */ }
     const list = arr.map((v) => ({ at: v.at, by: v.by, len: String(v.content ?? '').length })).sort((x, y) => y.at - x.at)
     void audit(ctx, 'ai:' + a.key.name, 'agent-versions', sandbox + '/' + scopeRelOf(a) + path, 'via=' + a.user.username)
     json(res, 200, { ok: true, versions: list }, extra)
-  }, 'agent-versions'))
-
+  }), 'agent-versions')
   /* M2：沙箱版本恢复 */
   svc.route('/privhub/api/agent/v1/versions/restore', withAgent(async (ctx, env, a, req, res, extra) => {
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, extra)
@@ -885,15 +898,6 @@ export function apply(ctx: Context, config?: M2Config): void {
     if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
     const f = join(rootDir, 'data', 'versions.json')
-    let store = {} as Record<string, Array<{ at: number; by: string; content: string }>>
-    let ver: { at: number; by: string; content: string } | null = null
-    try {
-      if (existsSync(f)) store = JSON.parse(await ctx.storage.readText(f))
-      const key = sandbox + '|' + scopeRel + path
-      ver = (store[key] || []).find((v) => v.at === at) ?? null
-    } catch { /* 版本不存在 */ }
-    if (!ver) return json(res, 404, { ok: false, code: 'AGENT-4041', error: '版本不存在', hint: '该路径在此时间点无版本记录', requestId: env.rid }, extra)
-    const content = String(ver.content ?? '')
     const lockKey = sandbox + '|' + scopeRel + path
     const g = await gateAcquire(env, res, extra)
     if (!g) return
@@ -906,20 +910,33 @@ export function apply(ctx: Context, config?: M2Config): void {
         const existed = existsSync(abs)
         let oldPlain = 0
         if (existed) { const s = await stat(abs); oldPlain = s.size - (await ctx.storage.isEncrypted(abs) ? 36 : 0) }
-        const prq = await quota.precheck(ctx, a.user.username, Buffer.byteLength(content), oldPlain)
-        if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '沙箱配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
-        const tmp = abs + '.part-' + Date.now()
-        await ctx.storage.writeBuffer(tmp, Buffer.from(content, 'utf8'))
-        await rename(tmp, abs).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
-        await quota.add(ctx, a.user.username, Buffer.byteLength(content) - oldPlain)
-        const key = sandbox + '|' + scopeRel + path
-        const arr = store[key] || []
-        arr.push({ at: Date.now(), by: 'ai:' + a.key.name, content })
-        while (arr.length > m2cfg.snapshotMax) arr.shift()
-        store[key] = arr
-        await mkdir(join(rootDir, 'data'), { recursive: true })
-        await ctx.storage.writeText(join(rootDir, 'data', 'versions.json'), JSON.stringify(store, null, 2))
-        return { ok: true, size: Buffer.byteLength(content) }
+        /* D6：`data/versions.json` 全系统共用一份，本仓有三个写入者（privhub-files-versions、
+         * m2 覆盖前快照、此处恢复），必须以**同一个绝对路径**为锁键串行化；否则并发恢复各自
+         * 读旧 store 再整份写回，会抹掉别人刚追加的版本记录。读、定位版本、配额校验、
+         * 回写正文、追加新版本全部在一把锁内完成（路径锁 locks.run 只管同一文件，管不到这份共享库）。 */
+        return await ctx.privhub.withFileLock(f, async () => {
+          let store = {} as Record<string, Array<{ at: number; by: string; content: string }>>
+          try {
+            store = await readJsonStore<Record<string, Array<{ at: number; by: string; content: string }>>>(ctx.storage, f, {})
+          } catch { /* 版本不存在（含版本库损坏：原因已由 readJsonStore 记入系统日志） */ }
+          const key = sandbox + '|' + scopeRel + path
+          const ver = (store[key] || []).find((v) => v.at === at) ?? null
+          if (!ver) return { status: 404, code: 'AGENT-4041', hint: '版本不存在（该路径在此时间点无版本记录）' }
+          const content = String(ver.content ?? '')
+          const prq = await quota.precheck(ctx, a.user.username, Buffer.byteLength(content), oldPlain)
+          if (!prq.ok) return { status: 429, code: 'AGENT-4292', hint: '沙箱配额超限（' + fmtBytes(prq.usage) + ' / ' + fmtBytes(prq.quota) + '）', usage: prq.usage, quota: prq.quota }
+          const tmp = abs + '.part-' + Date.now()
+          await ctx.storage.writeBuffer(tmp, Buffer.from(content, 'utf8'))
+          await rename(tmp, abs).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
+          await quota.add(ctx, a.user.username, Buffer.byteLength(content) - oldPlain)
+          const arr = store[key] || []
+          arr.push({ at: Date.now(), by: 'ai:' + a.key.name, content })
+          while (arr.length > m2cfg.snapshotMax) arr.shift()
+          store[key] = arr
+          await mkdir(join(rootDir, 'data'), { recursive: true })
+          await ctx.storage.writeText(f, JSON.stringify(store, null, 2))
+          return { ok: true, size: Buffer.byteLength(content) }
+        })
       })
       if (!out.ok) {
         return json(res, out.status as number, { ok: false, code: out.code, error: out.hint, hint: out.hint, requestId: env.rid, ...(out.usage !== undefined ? { usage: out.usage, quota: out.quota } : {}) }, { ...extra, ...qExtra })
@@ -930,8 +947,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     } finally {
       g.g.release()
     }
-  }, 'agent-versions-restore'))
-
+  }), 'agent-versions-restore')
   /* ---------- 开发者平台（网页登录态；与 Agent 密钥通道严格分开） ---------- */
 
   /**
@@ -961,15 +977,14 @@ export function apply(ctx: Context, config?: M2Config): void {
       isAdmin: u.role === 'admin',
       allKeys: u.role === 'admin' ? keys.map(keyView) : null,
     }, { 'x-request-id': env.rid })
-  }, 'agent-console'))
-
+  }), 'agent-console')
   /* ---------- 管理：key 生命周期（admin 登录态） ---------- */
 
   const adminOnly = (env: Env, req: IncomingMessage, res: ServerResponse): { username: string; role: string } | null => requireAdmin(ctxRef, req, res, env)
 
   function scopeOf(body: any): { kind: AgentKeyScope['kind']; project: string; path: string } | null {
     const kind = String(body?.scope?.kind ?? 'project')
-    if (!['all', 'project', 'directory'].includes(kind)) return null
+    if (kind !== 'all' && kind !== 'project' && kind !== 'directory') return null
     const project = String(body?.scope?.project ?? '').trim()
     const path = relOf(String(body?.scope?.path ?? ''))
     if (kind === 'all') return { kind: 'all', project: '', path: '' }
@@ -978,7 +993,11 @@ export function apply(ctx: Context, config?: M2Config): void {
     return { kind, project, path }
   }
 
-  async function createKey(ctx: Context, createdBy: string, type: 'user' | 'admin', body: any): Promise<{ ok: true; rec: AgentKey; plain: string } | { ok: false; status: number; code: string; hint: string }> {
+  /**
+   * D6：只做校验与生成，**不碰文件**（落盘由调用方在 mutateKeys 锁内 push）。
+   * 这样 rotate 等需要「先读库再签发」的路径可以整段放在一把锁里，而不会对自己重入取锁。
+   */
+  async function buildKey(ctx: Context, createdBy: string, type: 'user' | 'admin', body: any): Promise<{ ok: true; rec: AgentKey; plain: string } | { ok: false; status: number; code: string; hint: string }> {
     const name = String(body.name ?? '').slice(0, 64).trim() || 'agent-key-' + Date.now().toString(36)
     const username = String(body.username ?? '')
     const user = ctx.privhub.users.get(username)
@@ -1007,9 +1026,6 @@ export function apply(ctx: Context, config?: M2Config): void {
       lastUsedAt: 0,
       usageCount: 0,
     }
-    const keys = await loadKeys(ctx)
-    keys.push(rec)
-    await saveKeys(ctx, keys)
     return { ok: true, rec, plain }
   }
 
@@ -1027,58 +1043,70 @@ export function apply(ctx: Context, config?: M2Config): void {
     if (req.method === 'POST') {
       let body: any
       try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', hint: '请求体不是合法 JSON', requestId: env.rid }, { 'x-request-id': env.rid }) }
-      const r = await createKey(ctx, admin.username, 'admin', body)
+      const r = await buildKey(ctx, admin.username, 'admin', body)
       if (!r.ok) return json(res, r.status, { ok: false, code: r.code, error: r.hint, hint: r.hint, requestId: env.rid }, { 'x-request-id': env.rid })
+      await mutateKeys(ctx, (keys) => { keys.push(r.rec) })
       void audit(ctx, admin.username, 'agent-key-create', 'key:' + r.rec.id, 'user=' + r.rec.username + ' scope=' + JSON.stringify(r.rec.scope) + ' name=' + r.rec.name)
       json(res, 200, { ok: true, key: r.plain, id: r.rec.id, name: r.rec.name, username: r.rec.username, scope: r.rec.scope, expiresAt: r.rec.expiresAt, note: '明文仅此一次返回，请妥善保存' }, { 'x-request-id': env.rid })
       return
     }
     json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST', requestId: env.rid }, { 'x-request-id': env.rid })
-  }, 'agent-keys'))
-
+  }), 'agent-keys')
   svc.route('/privhub/api/agent/v1/keys/revoke', wrap(async (ctx, env, req, res) => {
     const admin = adminOnly(env, req, res); if (!admin) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, { 'x-request-id': env.rid })
     let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
-    const keys = await loadKeys(ctx)
-    const rec = keys.find((k) => k.id === body.id)
-    if (!rec) return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', requestId: env.rid }, { 'x-request-id': env.rid })
-    rec.status = 'revoked'
-    await saveKeys(ctx, keys)
-    void audit(ctx, admin.username, 'agent-key-revoke', 'key:' + rec.id, 'user=' + rec.username)
+    /* D6：吊销与签发共用一把锁，且在锁内按 id 重新定位 —— 否则并发的签发会被这次整份写回抹掉。 */
+    const revoked = await mutateKeys(ctx, (keys) => {
+      const rec = keys.find((k) => k.id === body.id)
+      if (!rec) return null
+      rec.status = 'revoked'
+      return rec
+    })
+    if (!revoked) return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', requestId: env.rid }, { 'x-request-id': env.rid })
+    void audit(ctx, admin.username, 'agent-key-revoke', 'key:' + revoked.id, 'user=' + revoked.username)
     json(res, 200, { ok: true }, { 'x-request-id': env.rid })
-  }, 'agent-keys-revoke'))
-
+  }), 'agent-keys-revoke')
   for (const [action, status] of [['suspend', 'suspended'], ['resume', 'active']] as const) {
     svc.route('/privhub/api/agent/v1/keys/' + action, wrap(async (ctx, env, req, res) => {
       const admin = adminOnly(env, req, res); if (!admin) return
       if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', requestId: env.rid }, { 'x-request-id': env.rid })
       let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
-      const keys = await loadKeys(ctx)
-      const rec = keys.find((k) => k.id === body.id)
-      if (!rec) return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', requestId: env.rid }, { 'x-request-id': env.rid })
-      if (rec.status === 'revoked') return json(res, 400, { ok: false, code: 'AGENT-4001', error: '已吊销的 key 不可操作', requestId: env.rid }, { 'x-request-id': env.rid })
-      rec.status = status
-      await saveKeys(ctx, keys)
-      void audit(ctx, admin.username, 'agent-key-' + action, 'key:' + rec.id, 'user=' + rec.username)
+      /* D6：挂起/恢复同为密钥库读-改-写；「已吊销不可操作」的判定也在锁内做，避免竞态。 */
+      const r = await mutateKeys(ctx, (keys) => {
+        const rec = keys.find((k) => k.id === body.id)
+        if (!rec) return { kind: 'missing' as const }
+        if (rec.status === 'revoked') return { kind: 'revoked' as const }
+        rec.status = status
+        return { kind: 'ok' as const, rec }
+      })
+      if (r.kind === 'missing') return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', requestId: env.rid }, { 'x-request-id': env.rid })
+      if (r.kind === 'revoked') return json(res, 400, { ok: false, code: 'AGENT-4001', error: '已吊销的 key 不可操作', requestId: env.rid }, { 'x-request-id': env.rid })
+      void audit(ctx, admin.username, 'agent-key-' + action, 'key:' + r.rec.id, 'user=' + r.rec.username)
       json(res, 200, { ok: true, status }, { 'x-request-id': env.rid })
-    }, 'agent-keys-' + action))
+    }), 'agent-keys-' + action)
   }
 
   svc.route('/privhub/api/agent/v1/keys/rotate', wrap(async (ctx, env, req, res) => {
     const admin = adminOnly(env, req, res); if (!admin) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', requestId: env.rid }, { 'x-request-id': env.rid })
     let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
-    const keys = await loadKeys(ctx)
-    const src = keys.find((k) => k.id === body.id)
-    if (!src) return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', requestId: env.rid }, { 'x-request-id': env.rid })
-    if (src.status === 'revoked') return json(res, 400, { ok: false, code: 'AGENT-4001', error: '已吊销的 key 不可轮换', requestId: env.rid }, { 'x-request-id': env.rid })
-    const r = await createKey(ctx, admin.username, src.type, { name: src.name, username: src.username, scope: src.scope, ipWhitelist: src.ipWhitelist })
-    if (!r.ok) return json(res, r.status, { ok: false, code: r.code, error: r.hint, requestId: env.rid }, { 'x-request-id': env.rid })
-    void audit(ctx, admin.username, 'agent-key-rotate', 'key:' + src.id, '-> key:' + r.rec.id + '（旧 key 到期自然失效）')
-    json(res, 200, { ok: true, key: r.plain, id: r.rec.id, expiresAt: r.rec.expiresAt, note: '旧 key 保留至自然到期（平滑迁移）' }, { 'x-request-id': env.rid })
-  }, 'agent-keys-rotate'))
-
+    /* D6：轮换 = 「读库定位旧 key → 追加新 key」的读-改-写，必须与签发/吊销共用一把锁；
+     * 否则并发轮换会各自读旧列表，后写的把先轮换出的新 key 丢掉（旧 key 已到期，新 key 又没了 = 直接失联）。
+     * 定位与签发同在一把锁内完成，不再用锁外的旧快照。 */
+    const out = await mutateKeys(ctx, async (keys) => {
+      const src = keys.find((k) => k.id === body.id)
+      if (!src) return { ok: false as const, status: 404, code: 'AGENT-4041', hint: 'key 不存在' }
+      if (src.status === 'revoked') return { ok: false as const, status: 400, code: 'AGENT-4001', hint: '已吊销的 key 不可轮换' }
+      const r = await buildKey(ctx, admin.username, src.type, { name: src.name, username: src.username, scope: src.scope, ipWhitelist: src.ipWhitelist })
+      if (!r.ok) return r
+      keys.push(r.rec)
+      return { ok: true as const, rec: r.rec, plain: r.plain, srcId: src.id }
+    })
+    if (!out.ok) return json(res, out.status, { ok: false, code: out.code, error: out.hint, hint: out.hint, requestId: env.rid }, { 'x-request-id': env.rid })
+    void audit(ctx, admin.username, 'agent-key-rotate', 'key:' + out.srcId, '-> key:' + out.rec.id + '（旧 key 到期自然失效）')
+    json(res, 200, { ok: true, key: out.plain, id: out.rec.id, expiresAt: out.rec.expiresAt, note: '旧 key 保留至自然到期（平滑迁移）' }, { 'x-request-id': env.rid })
+  }), 'agent-keys-rotate')
   /* ---------- 用户自助 my-keys（登录态） ---------- */
 
   svc.route('/privhub/api/agent/v1/my-keys', wrap(async (ctx, env, req, res) => {
@@ -1102,26 +1130,29 @@ export function apply(ctx: Context, config?: M2Config): void {
         }, { 'x-request-id': env.rid })
       }
       body.username = u.username
-      const r = await createKey(ctx, u.username, 'user', body)
+      const r = await buildKey(ctx, u.username, 'user', body)
       if (!r.ok) return json(res, r.status, { ok: false, code: r.code, error: r.hint, hint: r.hint, requestId: env.rid }, { 'x-request-id': env.rid })
+      await mutateKeys(ctx, (keys) => { keys.push(r.rec) })
       void audit(ctx, u.username, 'agent-key-create', 'key:' + r.rec.id, '自助申请 scope=' + JSON.stringify(r.rec.scope))
       json(res, 200, { ok: true, key: r.plain, id: r.rec.id, name: r.rec.name, scope: r.rec.scope, expiresAt: r.rec.expiresAt, note: '明文仅此一次返回；密钥按自然月周期自动失效，到期前请续期' }, { 'x-request-id': env.rid })
       return
     }
     if (req.method === 'DELETE') {
       let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
-      const keys = await loadKeys(ctx)
-      const rec = keys.find((k) => k.id === body.id && k.username === u.username)
+      /* D6：自助吊销与管理端签发/吊销走同一把锁，理由同管理端吊销。 */
+      const rec = await mutateKeys(ctx, (keys) => {
+        const hit = keys.find((k) => k.id === body.id && k.username === u.username)
+        if (!hit) return null
+        hit.status = 'revoked'
+        return hit
+      })
       if (!rec) return json(res, 404, { ok: false, code: 'AGENT-4041', error: 'key 不存在', hint: '仅可吊销自己的 key', requestId: env.rid }, { 'x-request-id': env.rid })
-      rec.status = 'revoked'
-      await saveKeys(ctx, keys)
       void audit(ctx, u.username, 'agent-key-revoke', 'key:' + rec.id, '自助吊销')
       json(res, 200, { ok: true }, { 'x-request-id': env.rid })
       return
     }
     json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST/DELETE', requestId: env.rid }, { 'x-request-id': env.rid })
-  }, 'agent-my-keys'))
-
+  }), 'agent-my-keys')
   /* ---------- 沙箱回收站（admin 登录态） ---------- */
 
   /**
@@ -1151,8 +1182,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       return !user || owner === user
     })
     json(res, 200, { ok: true, trash: mine }, { 'x-request-id': env.rid })
-  }, 'agent-trash'))
-
+  }), 'agent-trash')
   for (const [op, fn] of [['restore', 'restoreTrash'], ['purge', 'purgeTrash']] as const) {
     svc.route('/privhub/api/agent/v1/trash/' + op, wrap(async (ctx, env, req, res) => {
       const admin = adminOnly(env, req, res); if (!admin) return
@@ -1167,7 +1197,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       if (owner !== null) await quota.recalc(ctx, owner)
       void audit(ctx, admin.username, 'agent-trash-' + op, 'trash:' + tId, rec ? rec.project + '/' + rec.relPath : '')
       json(res, 200, { ok: true }, { 'x-request-id': env.rid })
-    }, 'agent-trash-' + op))
+    }), 'agent-trash-' + op)
   }
 
   console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 沙箱=个人空间 / 配额限流 / 版本快照）')

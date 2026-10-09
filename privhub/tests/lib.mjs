@@ -91,6 +91,7 @@ export function req(method, path, opts = {}) {
 export const GET = (p, o) => req('GET', p, o)
 export const POST = (p, o) => req('POST', p, o)
 export const PUT = (p, o) => req('PUT', p, o)
+export const PATCH = (p, o) => req('PATCH', p, o)
 export const DEL = (p, o) => req('DELETE', p, o)
 
 /* ---------------- 业务辅助 ---------------- */

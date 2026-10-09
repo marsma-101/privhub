@@ -344,5 +344,6 @@ export function apply(ctx: Context, config: Config): void {
   const timer = setInterval(() => { void svc.pruneNow().catch(() => { /* 忽略 */ }) }, 30 * 60 * 1000)
   if (typeof timer.unref === 'function') timer.unref()
   ctx.effect(() => () => clearInterval(timer))
-  ctx.on('dispose', () => { void svc.pruneNow().catch(() => { /* 忽略 */ }) })
+  /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
+  ctx.effect(() => () => { void svc.pruneNow().catch(() => { /* 忽略 */ }) })
 }

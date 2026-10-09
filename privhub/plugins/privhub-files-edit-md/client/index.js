@@ -736,7 +736,7 @@ const MdEditor = {
           <span :style="{ color: /失败|错误|取消/.test(status) ? 'var(--danger)' : 'var(--muted)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '45%' }">{{ status }}</span>
           <span style="flex:1"></span>
           <!-- 三态按钮排：保存 ｜ 预览 ｜ 分屏 ｜ 只读。选中样式复用骨架既有的 .icon-btn.on
-               （index.html 里就有：color/border=var(--accent)、底色 rgba(90,130,200,.1)）——
+               （index.html 里就有：color/border=var(--accent)、底色 var(--accent-soft)）——
                不新增 CSS、不引入新主题。再点一次选中态即回「纯编辑」。 -->
           <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
           <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
@@ -803,7 +803,7 @@ const MdEditor = {
     </teleport>
 
     <!-- ===== 全屏浮层模式（无内容区时兜底，保留旧交互） ===== -->
-    <div v-if="open && mode === 'float'" class="md-editor-mask" style="position:fixed;inset:0;z-index:200;background:rgba(10,14,20,.55);display:flex;align-items:center;justify-content:center">
+    <div v-if="open && mode === 'float'" class="md-editor-mask" style="position:fixed;inset:0;z-index:var(--z-modal,200);background:rgba(10,14,20,.55);display:flex;align-items:center;justify-content:center">
       <div style="width:92vw;max-width:1200px;height:88vh;background:var(--panel);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line)">
         <!-- 头部 -->
         <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel2)">

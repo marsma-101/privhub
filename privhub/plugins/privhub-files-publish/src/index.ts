@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-publish'
 export const inject = ['storage', 'privhub']
@@ -37,8 +37,8 @@ const FILE = join(rootDir, 'data', 'publish.json')
 type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }
 
 async function load(storage: StorageLike): Promise<Pub[]> {
-  if (!existsSync(FILE)) return []
-  try { return JSON.parse(await storage.readText(FILE)) as Pub[] } catch { return [] }
+  /* D4：发布码库损坏 → 隔离存证 + 抛错。静默当空会让下一次发布把已有发布链接全部清空。 */
+  return readJsonStore<Pub[]>(storage, FILE, [])
 }
 async function save(storage: StorageLike, list: Pub[]): Promise<void> {
   await storage.writeText(FILE, JSON.stringify(list, null, 2))
@@ -61,12 +61,8 @@ function genCode(len = 12): string {
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    resolveReal: (project: string, relPath: string) => Promise<string | null>
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
 
   /* 发布（可读权限即可发布）/ 撤销（创建者/admin） */
   svc.route('/privhub/api/publish', async (req, res) => {
@@ -75,12 +71,15 @@ export function apply(ctx: Context): void {
     if (req.method === 'DELETE') {
       const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
       const code = url.searchParams.get('code') ?? ''
-      const list = await load(ctx.storage)
-      const hit = list.find(p => p.code === code)
-      if (!hit) return json(res, 404, { ok: false, error: '发布不存在' })
-      if (hit.createdBy !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅创建者或管理员可撤销' })
-      await save(list.filter(p => p.code !== code))
-      json(res, 200, { ok: true })
+      /* D6：发布列表是读-改-写，且「发布」与「撤销」共用一份文件 —— 同锁互斥。 */
+      await svc.withFileLock(FILE, async () => {
+        const list = await load(ctx.storage)
+        const hit = list.find(p => p.code === code)
+        if (!hit) return json(res, 404, { ok: false, error: '发布不存在' })
+        if (hit.createdBy !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅创建者或管理员可撤销' })
+        await save(ctx.storage, list.filter(p => p.code !== code))
+        json(res, 200, { ok: true })
+      })
       return
     }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
@@ -92,22 +91,27 @@ export function apply(ctx: Context): void {
     if (extname(path).toLowerCase() !== '.html') return json(res, 400, { ok: false, error: '仅支持 .html 页面发布' })
     const target = await svc.resolveReal(project, path)
     if (target === null || !existsSync(target)) return json(res, 404, { ok: false, error: '文件不存在' })
-    const list = await load(ctx.storage)
-    // 同一文件重复发布 → 复用旧链接
-    const existing = list.find(p => p.project === project && p.path === path)
-    if (existing) return json(res, 200, { ok: true, code: existing.code, url: '/pub?code=' + existing.code, reused: true })
-    const code = genCode()
     const expiresHours = Number(body.expiresHours ?? '0')
-    list.push({
-      code,
-      project,
-      path,
-      createdBy: u.username,
-      createdAt: Date.now(),
-      expiresAt: expiresHours > 0 ? Date.now() + expiresHours * 3600 * 1000 : null,
+    /* D6：并发的两次「发布」会各自读到旧列表再写回，后写的把先发的链接丢掉 ——
+     * 那条链接已经散出去了，但库里查不到，只能整条重发。整段置锁。 */
+    const created = await svc.withFileLock(FILE, async () => {
+      const list = await load(ctx.storage)
+      // 同一文件重复发布 → 复用旧链接
+      const existing = list.find(p => p.project === project && p.path === path)
+      if (existing) return { code: existing.code, reused: true }
+      const code = genCode()
+      list.push({
+        code,
+        project,
+        path,
+        createdBy: u.username,
+        createdAt: Date.now(),
+        expiresAt: expiresHours > 0 ? Date.now() + expiresHours * 3600 * 1000 : null,
+      })
+      await save(ctx.storage, list)
+      return { code, reused: false }
     })
-    await save(ctx.storage, list)
-    json(res, 200, { ok: true, code, url: '/pub?code=' + code, reused: false })
+    json(res, 200, { ok: true, code: created.code, url: '/pub?code=' + created.code, reused: created.reused })
   }, 'publish')
 
   /* 发布列表（我的；admin 全部） */

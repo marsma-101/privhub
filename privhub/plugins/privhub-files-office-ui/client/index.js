@@ -134,7 +134,7 @@ const OfficeEditor = {
   },
   beforeUnmount() { if (this._off) this._off() },
   template: `
-    <div v-if="open" class="md-editor-mask" style="position:fixed;inset:0;z-index:200;background:rgba(10,14,20,.55);display:flex;align-items:center;justify-content:center">
+    <div v-if="open" class="md-editor-mask" style="position:fixed;inset:0;z-index:var(--z-modal,200);background:rgba(10,14,20,.55);display:flex;align-items:center;justify-content:center">
       <div style="width:92vw;max-width:1100px;height:88vh;background:var(--panel);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line)">
         <!-- 头部 -->
         <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel2)">

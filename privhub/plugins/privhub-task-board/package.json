@@ -1,0 +1,8 @@
+{
+  "name": "privhub-task-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub 每项目任务看板（PLAN-01 第 1 期）：列/卡片/拖拽，文件联动，仅人类写入",
+  "main": "src/index.ts"
+}

@@ -240,7 +240,7 @@ const TemplateDoc = {
                   class="wiz-fmt-card"
                   @click="chooseFmt(f)"
                   style="padding:12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;display:flex;gap:10px;align-items:center"
-                  :style="fmt === f.id ? 'border-color:var(--accent);background:rgba(90,130,200,.12)' : 'background:var(--panel2)'"
+                  :style="fmt === f.id ? 'border-color:var(--accent);background:var(--accent-soft, rgba(90,130,200,.12))' : 'background:var(--panel2)'"
                 >
                   <span style="font-size:22px">{{ f.icon }}</span>
                   <span style="min-width:0">
@@ -257,14 +257,14 @@ const TemplateDoc = {
                     class="wiz-tpl-chip"
                     @click="pickTemplate(null)"
                     style="padding:4px 10px;border-radius:14px;border:1px solid var(--line);cursor:pointer;font-size:12px"
-                    :style="pick === '' ? 'border-color:var(--accent);background:rgba(90,130,200,.14);color:var(--accent)' : 'background:var(--panel2);color:var(--muted)'"
+                    :style="pick === '' ? 'border-color:var(--accent);background:var(--accent-soft, rgba(90,130,200,.14));color:var(--accent)' : 'background:var(--panel2);color:var(--muted)'"
                   >⬜ 空白文档</span>
                   <span
                     v-for="t in templates" :key="t.id"
                     class="wiz-tpl-chip"
                     @click="pickTemplate(t)"
                     style="padding:4px 10px;border-radius:14px;border:1px solid var(--line);cursor:pointer;font-size:12px"
-                    :style="pick === t.id ? 'border-color:var(--accent);background:rgba(90,130,200,.14);color:var(--accent)' : 'background:var(--panel2);color:var(--muted)'"
+                    :style="pick === t.id ? 'border-color:var(--accent);background:var(--accent-soft, rgba(90,130,200,.14));color:var(--accent)' : 'background:var(--panel2);color:var(--muted)'"
                     :title="t.description"
                   >{{ t.name }}</span>
                 </div>
@@ -296,13 +296,13 @@ const TemplateDoc = {
               <label>保存到「{{ projectName }}」中的目录：</label>
               <div v-if="dirLoading" style="color:var(--muted);font-size:12.5px;padding:12px 0">正在加载目录…</div>
               <div v-else style="border:1px solid var(--line);border-radius:8px;max-height:300px;overflow:auto;margin-top:6px;background:var(--panel2)">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:7px 10px;border-bottom:1px dashed var(--line)" :style="{ background: dir === '' ? 'rgba(90,130,200,.12)' : '' }">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:7px 10px;border-bottom:1px dashed var(--line)" :style="{ background: dir === '' ? 'var(--accent-soft, rgba(90,130,200,.12))' : '' }">
                   <input type="radio" v-model="dir" value="" /> 🏠 项目根目录
                 </label>
                 <label
                   v-for="d in dirTree" :key="d.path"
                   style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:7px 10px;border-bottom:1px dashed var(--line)"
-                  :style="{ paddingLeft: (10 + d.depth * 18) + 'px', background: dir === d.path ? 'rgba(90,130,200,.12)' : '' }"
+                  :style="{ paddingLeft: (10 + d.depth * 18) + 'px', background: dir === d.path ? 'var(--accent-soft, rgba(90,130,200,.12))' : '' }"
                 >
                   <input type="radio" v-model="dir" :value="d.path" /> 📁 {{ d.name }}
                 </label>

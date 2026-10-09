@@ -300,6 +300,44 @@ for (const f of files) undef.push(...findUndefined(f.name, readFileSync(f.file, 
 ok(undef.length === 0, `模板插值变量均有定义${undef.length ? '（' + undef.length + ' 处）' : ''}`)
 for (const p of undef.slice(0, 15)) console.log('       ' + p)
 
+/* ---- 3b. 工作台：AI 连接状态与 svc-model 同源 ---- *
+ * 工作台首页那张「AI 连接状态」卡把 svc-model 的六种自检结果翻译成中文与灯色。
+ * 这里不重复抄一份期望值，而是【从 svc-model 的真源解析】状态枚举再比对：
+ * 日后 svc-model 加第七种状态，忘了同步工作台就会在这里红，而不是在用户面前
+ * 变成一个永远显示不出的死键（静默退化成「未知」）。 */
+console.log('\n── 工作台：AI 连接状态与 svc-model 同源 ──')
+
+/* 读源码做正则可不能依赖行尾：本仓 autocrlf=true，工作区里 LF/CRLF 混着，
+ * 而 `\n\n` / `\n}` 这类锚点在 CRLF 文件上一条都匹配不到 —— 会变成「看着通过其实没验」，
+ * 或反过来误报。统一先归一化再匹配。 */
+const asLF = (p) => readFileSync(join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
+const homeSrc = asLF('plugins/privhub-shell-home/client/index.js')
+const modelSrc = asLF('plugins/privhub-svc-model/src/index.ts')
+
+/* 联合类型的边界是「下一个顶层 export」，不是空行 —— 空行只是排版，随时会挪 */
+const healthBlock = (/export type ModelHealth =([\s\S]*?)\nexport /.exec(modelSrc) || [, ''])[1]
+const healthStatuses = [...healthBlock.matchAll(/status:\s*'([\w-]+)'/g)].map((m) => m[1])
+
+const blockOf = (name) => (new RegExp('const ' + name + ' = \\{([\\s\\S]*?)\\n\\}').exec(homeSrc) || [, ''])[1]
+const textKeys = [...blockOf('STATUS_TEXT').matchAll(/'?([\w-]+)'?\s*:/g)].map((m) => m[1])
+const dotKeys = [...blockOf('STATUS_DOT').matchAll(/'?([\w-]+)'?\s*:/g)].map((m) => m[1])
+const dotVals = [...blockOf('STATUS_DOT').matchAll(/:\s*'([\w-]+)'/g)].map((m) => m[1])
+
+ok(healthStatuses.length === 6, `从 svc-model 真源解析出 6 种模型状态（${healthStatuses.join(', ')}）`)
+const missText = healthStatuses.filter((s) => !textKeys.includes(s))
+ok(missText.length === 0, `工作台 STATUS_TEXT 覆盖全部模型状态${missText.length ? '，缺：' + missText.join(', ') : ''}`)
+const missDot = healthStatuses.filter((s) => !dotKeys.includes(s))
+ok(missDot.length === 0, `工作台 STATUS_DOT 覆盖全部模型状态${missDot.length ? '，缺：' + missDot.join(', ') : ''}`)
+const extra = textKeys.filter((s) => !healthStatuses.includes(s))
+ok(extra.length === 0, `工作台没有 svc-model 不认识的状态键${extra.length ? '，多出：' + extra.join(', ') : ''}`)
+ok(dotVals.length > 0 && dotVals.every((v) => ['ok', 'warn', 'bad'].includes(v)),
+  `状态灯只用 ok/warn/bad 三个类（实测 ${[...new Set(dotVals)].join(', ')}）`)
+
+/* 非管理员点开工作台不该去碰 admin-only 的模型接口：那会白白产生一个必然 403 的请求 */
+const loadModelBody = (/async loadModel\([\s\S]*?\n    \},/.exec(homeSrc) || [''])[0]
+ok(/if \(!this\.isAdmin\) return/.test(loadModelBody),
+  '工作台请求模型接口前先判 isAdmin（普通用户不产生必然 403 的请求）')
+
 /* ---- 4. 已知显示 bug 的回归断言 ---- */
 console.log('\n── 已知显示 bug 回归 ──')
 const tplSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files-template', 'client', 'index.js'), 'utf8')
@@ -307,10 +345,49 @@ ok(/<label v-pre>\s*内容（\{\{date\}\} 会被替换为当天日期）/.test(t
   '模板编辑面板 {{date}} 用 v-pre 字面展示（否则渲染成空白）')
 
 const skeletonSrc = readFileSync(join(ROOT, 'frontend', 'index.html'), 'utf8')
-const wm = /\.watermark-overlay\s*\{[^}]*z-index:\s*(\d+)/.exec(skeletonSrc)
-const qz = /📥 上传队列[\s\S]{0,400}?z-index:\s*(\d+)/.exec(skeletonSrc)
-ok(wm && Number(wm[1]) > 1200,
-  `水印 z-index (${wm ? wm[1] : '?'}) 高于上传队列抽屉 (1200) —— 防截屏水印不被遮挡`)
+
+/* ---- 4b. 骨架 CSS 令牌层（FE-03 P1-1 / P1-2 / P2-1）----
+ * 骨架的样式层从「逐处手写 px 与 z-index 魔数」改成「一套写下来的令牌」。
+ * 断言方式必须跟着换：不再比对某个字面量，而是校验契约本身 ——
+ * 层级顺序、以及每个 var() 引用都真的被定义过（打字错一个字母就是静默失效）。 */
+const skStyle = skeletonSrc.slice(skeletonSrc.indexOf('<style>'), skeletonSrc.indexOf('</style>'))
+/* 注释里为了讲清楚历史会引用旧数值（「原 z-index:999 …」），
+ * 逐条断言前先去掉注释，否则断言会把解释文字当成代码。 */
+const skCss = skStyle.replace(/\/\*[\s\S]*?\*\//g, '')
+const tokDefs = new Map()
+for (const m of skCss.matchAll(/(--[a-zA-Z0-9-]+)\s*:\s*([^;}]+)/g)) tokDefs.set(m[1], m[2].trim())
+const tokRefs = [...skCss.matchAll(/var\((--[a-zA-Z0-9-]+)/g)].map((m) => m[1])
+const tokUndef = [...new Set(tokRefs)].filter((t) => !tokDefs.has(t))
+ok(tokUndef.length === 0,
+  `骨架里每个 var(--…) 都有定义（未定义 ${tokUndef.length} 个${tokUndef.length ? '：' + tokUndef.join(', ') : ''}）—— 打错一个令牌名不会报错，只会静默失效`)
+
+const zTok = (n) => Number(tokDefs.get('--z-' + n))
+const zChain = [['watermark', 2100], ['toast', null], ['panel', null], ['modal', null], ['tooltip', null], ['menu', null], ['scrim', null], ['drawer', null], ['raised', null]]
+ok(zChain.every(([n]) => Number.isFinite(zTok(n))),
+  `层级令牌九档齐全（实测 ${zChain.map(([n]) => n + '=' + zTok(n)).join(' ')}）`)
+const zOrder = zChain.map(([n]) => zTok(n))
+ok(zOrder.every((v, i) => i === 0 || zOrder[i - 1] > v),
+  `层级单调递减：水印 > 提示条 > 弹层 > 模态 > 悬浮提示 > 菜单 > 遮罩 > 抽屉 > 抬升`)
+ok(zTok('watermark') > zTok('drawer'),
+  `水印 (${zTok('watermark')}) 高于右下角抽屉/悬浮球 (${zTok('drawer')}) —— 防截屏水印不被遮挡`)
+ok(zTok('tooltip') < zTok('modal'),
+  `悬浮提示 (${zTok('tooltip')}) 低于模态遮罩 (${zTok('modal')}) —— 修掉了「弹窗开着时 hover 图标栏，tooltip 压在遮罩之上」的跨层倒置`)
+
+const wmRule = /\.watermark-overlay\s*\{[\s\S]*?\}/.exec(skCss)
+ok(wmRule && /z-index:\s*var\(--z-watermark\)/.test(wmRule[0]),
+  '水印用令牌书写（不再是一个可以和别的层撞车的字面量）')
+const bareZ = [...skCss.matchAll(/z-index:\s*(-?\d+)/g)].map((m) => m[1])
+ok(bareZ.length === 0,
+  `骨架里不再有写死的 z-index${bareZ.length ? '（还剩 ' + bareZ.join(', ') + '）' : ''}`)
+
+/* 令牌化必须是「零外观改动」：刻度值一律取已经存在的那个值。
+ * 这条断言守的是「有人顺手把 token 值改成 14px 之类的新值」——
+ * 真正需要眼睛的收敛（12.5 砍向谁）留白，不许偷偷塞进刻度里。 */
+const spVals = [...skCss.matchAll(/--sp-(\d):\s*(\d+)px/g)].map((m) => [Number(m[1]), Number(m[2])])
+ok(spVals.length >= 7 && spVals.every(([i, v], k) => (k === 0 ? v === 4 : v > spVals[k - 1][1])),
+  `间距刻度存在且递增（实测 ${spVals.map(([, v]) => v + 'px').join(' ')}）`)
+ok(/--fs-base:\s*13px/.test(skCss) && /--r-2:\s*6px/.test(skCss),
+  '字号/圆角刻度取的是迁前就在用的值（13px 正文、6px 圆角），不是新造一套')
 
 ok(/failedPlugins/.test(skeletonSrc) && /界面组件加载失败/.test(skeletonSrc),
   '插件加载失败时界面给出可见原因与重试入口（不再永久停在「加载中…」）')

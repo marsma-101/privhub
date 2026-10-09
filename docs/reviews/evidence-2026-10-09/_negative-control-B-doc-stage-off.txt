@@ -1,0 +1,19 @@
+# 阴性对照 B：把 `readDoc` 的 ①b（piece 表直读）临时停用，其余一字不动
+# 命令：cd <job tmp> && node e2e.mjs（对**真实用户文件**直调产品函数 readDoc）
+# 退出码：0
+# 变异：plugins/privhub-svc-office/src/office-lib.mjs:317
+#       const text = (await readDocPieceText(buf)).trim()  →  const text = ''
+# 注：正文片段在入库时已隐去（用户内容不入库）。
+
+=== .doc：data-files/AI小说研究/参考文/2.男频小说投稿信誉网站.doc（解密后 59904 字节）===
+[改前 · 主路 getBody()] 长度=2  内容="\n\n"
+[readDoc] ok=false reason=empty detail=该 .doc 能解析但没有正文内容
+
+=== xlsx：...（同一次运行，不受影响）===
+  [排播] rows=3320 totalRows=3320 truncatedRows=false totalCols=18 truncatedCols=false
+
+# 读数：①b 一停，这份真件立刻回到**改前症状** —— 主路仍是 "\n\n"（2 字符），
+#   readDoc 也只能如实回 `ok:false reason=empty`（旧行为；至少不是假装成功）。
+# 这条同时说明**套件的边界**：⑦ 组测的是 `parseWordPieceText` 纯函数，把它停用后
+#   ⑦ 组**仍绿**（函数还在、也还正确）。真件的成败只有端到端这条线才抓得住 ——
+#   这正是本报告把它单列出来的原因，也是 §5 里如实写明的一条限度。

@@ -39,7 +39,7 @@ styleEl.textContent = `
 mark.v3-cmt { background: rgba(230,180,60,.35); border-bottom: 2px solid #e6b43c; border-radius: 3px; padding: 0 1px; cursor: pointer; }
 mark.v3-cmt:hover { background: rgba(230,180,60,.55); }
 mark.v3-cmt.resolved { opacity: .4; }
-.v3-cmt-btn { position: fixed; z-index: 1200; background: var(--accent); color: #fff; border: none; border-radius: 16px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.v3-cmt-btn { position: fixed; z-index: var(--z-drawer, 1200); background: var(--accent-solid, var(--accent)); color: #fff; border: none; border-radius: 16px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
 .v3-cmt-btn:hover { filter: brightness(1.1); }
 `
 document.head.appendChild(styleEl)

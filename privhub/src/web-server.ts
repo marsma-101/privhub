@@ -301,9 +301,22 @@ export class WebServerService extends Service {
           /* O3/07 修复：此处是全站【唯一】兜底 catch —— 此前它把异常整个吞掉
            * （e 未被使用、无任何日志），表现为「接口 500 但日志里查不到原因」。
            * 现在把异常写进系统日志（console 已被 main.ts 的 installFileLogger
-           * 接到 data/logs/privhub-YYYY-MM-DD.log），响应行为保持原样：仍是 500。 */
+           * 接到 data/logs/privhub-YYYY-MM-DD.log），响应行为保持原样：仍是 500。
+           *
+           * D4：被显式标记 `userVisible` 的异常（如系统数据损坏 `CorruptDataError`）
+           * 例外 —— 这类消息本就是写给用户看的中文说明，回一句 `internal server error`
+           * 等于把「为什么操作中止」藏起来。信封与状态码不变（仍是 500 +
+           * `{ok:false,error}`），只是不再吞掉原因；其余异常一律不泄露细节。 */
           console.error('[webServer] 路由处理异常 ' + req.method + ' ' + (req.url ?? '') + ':', e)
-          try { res.writeHead(500); res.end('internal server error') } catch { /* 忽略 */ }
+          try {
+            if ((e as { userVisible?: boolean } | null)?.userVisible === true) {
+              const body = Buffer.from(JSON.stringify({ ok: false, error: (e as Error).message }), 'utf8')
+              res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(body.length) })
+              res.end(body)
+            } else {
+              res.writeHead(500); res.end('internal server error')
+            }
+          } catch { /* 忽略 */ }
         }
       })()
     })

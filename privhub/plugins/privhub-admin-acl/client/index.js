@@ -151,7 +151,7 @@ const AclAdmin = {
                 <div
                   v-for="e in entries" :key="e.name"
                   style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer"
-                  :style="selected && selected.name === e.name ? 'background:rgba(90,130,200,.22)' : ''"
+                  :style="selected && selected.name === e.name ? 'background:var(--accent-soft, rgba(90,130,200,.22))' : ''"
                   @click="e.isDir ? enterDir(e) : select(e)"
                 >
                   <span>{{ e.isDir ? '📁' : '📄' }}</span>

@@ -27,7 +27,9 @@
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto'
 import { readFile, writeFile, mkdir, rename, readdir, stat, rm } from 'node:fs/promises'
 import { createReadStream as fsCreateReadStream, createWriteStream as fsCreateWriteStream, existsSync } from 'node:fs'
-import { join, dirname, relative } from 'node:path'
+import type { Dirent } from 'node:fs'
+import type { Readable, Writable } from 'node:stream'
+import { join, dirname, relative, basename, resolve, sep } from 'node:path'
 import { Transform } from 'node:stream'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -36,6 +38,16 @@ import z from '@deepseek-ai/schemastery'
 /** 密文文件头：magic 8 字节（"PHENC1\0" + 版本 1）+ IV 12 字节 = 20 字节；tag 在密文末尾（16 字节）。 */
 const MAGIC = Buffer.from([0x50, 0x48, 0x45, 0x4e, 0x43, 0x31, 0x00, 0x01]) // "PHENC1\0\x01"
 const HEADER_LEN = MAGIC.length + 12 // 20
+
+/** 把一个可读流收成 Buffer（`readRange` 的明文分支用；`readOleStream` 在 office 那边是同一件事）。 */
+function collectStream(stream: Readable): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    stream.on('data', (c) => chunks.push(c as Buffer))
+    stream.on('error', reject)
+    stream.on('end', () => resolve(Buffer.concat(chunks)))
+  })
+}
 
 export interface Config {
   /** 总开关；false = 明文直通（读自动识别密文仍可解） */
@@ -59,6 +71,29 @@ declare module '@deepseek-ai/cordis' {
 }
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
+/** 一个仍以明文落盘的系统数据文件。 */
+export interface PlaintextFile {
+  /** 绝对路径 */
+  file: string
+  bytes: number
+}
+
+/** 单文件迁移结果。「拒绝」是一种结果，不是沉默 —— 调用方必须能看出哪些没动、以及为什么。 */
+export interface FileMigrateResult {
+  file: string
+  status: 'migrated' | 'already-encrypted' | 'refused' | 'failed'
+  reason?: string
+  /** 迁移前明文的备份路径（迁移成功或失败都可能留有备份） */
+  backup?: string
+}
+
+const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+/** 迁移备份用的时间戳（文件名安全：无冒号、无空格）。 */
+function stamp(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-')
+}
 
 export class StorageService extends Service {
   private key: Buffer | null = null
@@ -172,6 +207,20 @@ export class StorageService extends Service {
     } catch { return false }
   }
 
+  /**
+   * **明文**长度（字节）—— 盘上文件的长度对密文来说**不等于**内容长度。
+   *
+   * 为什么必须单独有这个方法：`Content-Range` 里的 `total` 必须是**浏览器看到的那串字节**的长度，
+   * 而 `<video>` 的偏移量是相对**播放内容**算的。密文在盘上多出 20 字节头 + 16 字节 tag，
+   * 若拿 `stat().size` 当 `total`，浏览器算出的区间会整体错位（表现为"拖到某处就卡死/报错"）。
+   * 明文件原样返回 `stat().size`。
+   */
+  async plainSize(file: string): Promise<number> {
+    const st = await stat(file)
+    if (!(await this.isEncrypted(file))) return st.size
+    return st.size - HEADER_LEN - 16
+  }
+
   /* ---------- 文本/Buffer 读写（透明） ---------- */
 
   async readText(file: string): Promise<string> {
@@ -182,6 +231,106 @@ export class StorageService extends Service {
 
   async readBuffer(file: string): Promise<Buffer> {
     return this.decryptBuffer(await readFile(file))
+  }
+
+  /**
+   * 读取**明文字节区间** `[start, end]`（含端点）—— 音视频预览的 HTTP Range 要用（2026-10-09）。
+   *
+   * ## 为什么这件事必须在 storage 里做，而不是在路由里
+   *
+   * 盘上的用户文件是 **PHENC1 密文**（AES-256-GCM）。密文**没有可随机访问的索引**：
+   * 认证 tag 在**文件末尾**、keystream 必须从头逐块推进 ⇒ 「seek 到第 N 字节」在密文上**做不到**。
+   * 这个约束只有 storage 知道（密钥、头长、tag 位置都在这里），所以能力放在这里，
+   * 路由只表达"我要 [start,end] 这一段"。
+   *
+   * 两条路：
+   *   · **明文**文件（未迁移的旧数据，或 `enabled:false`）→ 真区间读：`createReadStream(file,{start,end})`，零多余开销；
+   *   · **密文**文件 → 从头解密、**丢弃**前 `start` 字节，凑够 `end-start+1` 字节即停。
+   *
+   * ## 代价（明说，不藏）
+   *
+   * 密文上一次区间读的 CPU 是 **O(end)** —— 与"区间从哪开始"有关，与区间长度无关。
+   * 这与浏览器播视频的行为匹配（每次只要一小段，但落点随拖动而变）：
+   * **首帧便宜，拖到后段要看"解密到那一段"的价格**。1 GB 的视频拖到 90% 处，
+   * 服务端要解约 900 MB。局域网单用户可接受；要更快得改成"加密块 + 块索引"（另开专项）。
+   *
+   * ## 认证（如实记，这是本方法的**真实弱点**）
+   *
+   * GCM 的 tag 只有**读到文件末尾**才校验得了。整段读（`readBuffer` / `decryptBuffer`）会校验；
+   * **部分区间读不会**（读到 `end` 就停）⇒ 区间里出来的是**未经认证**的明文。
+   * 换句话说：若密文在中途被篡改，整段读会抛错，区间读**看不出来**。
+   * 这是"能拖进度条"换来的，写在 `docs/reviews/17-音视频预览.md` §5。
+   * （不作为安全问题处理的原因：攻击者要改盘上文件得先有盘上写权限，那时他直接读明文更省事。）
+   *
+   * 越界参数（`start < 0` / `end < start` / `end ≥ 明文长度`）一律**抛错**，由调用方转 416 —
+   * 不静默截断，因为"静默给一段错位的数据"是比 416 坏得多的行为。
+   */
+  async readRange(file: string, start: number, end: number): Promise<Buffer> {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
+      throw new Error(`readRange: 区间非法 [${start}, ${end}]`)
+    }
+    const want = end - start + 1
+    const encrypted = await this.isEncrypted(file)
+
+    if (!encrypted) {
+      /* 明文：真区间读。文件不足 end+1 字节时 readStream 会自然少给 —— 由下面的长度校验兜住。 */
+      const st = await stat(file)
+      if (end >= st.size) throw new Error(`readRange: 区间越界（文件 ${st.size} 字节，请求到 ${end}）`)
+      return await collectStream(fsCreateReadStream(file, { start, end }))
+    }
+
+    /* 密文：解头 → 解尾 tag → 逐块解密并跳过前 start 字节。 */
+    const key = await this.ensureKey()
+    const fh = await import('node:fs/promises').then((m) => m.open(file, 'r'))
+    let head: Buffer
+    let tail: Buffer
+    let size = 0
+    try {
+      const st = await fh.stat()
+      size = st.size
+      if (size < HEADER_LEN + 16) throw new Error('readRange: 密文文件不完整')
+      head = Buffer.alloc(HEADER_LEN)
+      await fh.read(head, 0, HEADER_LEN, 0)
+      tail = Buffer.alloc(16)
+      await fh.read(tail, 0, 16, size - 16)
+    } finally { await fh.close() }
+
+    const plainLen = size - HEADER_LEN - 16
+    if (end >= plainLen) throw new Error(`readRange: 区间越界（明文 ${plainLen} 字节，请求到 ${end}）`)
+
+    const decipher = createDecipheriv('aes-256-gcm', key, head.subarray(MAGIC.length, HEADER_LEN))
+    decipher.setAuthTag(tail)
+    const bodyStream = fsCreateReadStream(file, { start: HEADER_LEN, end: size - 17 })
+    bodyStream.on('error', (e) => decipher.destroy(e))
+    bodyStream.pipe(decipher)
+
+    /* 手动迭代而不是 for-await：凑够就停，且**显式销毁两端**。
+     * 为什么不能靠 for-await 的 break：`pipe` 在目的端被销毁时**不会**销毁源端
+     * （Node 的 pipe 只做 unpipe），源端若不流动就漏一个 fd —— 每个 Range 请求漏一个。 */
+    const chunks: Buffer[] = []
+    let need = want
+    let skip = start
+    try {
+      for await (const chunk of decipher) {
+        const buf = chunk as Buffer
+        if (skip >= buf.length) { skip -= buf.length; continue }
+        const piece = skip > 0 ? buf.subarray(skip) : buf
+        skip = 0
+        if (piece.length >= need) { chunks.push(piece.subarray(0, need)); need = 0; break }
+        chunks.push(piece)
+        need -= piece.length
+      }
+    } finally {
+      decipher.destroy()
+      bodyStream.destroy()
+    }
+    const out = Buffer.concat(chunks)
+    if (out.length !== want) {
+      /* 到这里只可能是文件在读取途中被改短（或 tag 校验失败被 destroy）。
+       * 如实抛，让路由回 416/500 —— 不给半截数据。 */
+      throw new Error(`readRange: 只取到 ${out.length} 字节，请求 ${want} 字节`)
+    }
+    return out
   }
 
   async writeText(file: string, text: string): Promise<void> {
@@ -214,7 +363,7 @@ export class StorageService extends Service {
   /** 加密写流（async：先写头；cipher 数据流末尾手动追加 GCM tag）。
    *  返回 { stream, done }：done 在文件全部落盘（close）后 resolve，
    *  调用方须 await done 后再 rename/返回（避免 tag 未写完）。 */
-  async createWriteStream(file: string): Promise<{ stream: NodeJS.WritableStream; done: Promise<void> }> {
+  async createWriteStream(file: string): Promise<{ stream: Writable; done: Promise<void> }> {
     if (!this.enabled) {
       const s = fsCreateWriteStream(file)
       const done = new Promise<void>((ok, fail) => { s.on('close', ok); s.on('error', fail) })
@@ -237,7 +386,7 @@ export class StorageService extends Service {
   }
 
   /** 解密读流（async：读头判定；密文则手动取末尾 tag，流式解 body）。 */
-  async createReadStream(file: string): Promise<NodeJS.ReadableStream> {
+  async createReadStream(file: string): Promise<Readable> {
     const fh = await import('node:fs/promises').then((m) => m.open(file, 'r'))
     const head = Buffer.alloc(HEADER_LEN)
     const { bytesRead } = await fh.read(head, 0, HEADER_LEN, 0)
@@ -364,33 +513,109 @@ export class StorageService extends Service {
 
   /* ---------- 迁移（明文 → 密文） ---------- */
 
-  /** 递归迁移目录内所有文件（跳过已加密/隐藏项）；返回迁移数。 */
-  async migrateTree(dir: string, skipHidden = true): Promise<{ migrated: number; skipped: number }> {
-    return this.migrateTreeExclude(dir, [], skipHidden)
+  /**
+   * 该路径是否**绝不允许**被包成 PHENC1。
+   *
+   * 背景：这里原先是个递归遍历整目录的 `migrateTree`。它对最自然的调用
+   * `migrateTree(dataDir)` 会顺手做掉四件不可挽回的事：
+   *   ① 加密 `secret.key` —— 密钥没了，**全部密文永久不可恢复**；
+   *   ② 加密 `audit.jsonl` 与它的 `.damaged-*` 备份 —— 审计用的是自有块格式
+   *      （PHAUD1 头），外面再包一层 PHENC1 后 `auditScan` 一个块都读不出来；
+   *   ③ 加密 `data/logs/*.log` —— 文件日志是**明文追加**的，加密后新追加的行
+   *      会和密文混在一个文件里，两边都读不了；
+   *   ④ 加密 `data/git-backup/**` —— 那是个真 git 仓库（HEAD/config/objects），
+   *      内部文件被加密 = 备份全废。
+   * 一个无备份、原地写、能一键毁库的函数，而且全仓零调用 —— 所以直接换掉，
+   * 改成「显式清单 + 逐条守卫」，把「不能碰什么」写在代码里而不是留给调用方记住。
+   *
+   * @returns 拒绝原因；允许迁移则返回 null
+   */
+  private refuseReason(file: string): string | null {
+    if (!this.enabled) return '加密未启用（storage.enabled=false），迁移无意义'
+    /* 路径包含必须带分隔符比较：`data-files-x` 这类同前缀兄弟目录不能算「在 data-files 里」 */
+    const norm = resolve(file)
+    const under = (dir: string): boolean => {
+      const d = resolve(dir)
+      return norm === d || norm.startsWith(d.endsWith(sep) ? d : d + sep)
+    }
+    if (norm === resolve(this.keyFile)) return '这是密钥文件，加密它等于让所有密文永久不可恢复'
+    if (basename(norm).toLowerCase().startsWith('audit')) {
+      return '这是审计文件（自有 PHAUD1 加密块格式），再包一层 PHENC1 后 auditScan 读不出任何块'
+    }
+    if (under(join(rootDir, 'data', 'logs'))) return '应用日志是明文追加的，加密后会与后续追加内容混成乱码'
+    if (under(join(rootDir, 'data', 'git-backup'))) return '这是 git 仓库内部文件，加密会毁掉自动备份'
+    return null
   }
 
-  /** 递归迁移（支持排除文件名清单——密钥文件等绝不可加密）。 */
-  async migrateTreeExclude(dir: string, excludeFiles: string[], skipHidden = true): Promise<{ migrated: number; skipped: number }> {
-    let migrated = 0
-    let skipped = 0
-    if (!existsSync(dir)) return { migrated, skipped }
-    const entries = await readdir(dir, { withFileTypes: true })
+  /**
+   * 扫描「由 ctx.storage 管理、但仍以明文落盘」的系统数据文件。
+   *
+   * 只扫 `data/` **顶层**的 `*.json`，不递归：系统 JSON 全部住在那一层，
+   * 而递归正是上面那四类灾难的来源。已加密的、隐藏的、以及被守卫拒绝的都不出现在结果里
+   * （守卫拒绝项由 `migrateFilesToEncrypted` 显式报告，不在这里吞掉）。
+   */
+  async scanPlaintextSystemFiles(): Promise<PlaintextFile[]> {
+    const dir = join(rootDir, 'data')
+    let entries: Dirent[]
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return [] }
+    const out: PlaintextFile[] = []
     for (const e of entries) {
-      if (skipHidden && e.name.startsWith('.')) { skipped++; continue }
-      if (excludeFiles.includes(e.name)) { skipped++; continue }
+      if (!e.isFile() || e.name.startsWith('.') || !e.name.toLowerCase().endsWith('.json')) continue
       const full = join(dir, e.name)
-      if (e.isDirectory()) {
-        const r = await this.migrateTreeExclude(full, excludeFiles, skipHidden)
-        migrated += r.migrated
-        skipped += r.skipped
+      if (await this.isEncrypted(full)) continue
+      const s = await stat(full).catch(() => null)
+      out.push({ file: full, bytes: s ? s.size : 0 })
+    }
+    return out.sort((a, b) => a.file.localeCompare(b.file))
+  }
+
+  /**
+   * 把指定文件迁移为密文（安全版）。四道保险，缺一不可：
+   *   ① 逐条守卫 —— 密钥/审计/日志/git 备份一律拒绝，**并说明原因**（拒绝是一种结果，不是沉默）；
+   *   ② 先备份明文到 `<file>.plain-<时间戳>.bak`，备份写不成就**不动原文件**；
+   *   ③ 经 `writeBuffer` 原子替换（临时名 + rename），绝不原地截断 —— 中途断电不会留下空文件；
+   *   ④ 写完**回读逐字节比对**，不一致就还原明文并报失败。
+   *
+   * 为什么值得这么重：这一步要改的是**已经在盘上、且可能是最后一份**的旧数据。
+   * 迁移能重跑，覆写不能撤销。
+   */
+  async migrateFilesToEncrypted(files: string[]): Promise<FileMigrateResult[]> {
+    const out: FileMigrateResult[] = []
+    for (const file of files) {
+      const refused = this.refuseReason(file)
+      if (refused) { out.push({ file, status: 'refused', reason: refused }); continue }
+      if (!existsSync(file)) { out.push({ file, status: 'failed', reason: '文件不存在' }); continue }
+      if (await this.isEncrypted(file)) { out.push({ file, status: 'already-encrypted' }); continue }
+
+      let plain: Buffer
+      try { plain = await readFile(file) } catch (e) {
+        out.push({ file, status: 'failed', reason: '读取失败：' + msgOf(e) })
         continue
       }
-      if (await this.isEncrypted(full)) { skipped++; continue }
-      const plain = await readFile(full)
-      await this.writeBuffer(full, plain)
-      migrated++
+      const backup = `${file}.plain-${stamp()}.bak`
+      try {
+        // wx：备份文件必须是我们新建的，绝不去覆盖同名旧备份（那可能正是最后一份明文）
+        await writeFile(backup, plain, { flag: 'wx' })
+      } catch (e) {
+        out.push({ file, status: 'failed', reason: '备份失败，未改动原文件：' + msgOf(e) })
+        continue
+      }
+      try {
+        await this.writeBuffer(file, plain)
+        const back = await this.readBuffer(file)
+        if (!(await this.isEncrypted(file)) || !back.equals(plain)) throw new Error('回读校验不一致')
+        out.push({ file, status: 'migrated', backup })
+      } catch (e) {
+        // 宁可留明文，也不能留一个半截的密文
+        let restored = true
+        try { await writeFile(file, plain) } catch { restored = false }
+        out.push({
+          file, status: 'failed', backup,
+          reason: '迁移失败：' + msgOf(e) + (restored ? '（已还原明文）' : '⚠ 还原也失败了，请从备份手工恢复：' + basename(backup)),
+        })
+      }
     }
-    return { migrated, skipped }
+    return out
   }
 }
 
@@ -398,6 +623,28 @@ export class StorageService extends Service {
 export const name = 'privhub-svc-storage'
 export function apply(ctx: Context, config: Config): void {
   const svc = new StorageService(ctx, config)
+  /* 注意这里用 console 而不是 ctx.logger：本仓**没有任何 logger exporter**，
+   * `ctx.logger.warn(...)` 实测输出到虚空（不打印、不进 data/logs）。而 main.ts 的
+   * installFileLogger 是挂在 `console` 上的 —— 想让告警真的出现在
+   * `data/logs/privhub-YYYY-MM-DD.log` 里，就必须走 console。 */
   // 启动即确保密钥就绪（密钥缺失尽早暴露，而非首个请求时）
-  void svc.ensureKey().catch((e) => ctx.logger.error('[storage] 密钥初始化失败: ' + e.message))
+  void svc.ensureKey().catch((e) => console.error('[storage] 密钥初始化失败: ' + msgOf(e)))
+
+  /* 启动自检：还有哪些系统数据文件是明文。
+   * 只报告、**不擅自迁移** —— 启动时静默改写用户数据是比「明文」更糟的问题
+   * （没法复核、没处回退）。真正的迁移由管理员在管理端显式触发，走备份+校验那条路。 */
+  void (async () => {
+    try {
+      const files = await svc.scanPlaintextSystemFiles()
+      if (files.length === 0) return
+      console.warn('[storage] 有 ' + files.length + ' 个系统数据文件仍以明文落盘：'
+        + files.map((f) => basename(f.file)).join('、')
+        + '（管理员可执行 POST /privhub/api/storage/migrate 迁移为密文；迁移前会自动备份明文）')
+      for (const f of files) {
+        console.warn('[storage]   明文：' + f.file + '（' + f.bytes + ' 字节）')
+      }
+    } catch (e) {
+      console.warn('[storage] 明文扫描失败（不影响启动）：' + msgOf(e))
+    }
+  })()
 }

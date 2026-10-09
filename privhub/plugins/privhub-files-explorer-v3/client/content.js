@@ -4,7 +4,7 @@
  */
 
 import { api, bus } from './deps.js'
-import { rawUrl } from './utils.js'
+import { rawUrl, downloadUrl, textModeOf, extOf, mediaTagOf, isNativeMedia } from './utils.js'
 import { store } from './store.js'
 
 /* 自动进内嵌编辑态的体积闸（1 MB）。
@@ -25,6 +25,98 @@ import { store } from './store.js'
  *   代价远低于把同样一段内容灌进编辑器）。 */
 const AUTO_EDIT_MAX_BYTES = 1024 * 1024
 const utf8Bytes = (s) => (typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(s).length : s.length)
+
+/* ================= 只读预览的「结构化文本」子模式 =================
+ *
+ * 这是 nowen-note 的 `detectRenderMode` 在本仓的对应物：同一条文本预览分支、
+ * 同一份接口响应，按内容形态再选一次「怎么画」——
+ *   mode: ''（不认识的名字）→ 既有行为（`<pre>` 纯文本），一个字节都不变；
+ *   'table'（csv/tsv）    → 表格；
+ *   'json'                → 缩进美化。
+ *
+ * 三条设计约束（都来自本仓纪律，不是通用最佳实践）：
+ *   ① **只决定画法，不决定能不能打开**。能不能打开是后端 `readFileForPreview` 的 `type`；
+ *      这里的任何"解析不出来"都必须回落纯文本，不能让一个原本能看的文件变成打不开。
+ *   ② **不新增依赖、不新增请求**。正文已经从 `/api/preview` 到手，这里是纯字符串处理；
+ *      美化/表格失败一律回 `null`（调用方走原来的 `<pre>`），不存在"半截内容"。
+ *   ③ **有上限、且超限就整体回落**。宁可显示原文，也不显示一张被截断的表 ——
+ *      半张表比没有表更容易被当成"文件就这些内容"。 */
+
+/** 表格最多渲染这么多行 —— 超过就整体回落纯文本（不截断）。 */
+const MAX_TABLE_ROWS = 1000
+/** 表格最多渲染这么多列 —— 同上，超宽也整体回落（不静默丢列）。 */
+const MAX_TABLE_COLS = 60
+/** 超过这个体积就不做 JSON 美化（美化会再产出一份同样大的字符串）。 */
+const MAX_PRETTY_JSON_BYTES = 2 * 1024 * 1024
+
+/**
+ * 分隔符文本 → 二维数组；**返回 `null` 表示"不按表格渲染"**（行列不成立 / 超上限）。
+ *
+ * 支持的是 RFC4180 的常用子集：引号包裹、引号内换行、双写引号转义、CRLF / LF 混用。
+ * 不做的是：不认 `;`/`|` 等其它分隔符（列数判定全靠调用方给的这一个字符）。
+ *
+ * 超上限时**提前收工返回 `null`**，不把整份文件扫完 —— 一个几十 MB 的 csv 不该为了
+ * "看一眼"而全量解析。
+ */
+function parseDelimited(text, delim) {
+  const s = String(text == null ? '' : text)
+  const rows = []
+  let row = []
+  let cell = ''
+  let inQuotes = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { cell += '"'; i++ } else inQuotes = false
+      } else cell += ch
+      continue
+    }
+    if (ch === '"') { inQuotes = true; continue }
+    if (ch === delim) { row.push(cell); cell = ''; continue }
+    if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && s[i + 1] === '\n') i++
+      row.push(cell); cell = ''
+      rows.push(row); row = []
+      if (rows.length > MAX_TABLE_ROWS) return null
+      continue
+    }
+    cell += ch
+  }
+  /* 收尾：最后一行没有换行符时补上（`cell === '' && row.length === 0` 说明正好以换行结尾，
+   * 此时不补 —— 免得凭空多出一行空行）。 */
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row) }
+  if (rows.length > MAX_TABLE_ROWS) return null
+  let cols = 0
+  for (const r of rows) if (r.length > cols) cols = r.length
+  /* 少于两行或只有一列 ⇒ 它不是一张表（一列的文件和普通 txt 没有区别），回落纯文本。 */
+  if (rows.length < 2 || cols < 2) return null
+  if (cols > MAX_TABLE_COLS) return null
+  /* 行列补齐：短行补空串，保证 `<td>` 网格是矩形（否则表格会缺格、错位）。 */
+  for (const r of rows) while (r.length < cols) r.push('')
+  return { rows, cols }
+}
+
+/** JSON 美化：解析失败 / 体量过大都返回 `null`（回落纯文本，绝不吞掉原文）。 */
+function prettyJson(text) {
+  const s = String(text == null ? '' : text)
+  if (utf8Bytes(s) > MAX_PRETTY_JSON_BYTES) return null
+  try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return null }
+}
+
+/** 按扩展名选子模式并解析；任何一步不成立都回 `null`（= 既有纯文本行为）。 */
+function structuredView(name, text) {
+  const mode = textModeOf(name)
+  if (mode === 'table') {
+    const t = parseDelimited(text, extOf(name) === 'tsv' ? '\t' : ',')
+    return t === null ? null : { mode: 'table', rows: t.rows, cols: t.cols }
+  }
+  if (mode === 'json') {
+    const pretty = prettyJson(text)
+    return pretty === null ? null : { mode: 'json', text: pretty }
+  }
+  return null
+}
 
 /* ---- 内容加载 ---- */
 async function loadContent(key) {
@@ -61,13 +153,30 @@ async function loadContent(key) {
     }
     if (tab.kind === 'image') { store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }; return }
     if (tab.kind === 'pdf') { store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }; return }
+    /* 音视频（2026-10-09）：与图片/PDF 同一形状 —— 只给 `preview-raw` 的**直链**，
+     * 让浏览器自己按 Range 分段取。**绝不**在这里把它 fetch 成 Blob/ObjectURL：
+     * 那样几十 MB 的视频会整段进内存、且丢掉 Range/206（nowen-note 在 Android 上踩过，明写在
+     * `useAttachmentVideoRenderSource.ts`）。`mediaTag`/`native` 是给模板分流用的两个事实：
+     * 用 `<video>` 还是 `<audio>`、以及"能不能原生播"（不能 ⇒ 同一支路画兜底说明+下载）。 */
+    if (tab.kind === 'media') {
+      store.content = {
+        key, state: 'ready', url: rawUrl(tab.project, tab.path),
+        mediaTag: mediaTagOf(tab.name), native: isNativeMedia(tab.name),
+        downloadUrl: downloadUrl(tab.project, tab.path),
+      }
+      return
+    }
     const r = await api('/privhub/api/preview?project=' + encodeURIComponent(tab.project) + '&path=' + encodeURIComponent(tab.path))
     if (r.ok) {
       if (r.type === 'text') {
+        const raw = r.data || ''
         if (tab.kind === 'md') {
-          store.content = { key, state: 'ready', markdown: r.data || '' }
+          store.content = { key, state: 'ready', markdown: raw }
         } else {
-          store.content = { key, state: 'ready', text: r.data || '' }
+          /* 结构化子模式（表格 / 美化 JSON）：只影响这一分支【怎么画】。
+           * `structuredView` 解析不出来就回 null ⇒ 渲染走原来的 `<pre>`，与改动前逐字一致；
+           * `content.text` 仍是**原文**（不改写），子模式结果另放 `structured`，互不污染。 */
+          store.content = { key, state: 'ready', text: raw, structured: structuredView(tab.name, raw) }
         }
         /* md / txt 等文本文件：打开即进入内嵌编辑（edit-md 监听，VS Code/Trae 式）。
          * 体积闸：超过 AUTO_EDIT_MAX_BYTES 的文件【不】自动进编辑态 —— 自动编辑会
@@ -88,6 +197,15 @@ async function loadContent(key) {
         store.content.readonlyHint = readonlyHint
       } else if (r.type === 'image') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
       else if (r.type === 'pdf') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
+      /* 后端说这是媒体，但标签的 kind 没落在 'media' 上（例如从旧会话/别处带进来的 name）——
+       * 按同一形状补上，避免"后端认、界面不认"的分裂（`.ico` 那次就是这种分裂）。 */
+      else if (r.type === 'media') {
+        store.content = {
+          key, state: 'ready', url: rawUrl(tab.project, tab.path),
+          mediaTag: mediaTagOf(tab.name), native: isNativeMedia(tab.name),
+          downloadUrl: downloadUrl(tab.project, tab.path),
+        }
+      }
       /* 超限与不支持是两件事，分两句说：
        * 超限 = 类型本来能看，只是体积超过在线查看上限 → 带上实际大小与上限，并指出出路；
        * 不支持 = 这个扩展名本就没有在线查看方式 → 保持原来的说法。 */
@@ -183,6 +301,15 @@ function officeToMd(kind, content) {
         out.push('| ' + (rows[i] || []).map(c => (c === null || c === undefined ? '' : String(c)).replace(/\|/g, '\\|')).join(' | ') + ' |')
         if (i === 0) out.push('| ' + (rows[i] || []).map(() => '---').join(' | ') + ' |')
       }
+      /* 被上限截断时**明说**一句：后端把"本表实际有多少行/列"随内容回带
+       *（`totalRows`/`totalCols`/`truncatedRows`/`truncatedCols`），这里只负责把数字说成话。
+       * 为什么非要这句：旧的上限是**静默**的 —— 一张 3320 行的表只给 1000 行、什么也不说，
+       * 用户只会以为"这张表就这么多"。半张表比没有表更容易被当成全部内容。
+       * 没被截断时不加（否则每张表底下都挂一句噪音）。 */
+      const notes = []
+      if (s.truncatedRows) notes.push('仅显示前 ' + rows.length + ' 行（本表共 ' + s.totalRows + ' 行）')
+      if (s.truncatedCols) notes.push('仅显示前 ' + ((rows[0] || []).length) + ' 列（本表共 ' + s.totalCols + ' 列）')
+      if (notes.length) out.push('*（' + notes.join('；') + '）*')
       out.push('')
     }
     return out.join('\n')

@@ -167,6 +167,47 @@ export function build() {
     await POST('/privhub/api/agent/v1/keys/revoke', { token: admin, body: { id: kr.json.id } }).catch(() => null)
   })
 
+  /* D6：密钥库的读-改-写收口（mutateKeys）时重构了「轮换 / 挂起 / 恢复」三条路径，
+   * 尤其是「轮换」把「读库定位旧 key → 追加新 key」整段放进了同一把锁，
+   * 这段断言就是钉住它没被改坏。 */
+  s.test('E2 密钥生命周期：轮换 / 挂起 / 恢复 / 已吊销不可操作', async () => {
+    const c = await POST('/privhub/api/agent/v1/keys', {
+      token: admin,
+      body: { name: 'sb-life-' + rand, username: uname, scope: { kind: 'project', project: PROJECT } },
+    })
+    ok(c.json && c.json.ok && c.json.key, '签发生命周期测试密钥失败：' + c.text.slice(0, 200))
+    const oldId = c.json.id
+    const oldKey = c.json.key
+
+    // 轮换：返回一把新 key（新的 id），旧 key 保留至自然到期（平滑迁移）
+    const rot = await POST('/privhub/api/agent/v1/keys/rotate', { token: admin, body: { id: oldId } })
+    ok(rot.json && rot.json.ok && rot.json.key, '轮换应返回新 key：' + rot.text.slice(0, 200))
+    ok(rot.json.id && rot.json.id !== oldId, '轮换应产生新的 key id')
+    const newKey = rot.json.key
+    const newId = rot.json.id
+
+    // 挂起 → 该 key 401 AGENT-4013；恢复 → 又能用
+    eq((await POST('/privhub/api/agent/v1/keys/suspend', { token: admin, body: { id: oldId } })).status, 200, '挂起应 200')
+    const s1 = await agent(oldKey).GET('/privhub/api/agent/v1/me')
+    eq(s1.status, 401, `挂起后该 key 应 401（实际 ${s1.status}）`)
+    eq(s1.json?.code, 'AGENT-4013', '错误码应为 AGENT-4013（密钥已挂起）')
+    eq((await POST('/privhub/api/agent/v1/keys/resume', { token: admin, body: { id: oldId } })).status, 200, '恢复应 200')
+    ok((await agent(oldKey).GET('/privhub/api/agent/v1/me')).json?.ok, '恢复后该 key 应重新可用')
+
+    // 轮换出的新 key 始终可用
+    ok((await agent(newKey).GET('/privhub/api/agent/v1/me')).json?.ok, '轮换出的新 key 应可用')
+
+    // 已吊销的 key 不可再挂起；且吊销后确实失效
+    eq((await POST('/privhub/api/agent/v1/keys/revoke', { token: admin, body: { id: oldId } })).status, 200, '吊销应 200')
+    eq((await POST('/privhub/api/agent/v1/keys/suspend', { token: admin, body: { id: oldId } })).status, 400, '已吊销的 key 挂起应 400')
+    const s3 = await agent(oldKey).GET('/privhub/api/agent/v1/me')
+    eq(s3.status, 401, `吊销后该 key 应 401（实际 ${s3.status}）`)
+    eq(s3.json?.code, 'AGENT-4012', '错误码应为 AGENT-4012（密钥已吊销）')
+
+    // 收尾：吊销轮换出的那把
+    await POST('/privhub/api/agent/v1/keys/revoke', { token: admin, body: { id: newId } }).catch(() => null)
+  })
+
   s.test('F 个人空间不进 RAG 语料（防私人内容泄露给管理员）', async () => {
     /* 必须走【网页上传】这条路径来构造用例。
      * 原因：Agent 写入是直接落盘的，不会发 file:changed 事件；

@@ -67,7 +67,9 @@ const {
   TEXT_EXTS, IMAGE_EXTS, MARKDOWN_EXTS, OFFICE_EXTS,
   EDITABLE_TEXT_EXTS, ENV_EXTS, RAG_EXCLUDED_EXTS, PREVIEW_ONLY_TEXT_EXTS,
   SENSITIVE_EXTS_BARE, PREVIEW_TEXT_EXTS, VERSION_TEXT_EXTS, RAG_TEXT_EXTS, AGENT_SNAPSHOT_EXTS,
-  isPreviewTextExt, isImageExt, isMarkdownExt, kindOfExt, extOfName, minus, union, normExt,
+  AUDIO_EXTS, VIDEO_EXTS, MEDIA_EXTS,
+  isPreviewTextExt, isImageExt, isMarkdownExt, isMediaExt, isAudioExt, isVideoExt,
+  kindOfExt, extOfName, minus, union, normExt,
 } = exts
 
 /** 逐项同值（顺序无关、去重）：这是本文件用得最多的一条判据。 */
@@ -96,6 +98,14 @@ ok(sameSet(RAG_TEXT_EXTS, minus(PREVIEW_TEXT_EXTS, union(ENV_EXTS, RAG_EXCLUDED_
   '向量化集 = 索引集 − 大数据/表格/笔记本类（本批保持迁前范围，不扩权）')
 ok(sameSet(AGENT_SNAPSHOT_EXTS, EDITABLE_TEXT_EXTS),
   '智能体快照集 = 可编辑集（16 项，含 md；与迁前那份 17 项手写清单只差 html —— html/toml/java/c/cpp/htm 按不扩权留在不快照那一侧）')
+ok(sameSet(MEDIA_EXTS, union(AUDIO_EXTS, VIDEO_EXTS)),
+  '媒体集 = 音频集 ∪ 视频集（一处定义 + 显式派生，取值不手写）')
+ok(!AUDIO_EXTS.some((e) => VIDEO_EXTS.includes(e)),
+  '音频集与视频集**互斥**（`ogg` 归音频、`ogv` 归视频：前端按扩展名分流用哪个标签，重叠就会变成模糊态）')
+ok(sameSet(MEDIA_EXTS, [
+  'mp3', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'flac',
+  'mp4', 'm4v', 'webm', 'ogv', 'mov', 'qt', '3gp', '3g2', 'avi', 'mkv',
+]), '媒体集逐项同值（18 项，2026-10-09 音视频预览批新增；迁前 `kindOfExt` 对这批一律 unknown）')
 
 /* 逐项同值的"活标本"：这三条就是迁前各写各的、已经不一致的那几处。
  * 它们同时把"本批有意保持的范围"钉住 —— 谁顺手把新扩展名拉进索引/向量库，这里会红。 */
@@ -130,7 +140,7 @@ ok(agentTextExts.length === TEXT_EXTS.length - 1 && !agentTextExts.includes('env
   `智能体文本集 = 基础文本集 − 敏感族（只减掉 env 一项；结果由 files-agent 侧断言复核）`)
 
 /* 集合本身的基本卫生：不许有空串、不许有前导点、不许重复 */
-const allLists = { TEXT_EXTS, IMAGE_EXTS, MARKDOWN_EXTS, OFFICE_EXTS, EDITABLE_TEXT_EXTS, ENV_EXTS, RAG_EXCLUDED_EXTS, PREVIEW_ONLY_TEXT_EXTS, PREVIEW_TEXT_EXTS, VERSION_TEXT_EXTS, RAG_TEXT_EXTS, AGENT_SNAPSHOT_EXTS }
+const allLists = { TEXT_EXTS, IMAGE_EXTS, MARKDOWN_EXTS, OFFICE_EXTS, EDITABLE_TEXT_EXTS, ENV_EXTS, RAG_EXCLUDED_EXTS, PREVIEW_ONLY_TEXT_EXTS, PREVIEW_TEXT_EXTS, VERSION_TEXT_EXTS, RAG_TEXT_EXTS, AGENT_SNAPSHOT_EXTS, AUDIO_EXTS, VIDEO_EXTS, MEDIA_EXTS }
 const dirty = []
 for (const [n, list] of Object.entries(allLists)) {
   if (list.some((e) => e !== normExt(e))) dirty.push(n + ' 未归一')
@@ -156,7 +166,12 @@ const kindCases = [
   ['a.tsx', 'text'], ['a.ps1', 'text'], ['a.conf', 'text'], ['a.vue', 'text'], ['a.go', 'text'],
   ['a.rs', 'text'], ['a.ipynb', 'text'], ['config.env', 'text'],
   ['a.png', 'image'], ['a.ico', 'image'], ['a.svg', 'image'], ['a.pdf', 'pdf'],
-  ['a.zip', 'unknown'], ['a.tiff', 'unknown'], ['a.mp3', 'unknown'],
+  /* 音视频（2026-10-09 批）：迁前 `a.mp3` 的期望值是 `unknown`（媒体根本没进分类），
+   * 本批改为 `media` —— 这是本批**唯一一处改了期望值**的既有用例，理由见
+   * `docs/reviews/17-音视频预览.md` §3.1。同一批新增的用例覆盖音频 / 视频 / 播不了的那批。 */
+  ['a.mp3', 'media'], ['a.flac', 'media'], ['a.opus', 'media'], ['a.WAV', 'media'],
+  ['a.mp4', 'media'], ['a.MKV', 'media'], ['a.avi', 'media'], ['a.mov', 'media'], ['a.3gp', 'media'],
+  ['a.zip', 'unknown'], ['a.tiff', 'unknown'], ['a.eml', 'unknown'],
   // 无扩展名 / 隐藏文件 / 末尾带点：一律 not text（**不做二进制嗅探**，见 file-exts.ts 文件头）
   ['noext', 'unknown'], ['.env', 'unknown'], ['.gitignore', 'unknown'], ['trailing.', 'unknown'],
 ]
@@ -167,7 +182,15 @@ ok(kindBad.length === 0,
 ok(isImageExt('.ico') && isImageExt('ICO') && !isImageExt('icox'), '图片判定对大小写与前导点稳健')
 ok(isPreviewTextExt('.env') && !isPreviewTextExt('envx'), '预览判定接受前导点形式（.env），且不误判相近名字')
 ok(isMarkdownExt('.MD') && !isMarkdownExt('.markdownx'), 'Markdown 家族判定对大小写稳健')
-ok(!isPreviewTextExt('') && !isImageExt(''), '空字符串不落在任何集合里')
+ok(isMediaExt('.MP4') && isMediaExt('mkv') && !isMediaExt('mp4x') && !isMediaExt(''),
+  '媒体判定对大小写与前导点稳健，且不误判相近名字 / 空串')
+ok(isAudioExt('ogg') && !isAudioExt('ogv') && isVideoExt('ogv') && !isVideoExt('ogg'),
+  '`ogg`（音频）与 `ogv`（视频）分得开 —— 两者只有一字之差，混了会让视频用 audio 标签画')
+/* 分层：**「是媒体」与「浏览器能播」是两件事**。后端只回答前者（上面这一组），
+ * 后者是浏览器事实、在前端 `NATIVE_*_EXTS`（②组断言）。这两批扩展名就是分层的证据：
+ * 它们**是媒体**（所以进 `MEDIA_EXTS`、有 mime、能画兜底+下载），但**多半播不了**。 */
+ok(['mov', 'qt', 'avi', 'mkv', '3gp', '3g2'].every((e) => isMediaExt(e)),
+  '`mov/qt/avi/mkv/3gp/3g2` 是媒体（走媒体分支、有 mime、画兜底说明 + 下载入口）—— 但**不在**前端原生可播白名单里')
 
 /* ══════════════════════════════════════════════════════════════════════════
  * ② 前端与后端逐项一致（把 utils.js 真身装进 vm）
@@ -192,8 +215,13 @@ function loadClientExt() {
   // 把 export 语句换成赋值，跑完后从 sandbox 取
   const body = src.replace(/^export\s*\{[^}]*\}\s*$/m, '')
     + '\n;globalThis.__EXT__ = EXT; globalThis.__TEXT_EDIT_EXTS__ = TEXT_EDIT_EXTS; globalThis.__kindOf__ = kindOf; globalThis.__extOf__ = extOf;'
+    + '\n;globalThis.__mediaTagOf__ = mediaTagOf; globalThis.__isNativeMedia__ = isNativeMedia;'
   runInContext(body, ctx, { filename: UTILS_FILE })
-  return { EXT: sandbox.__EXT__, TEXT_EDIT_EXTS: sandbox.__TEXT_EDIT_EXTS__, kindOf: sandbox.__kindOf__, extOf: sandbox.__extOf__ }
+  return {
+    EXT: sandbox.__EXT__, TEXT_EDIT_EXTS: sandbox.__TEXT_EDIT_EXTS__,
+    kindOf: sandbox.__kindOf__, extOf: sandbox.__extOf__,
+    mediaTagOf: sandbox.__mediaTagOf__, isNativeMedia: sandbox.__isNativeMedia__,
+  }
 }
 
 let client = null
@@ -208,6 +236,11 @@ if (client) {
     ['OFFICE_EXTS', E.OFFICE_EXTS, OFFICE_EXTS],
     ['TEXT_EDIT_EXTS', E.TEXT_EDIT_EXTS, EDITABLE_TEXT_EXTS],
     ['PREVIEW_TEXT_EXTS', E.PREVIEW_TEXT_EXTS, PREVIEW_TEXT_EXTS],
+    /* 音视频（2026-10-09 批）：前端那一份必须与后端逐项同值 —— 两侧都漏一个扩展名，
+     * 症状是"文件是媒体但界面按文本画"（后端不给 mime/Range、前端也不走媒体分支）。 */
+    ['AUDIO_EXTS', E.AUDIO_EXTS, AUDIO_EXTS],
+    ['VIDEO_EXTS', E.VIDEO_EXTS, VIDEO_EXTS],
+    ['MEDIA_EXTS', E.MEDIA_EXTS, MEDIA_EXTS],
   ]
   for (const [name, got, want] of pairs) {
     ok(sameSet(got, want), `前端 ${name} 与后端逐项同值（前端 ${got.length} 项 / 后端 ${want.length} 项${sameSet(got, want) ? '' : '；前端=' + fmt(got) + ' 后端=' + fmt(want)}）`)
@@ -224,6 +257,29 @@ if (client) {
   /* 【不许误伤】md 在可编辑清单里 —— 拿掉会让「右键 .md 选编辑」点了没反应（edit-md 的闸就是这一句） */
   ok(E.TEXT_EDIT_EXTS.includes('md'),
     '`md` 仍在可编辑清单里（edit-md 的 openEditor 靠它放行；这条是防"顺手清理"的误伤）')
+
+  /* ── 音视频（2026-10-09 批）：界面侧的口径 ──
+   * 这里钉的是「走哪个标签」与「浏览器能不能播」**两件分开的事**：
+   *   · `mediaTagOf` 只回答前者（audio 标签 / video 标签）；
+   *   · `isNativeMedia` 只回答后者，它**只可能缩小**渲染支路的范围（false ⇒ 画兜底+下载），
+   *     永远不会让一个"播得了"的格式变成播不了 —— 所以这份白名单保守是安全的。 */
+  ok(client.kindOf('x.mp4') === 'media' && client.kindOf('x.mp3') === 'media' && client.kindOf('x.mkv') === 'media',
+    '前端 kindOf 对音视频一律 `media`（走媒体分支，不再当文本画）')
+  ok(client.kindOf('x.pdf') === 'pdf' && client.kindOf('x.png') === 'image' && client.kindOf('x.docx') === 'office',
+    '媒体分类没有抢走 pdf / 图片 / Office 的既有分类（分支顺序：image → pdf → media → md → office → text）')
+  ok(client.mediaTagOf('x.mp3') === 'audio' && client.mediaTagOf('x.ogg') === 'audio' &&
+     client.mediaTagOf('x.mp4') === 'video' && client.mediaTagOf('x.ogv') === 'video',
+    '`mediaTagOf` 按扩展名分流标签（ogg→audio、ogv→video；两者一字之差，混了就是视频用 audio 标签画）')
+  ok(client.mediaTagOf('x.pdf') === '' && client.mediaTagOf('x.bin') === '' && client.mediaTagOf('x') === '',
+    '`mediaTagOf` 对非媒体回空串（兜底支路不会被误触发）')
+  ok(E.NATIVE_AUDIO_EXTS.every((e) => E.AUDIO_EXTS.includes(e)) &&
+     E.NATIVE_VIDEO_EXTS.every((e) => E.VIDEO_EXTS.includes(e)),
+    '原生可播白名单是「媒体集」的**子集**（白名单里冒出个不是媒体的扩展名 = 分层破了，必红）')
+  ok(client.isNativeMedia('x.mp4') && client.isNativeMedia('x.mp3') && client.isNativeMedia('x.webm') &&
+     !client.isNativeMedia('x.mkv') && !client.isNativeMedia('x.avi') && !client.isNativeMedia('x.mov'),
+    '`isNativeMedia` 对 mp4/webm/mp3 为真、对 mkv/avi/mov 为假（后者画兜底说明 + 下载入口，**不黑屏**）')
+  ok(!client.isNativeMedia('x.mkv') && client.kindOf('x.mkv') === 'media',
+    '「是媒体」与「能播」确实是两件事：mkv 是媒体、但不是原生可播（这正是分两层的意义）')
 }
 
 /* ③ 前端两份可编辑清单必须一致（迁前它们各自维护、靠注释互相提醒） */
@@ -437,21 +493,33 @@ const coreSrc = readFileSync(join(ROOT, 'plugins/privhub-core/src/index.ts'), 'u
 ok(!/const\s+textExts\s*=/.test(coreSrc) && !/const\s+imgExts\s*=/.test(coreSrc),
   'core 里那两份手写字面量（`textExts` / `imgExts`）确实已经删掉，不再"共享了但没用"')
 
-/* `preview-raw` 的 mime 表：映射本身必须逐条写，但**键集**必须等于 `IMAGE_EXTS` 加 `pdf`。
- * 这条是「前后端两张图片清单不一致」（`.ico` 那次）在**后端一侧**的防复发断言。 */
-console.log('\n     ── preview-raw 的图片 mime 键集与 IMAGE_EXTS 对齐 ──')
+/* `preview-raw` 的 mime 表：映射本身必须逐条写，但**键集**必须等于
+ * `IMAGE_EXTS` ∪ `{pdf}` ∪ `MEDIA_EXTS`（音视频那一段是 2026-10-09 批新增的）。
+ * 这条是「前后端两张清单不一致」（`.ico` 那次）在**后端一侧**的防复发断言。 */
+console.log('\n     ── preview-raw 的 mime 键集与 IMAGE_EXTS ∪ MEDIA_EXTS 对齐 ──')
 const FILES_SRC = join(ROOT, 'plugins', 'privhub-files', 'src', 'index.ts')
 const filesSrc = readFileSync(FILES_SRC, 'utf8')
 const mimeBlock = /const\s+mime\s*:\s*Record<string,\s*string>\s*=\s*\{([\s\S]*?)\}/.exec(filesSrc)
+/* 键允许带引号：`'3gp'` / `'3g2'` 这种**只可能**写成带引号的形式（数字开头不是合法标识符），
+ * 不带引号的普通键照样命中。这次放宽是「音视频那批键」逼出来的 —— 它只会**多读到**键、
+ * 不会漏读，所以这条断言只会因此更严（漏一个扩展名比以前更容易红）。 */
 const mimeKeys = mimeBlock
-  ? [...mimeBlock[1].matchAll(/(^|[,{\s])([a-z0-9]+)\s*:\s*'([^']+)'/g)].map((m) => m[2])
+  ? [...mimeBlock[1].matchAll(/(^|[,{\s])'?([a-z0-9]+)'?\s*:\s*'([^']+)'/g)].map((m) => m[2])
   : []
 console.log('     [实测] preview-raw mime 键集 = ' + mimeKeys.join(','))
 ok(mimeKeys.length > 0, '能读到 `privhub-files` 的 preview-raw mime 表（读不到必红，不静默跳过）')
-ok(sameSet(mimeKeys, [...IMAGE_EXTS, 'pdf']),
-  `preview-raw 的 mime 键集 = IMAGE_EXTS ∪ {pdf}（实测 ${mimeKeys.length} 项）`)
+ok(sameSet(mimeKeys, [...IMAGE_EXTS, 'pdf', ...MEDIA_EXTS]),
+  `preview-raw 的 mime 键集 = IMAGE_EXTS ∪ {pdf} ∪ MEDIA_EXTS（实测 ${mimeKeys.length} 项，期望 ${IMAGE_EXTS.length + 1 + MEDIA_EXTS.length} 项）`)
 ok(mimeKeys.includes('ico'),
   'preview-raw 的 mime 表含 ico（`.ico` 前后端不一致那次的后端一侧防复发）')
+ok(['mp3', 'flac', 'mp4', 'mkv', '3gp'].every((e) => mimeKeys.includes(e)),
+  '音视频 mime 表含 mp3/flac/mp4/mkv/3gp（其中 `3gp` 是**带引号的键** —— 上面那条正则放宽就是为它）')
+/* mime 值的方向性：音频不许给 video/*、视频不许给 audio/*（"有键但值写反"是这张表最可能的漂法） */
+const mimeVals = mimeBlock ? Object.fromEntries([...mimeBlock[1].matchAll(/(^|[,{\s])'?([a-z0-9]+)'?\s*:\s*'([^']+)'/g)].map((m) => [m[2], m[3]])) : {}
+ok(AUDIO_EXTS.every((e) => (mimeVals[e] || '').startsWith('audio/')),
+  '音频扩展名的 mime 值都是 audio/*（逐项查过，不是"有键就行"）')
+ok(VIDEO_EXTS.every((e) => (mimeVals[e] || '').startsWith('video/')),
+  '视频扩展名的 mime 值都是 video/*（逐项查过，不是"有键就行"）')
 
 /* ══════════════════════════════════════════════════════════════════════════
  * ⑤ 端到端：本批补的扩展名现在真能打开（隔离实例 3197）

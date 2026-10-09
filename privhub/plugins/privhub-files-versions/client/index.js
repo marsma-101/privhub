@@ -105,7 +105,7 @@ const VersionsPanel = {
             <div
               v-for="v in versions" :key="v.at"
               style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;font-size:12.5px;cursor:pointer"
-              :style="{ background: previewAt === v.at ? 'rgba(90,130,200,.12)' : '' }"
+              :style="{ background: previewAt === v.at ? 'var(--accent-soft, rgba(90,130,200,.12))' : '' }"
               @click="preview(v)"
             >
               <span style="flex:1">{{ new Date(v.at).toLocaleString() }}</span>

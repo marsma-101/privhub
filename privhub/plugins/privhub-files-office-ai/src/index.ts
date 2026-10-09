@@ -21,6 +21,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
+import { readJsonStore } from '../../privhub-core/src/json-store'
 
 export const name = 'privhub-files-office-ai'
 export const inject = ['privhub', 'office', 'storage', 'audit']
@@ -76,11 +77,13 @@ function bodyStatus(e: unknown): number {
 interface ApiKey { key: string; label: string; at: number; projects?: string[]; admin?: boolean }
 
 async function loadKeys(ctx: Context): Promise<ApiKey[]> {
-  try {
-    const raw = await ctx.storage.readText(KEYS_FILE)
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed.keys) ? parsed.keys : []
-  } catch { return [] }
+  /* D4：Office 接口密钥库损坏 → 隔离存证 + 抛错。此前静默当空，
+   * 一次「新建密钥」就会把已有密钥全部覆盖（凭据类数据）。 */
+  const parsed = await readJsonStore<{ keys?: ApiKey[] }>(
+    ctx.storage, KEYS_FILE, {},
+    (v) => !!v && typeof v === 'object' && Array.isArray((v as { keys?: unknown }).keys),
+  )
+  return Array.isArray(parsed.keys) ? parsed.keys : []
 }
 
 async function saveKeys(ctx: Context, keys: ApiKey[]): Promise<void> {
@@ -204,9 +207,14 @@ export function apply(ctx: Context): void {
       // S6：可指定项目白名单；不传 = 全部项目（兼容既有用法）
       const projects = Array.isArray(body.projects) ? body.projects.map((p: unknown) => String(p)) : []
       const key = 'pho_' + randomBytes(16).toString('hex')
-      const keys = await loadKeys(ctx)
-      keys.push({ key, label, at: Date.now(), projects })
-      await saveKeys(ctx, keys)
+      /* D6：密钥库是「读全量 → 追加/过滤 → 写全量」，且生成与吊销共用一份文件。
+       * 不串行时并发两次生成会各自读旧列表再写回，后写的把一个刚发出去的 Key 丢掉
+       * （持 Key 的调用方随即 401，而库里已无记录，连吊销都无从下手）。 */
+      await svc.withFileLock(KEYS_FILE, async () => {
+        const keys = await loadKeys(ctx)
+        keys.push({ key, label, at: Date.now(), projects })
+        await saveKeys(ctx, keys)
+      })
       void audit(u.username, 'ai-key-create', label, projects.length ? 'projects=' + projects.join(',') : 'projects=all')
       json(res, 200, { ok: true, key, label, projects })
       return
@@ -215,9 +223,11 @@ export function apply(ctx: Context): void {
       let body: any
       try { body = JSON.parse(await readBody(req)) } catch (e) { return json(res, bodyStatus(e), { ok: false, error: bodyStatus(e) === 413 ? 'request too large' : 'invalid json' }) }
       const key = String(body.key ?? '')
-      const keys = await loadKeys(ctx)
-      const next = keys.filter((k) => k.key !== key)
-      await saveKeys(ctx, next)
+      /* D6：与「生成密钥」共用同一把锁，否则并发的生成可能把这次吊销覆盖回去。 */
+      await svc.withFileLock(KEYS_FILE, async () => {
+        const keys = await loadKeys(ctx)
+        await saveKeys(ctx, keys.filter((k) => k.key !== key))
+      })
       void audit(u.username, 'ai-key-revoke', key.slice(0, 8) + '…')
       json(res, 200, { ok: true })
       return

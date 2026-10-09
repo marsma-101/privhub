@@ -43,6 +43,7 @@ const SearchView = {
       hits: [],
       searched: false,
       noProject: false,
+      notice: '', // JT-03：服务端说明（如"个人空间不参与全文检索"）
     }
   },
   watch: {
@@ -56,13 +57,14 @@ const SearchView = {
     hl,
     async doSearch() {
       const keyword = this.q.trim()
-      if (!keyword) { this.hits = []; this.searched = false; return }
+      if (!keyword) { this.hits = []; this.searched = false; this.notice = ''; return }
       // 项目上下文：搜索限定当前项目（未选项目时提示先选择，不做全局查询）
       if (!nav.project) {
-        this.hits = []; this.searched = true; this.noProject = true
+        this.hits = []; this.searched = true; this.noProject = true; this.notice = ''
         return
       }
       this.noProject = false
+      this.notice = ''
       this.loading = true
       try {
         if (this.mode === 'filename') {
@@ -71,6 +73,8 @@ const SearchView = {
         } else {
           const r = await api('/privhub/api/fulltext/search?q=' + encodeURIComponent(keyword) + '&project=' + encodeURIComponent(nav.project))
           this.hits = r.ok ? r.hits : []
+          // JT-03：个人空间不参与全文检索，服务端会带 notice 说明原因
+          this.notice = (r && r.ok && r.notice) || ''
         }
       } catch { this.hits = [] }
       this.loading = false
@@ -81,6 +85,7 @@ const SearchView = {
       this.mode = m
       this.hits = []
       this.searched = false
+      this.notice = ''
       if (this.q.trim()) this.doSearch()
     },
     async go(hit) {
@@ -112,6 +117,10 @@ const SearchView = {
         <button class="icon-btn" :class="{ on: loading }" @click="doSearch">搜索</button>
       </div>
       <div class="main-body">
+        <div v-if="notice" style="padding:14px 18px;margin:0 0 8px;background:rgba(230,180,60,.12);border:1px solid rgba(230,180,60,.35);border-radius:8px;font-size:13px;color:var(--text)">
+          ⚠ {{ notice }}
+          <button class="small-btn" style="margin-left:10px" @click="switchMode('filename')">改为按文件名搜索</button>
+        </div>
         <div v-if="noProject" class="empty">
           <div style="font-size:15px;margin-bottom:6px">请先选择一个项目</div>
           <div>搜索仅限定在当前项目内。返回文件视图，在左侧选择项目后再搜索。</div>
@@ -119,8 +128,8 @@ const SearchView = {
         </div>
         <div v-else-if="loading" class="empty">搜索中…</div>
         <div v-else-if="q && !searched" class="empty">回车开始搜索</div>
-        <div v-else-if="searched && hits.length === 0" class="empty">没有匹配「{{ q }}」的内容</div>
-        <div v-else class="file-table-wrap">
+        <div v-else-if="searched && hits.length === 0 && !notice" class="empty">没有匹配「{{ q }}」的内容</div>
+        <div v-else-if="hits.length" class="file-table-wrap">
           <div class="file-table-head" style="grid-template-columns:1fr 200px 90px">
             <span class="col-name">{{ mode === 'filename' ? '名称' : '命中内容' }}</span>
             <span class="col-size">路径</span>

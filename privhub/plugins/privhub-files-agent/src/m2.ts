@@ -14,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 /* 【扩展名一处定义】快照清单取自 `privhub-core/src/file-exts`（一处定义 + 显式派生），
  * 本文件不再手写任何扩展名字面量。 */
 import { AGENT_SNAPSHOT_EXTS } from '../../privhub-core/src/file-exts'
+import { readJsonStore } from '../../privhub-core/src/index'
 
 /* ============ 配置 ============ */
 
@@ -315,26 +316,37 @@ interface Version { at: number; by: string; content: string }
 type Store = Record<string, Version[]>
 
 async function loadVersions(ctx: Context, rootDir: string): Promise<Store> {
-  const f = join(rootDir, VERSIONS_FILE)
-  if (!existsSync(f)) return {}
-  try { return JSON.parse(await ctx.storage.readText(f)) as Store } catch { return {} }
+  /* D4：快照库损坏 → 隔离存证 + 抛错（调用方见 versionSnapshot 的说明）。 */
+  return readJsonStore<Store>(ctx.storage, join(rootDir, VERSIONS_FILE), {})
 }
 
-/** 覆盖前快照（仅文本类；与 versions 插件同格式，滚动 snapshotMax 版；写锁内调用） */
+/** 覆盖前快照（仅文本类；与 versions 插件同格式，滚动 snapshotMax 版） */
 export async function versionSnapshot(ctx: Context, rootDir: string, by: string, project: string, relPath: string, target: string, max: number): Promise<void> {
   if (!SNAPSHOT_EXTS.has(extname(target).slice(1).toLowerCase())) return
+  const file = join(rootDir, VERSIONS_FILE)
   try {
     const content = await ctx.storage.readText(target).catch(() => null)
     if (content === null) return
-    const store = await loadVersions(ctx, rootDir)
-    const key = project + '|' + relPath.replace(/^\/+|\/+$/g, '')
-    const arr = store[key] || []
-    arr.push({ at: Date.now(), by, content })
-    while (arr.length > max) arr.shift()
-    store[key] = arr
-    await mkdir(join(rootDir, 'data'), { recursive: true })
-    await ctx.storage.writeText(join(rootDir, VERSIONS_FILE), JSON.stringify(store, null, 2))
-  } catch { /* 快照失败不阻断主写入 */ }
+    /* D6：`data/versions.json` 全系统共用一份，有多个写入者（本函数、privhub-files-versions、
+     * agent 版本恢复）。调用方的 PathLocks 是按【目标路径】分的，锁不住这份共享库 ——
+     * 并发覆盖不同文件时仍会各自读旧 store 再整份写回，互相抹掉对方的快照。
+     * 这里按同一绝对路径取锁，与其余写入者用的是同一把（锁键 = 文件绝对路径）。 */
+    await ctx.privhub.withFileLock(file, async () => {
+      const store = await loadVersions(ctx, rootDir)
+      const key = project + '|' + relPath.replace(/^\/+|\/+$/g, '')
+      const arr = store[key] || []
+      arr.push({ at: Date.now(), by, content })
+      while (arr.length > max) arr.shift()
+      store[key] = arr
+      await mkdir(join(rootDir, 'data'), { recursive: true })
+      await ctx.storage.writeText(file, JSON.stringify(store, null, 2))
+    })
+  } catch {
+    /* 快照失败不阻断主写入 —— 这是有意的，而且与 D4 正好合拍：
+     * 版本库损坏时 loadVersions 会抛错，于是**跳过本次快照**，而不是写一份只剩当前版本的
+     * 「新库」把历史清空；用户正在保存的文件照常保存成功。
+     * 原因已由 readJsonStore 记进系统日志（含文件路径与隔离文件名），不会无声无息。 */
+  }
 }
 
 /* ============ per-path 写锁（同一目标串行化） ============ */
@@ -376,7 +388,9 @@ export function startFlusher(ctx: Context, quota: QuotaLedger, rate: RateLimiter
     flushQuota()
     flushRate()
   }
-  ctx.on('dispose', dispose)
+  /* 卸载清理：cordis 不派发 'dispose' 事件，正确 API 是 ctx.effect(注册清理)。
+   * 旧写法 ctx.on('dispose', dispose) 从不触发 ⇒ 定时器/落盘永不清理。 */
+  ctx.effect(() => dispose)
   return dispose
 }
 

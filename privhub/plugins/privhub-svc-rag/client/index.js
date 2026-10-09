@@ -179,7 +179,7 @@ const HelpTip = {
   props: ['help'],
   emits: ['close'],
   template: `
-  <div style="position:fixed;right:22px;bottom:22px;width:400px;max-height:70vh;overflow:auto;z-index:999;background:var(--panel2);border:1px solid #58a6ff66;border-radius:12px;box-shadow:0 10px 36px rgba(0,0,0,.6);padding:16px 18px;font-size:12.5px;line-height:1.7;color:var(--text);">
+  <div style="position:fixed;right:22px;bottom:22px;width:400px;max-height:70vh;overflow:auto;z-index:var(--z-drawer,999);background:var(--panel2);border:1px solid #58a6ff66;border-radius:12px;box-shadow:0 10px 36px rgba(0,0,0,.6);padding:16px 18px;font-size:12.5px;line-height:1.7;color:var(--text);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <b style="font-size:14px;color:var(--accent);">{{ help.title }}</b>
       <span style="cursor:pointer;color:var(--muted);font-size:16px;" @click="$emit('close')">✕</span>
@@ -579,7 +579,7 @@ function makeAdminView() {
   return {
     name: 'rag-admin-view',
     components: { HelpTip, RagCorpusPanel, RagKeysPanel },
-    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, mForm: { llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, discHosts: '', discBusy: false, discResult: null, discSel: {} } },
+    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, mForm: { llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, qaStream: true, qaErr: '', discHosts: '', discBusy: false, discResult: null, discSel: {} } },
     computed: {
       healthTxt() {
         const h = (x) => (x?.status === 'ok' ? '✅ ok' : x?.status === 'unconfigured' ? '⚪ 未配置' : x?.status === 'unreachable' ? '❌ 不可达' : x?.status === 'timeout' ? '⏱ 超时' : x?.status === 'auth-error' ? '🔐 鉴权失败' : x?.status === 'model-missing' ? '⚠️ 模型名不在服务清单' : '❓ ' + (x?.status || '未知'))
@@ -625,11 +625,94 @@ function makeAdminView() {
         if (!q) { window.PrivHub.toast('请输入问题', 'error'); return }
         this.qaBusy = true
         this.qaResult = null
+        this.qaErr = ''
         try {
-          const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection }) })
-          if (r.ok) { this.qaResult = r; window.PrivHub.toast(r.sources.length + ' 处引用', 'success') }
-          else window.PrivHub.toast(r.error || '问答失败', 'error')
+          if (!this.qaStream) {
+            const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection }) })
+            if (r.ok) { this.qaResult = r; window.PrivHub.toast(r.sources.length + ' 处引用', 'success') }
+            else window.PrivHub.toast(r.error || '问答失败', 'error')
+            return
+          }
+          await this.askStream(q)
         } finally { this.qaBusy = false }
+      },
+      /**
+       * 流式问答：逐字把回答显示出来，而不是等整段生成完再一次性替换。
+       *
+       * 为什么值得单独走一条路：一份长回答在中端模型上要几十秒，旧的非流式界面上
+       * 「思考中…」会一直转，用户分不清「在生成」还是「已经卡死」；而且一旦超过
+       * 配置的 timeoutMs，整段回答会被丢弃、只留一句报错。流式下已经生成的部分
+       * 是看得见的，中途失败也不会白等。
+       *
+       * 用 fetch + ReadableStream 读 SSE 而不用 EventSource：EventSource 不能带
+       * 自定义请求头、只能是 GET、还不能发 POST body，套不进现有这条路由。
+       *
+       * 兜底：若响应不是 SSE（例如中间有旧版服务、或网关把响应改写成 JSON 报错），
+       * 就按普通 JSON 处理 —— 不失能，只是退回一次性出结果。
+       */
+      async askStream(q) {
+        const headers = { 'content-type': 'application/json' }
+        if (window.PrivHub.AUTH && window.PrivHub.AUTH.token) headers['authorization'] = 'Bearer ' + window.PrivHub.AUTH.token
+        let res
+        try {
+          res = await fetch('/privhub/api/rag/ask', {
+            method: 'POST', headers, body: JSON.stringify({ question: q, collection: this.qaCollection, stream: true }),
+          })
+        } catch (e) {
+          this.qaErr = '网络错误：' + ((e && e.message) || '无法连接服务器')
+          return
+        }
+        if (res.status === 401) { this.qaErr = '登录已过期，请重新登录'; return }
+        const ctype = res.headers.get('content-type') || ''
+        if (!ctype.includes('text/event-stream')) {
+          // 非 SSE：服务端不支持流式（旧版）或直接回了错误 JSON
+          const r = await res.json().catch(() => null)
+          if (r && r.ok) { this.qaResult = r; window.PrivHub.toast(r.sources.length + ' 处引用', 'success') }
+          else this.qaErr = (r && r.error) || ('服务端未返回流式响应（HTTP ' + res.status + '）')
+          return
+        }
+        const reader = res.body && res.body.getReader()
+        if (!reader) { this.qaErr = '浏览器不支持读取流式响应'; return }
+        const decoder = new TextDecoder()
+        // 先占住结果对象：每收到一个 delta 就地追加，界面随之长出来
+        this.qaResult = { answer: '', sources: [] }
+        let buf = ''
+        let answer = ''
+        const applyFrame = (raw) => {
+          // 一帧形如 "event: delta\ndata: {...}"（可能只有 data）
+          let event = 'message'
+          const dataLines = []
+          for (const line of raw.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim()
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+          }
+          if (dataLines.length === 0) return
+          let payload
+          try { payload = JSON.parse(dataLines.join('\n')) } catch { return }
+          if (event === 'sources') this.qaResult.sources = payload.sources || []
+          else if (event === 'delta') { answer += payload.text || ''; this.qaResult.answer = answer }
+          else if (event === 'done') { if (payload.answer) { answer = payload.answer; this.qaResult.answer = answer } }
+          else if (event === 'error') this.qaErr = payload.error || '问答失败'
+        }
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buf += decoder.decode(value, { stream: true })
+            let idx
+            while ((idx = buf.indexOf('\n\n')) >= 0) {
+              applyFrame(buf.slice(0, idx))
+              buf = buf.slice(idx + 2)
+            }
+          }
+          if (buf.trim()) applyFrame(buf)   // 末帧可能没有收尾空行
+        } catch (e) {
+          this.qaErr = '连接中断：' + ((e && e.message) || '流式读取失败')
+        }
+        // 一个字都没生成就失败了：别留一个空回答框在错误条上面（看起来像「模型答了空话」）
+        if (this.qaErr && !answer) this.qaResult = null
+        if (this.qaErr) window.PrivHub.toast(this.qaErr, 'error')
+        else if (answer) window.PrivHub.toast(this.qaResult.sources.length + ' 处引用', 'success')
       },
       async discover() {
         this.discBusy = true
@@ -951,7 +1034,7 @@ function makeAdminView() {
             </div>
           </div>
           <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
-            <button class="rag-btn" :style="S.btn" style="background:var(--accent);border-color:var(--accent);color:#fff;" :disabled="vecBusy || !vecStatus" @click="startVec">⚡ 开始向量化</button>
+            <button class="rag-btn" :style="S.btn" style="background:var(--accent-solid,var(--accent));border-color:var(--accent);color:#fff;" :disabled="vecBusy || !vecStatus" @click="startVec">⚡ 开始向量化</button>
             <button class="rag-btn" :style="S.btn" @click="refreshVec">刷新</button>
             <span style="color:var(--muted);font-size:12px;">{{ vecStatus && vecStatus.vec.error ? '上次错误：' + vecStatus.vec.error.slice(0, 80) : '' }}</span>
           </div>
@@ -975,10 +1058,15 @@ function makeAdminView() {
               <option v-for="p in projects" :key="p" :value="p">{{ p }}</option>
             </select>
             <input v-model="qaQuestion" placeholder="输入你的问题，例如：这份合同的核心条款是什么？" :style="[S.input,{flex:1,minWidth:260}]" @keyup.enter="ask" />
-            <button class="rag-btn" :style="S.btn" style="background:var(--accent);border-color:var(--accent);color:#fff;" :disabled="qaBusy" @click="ask">{{ qaBusy ? '思考中…' : '发送' }}</button>
+            <button class="rag-btn" :style="S.btn" style="background:var(--accent-solid,var(--accent));border-color:var(--accent);color:#fff;" :disabled="qaBusy" @click="ask">{{ qaBusy ? (qaStream ? '生成中…' : '思考中…') : '发送' }}</button>
           </div>
+          <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" v-model="qaStream" />
+            流式输出（回答边生成边显示，长回答不必干等；关掉则一次性出结果）
+          </label>
+          <div v-if="qaErr" style="margin-top:10px;font-size:12px;color:var(--danger, #c0392b);background:var(--danger-soft, #fbeaea);border:1px solid var(--line);border-radius:8px;padding:8px 12px;">⚠ {{ qaErr }}</div>
           <div v-if="qaResult" style="margin-top:14px;">
-            <div style="white-space:pre-wrap;font-size:13px;line-height:1.8;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;">{{ qaResult.answer }}</div>
+            <div style="white-space:pre-wrap;font-size:13px;line-height:1.8;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;">{{ qaResult.answer }}<span v-if="qaBusy" style="color:var(--accent);">▍</span></div>
             <div v-if="qaResult.sources && qaResult.sources.length" style="margin-top:10px;">
               <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">📚 引用来源（{{ qaResult.sources.length }}）</div>
               <div v-for="(s, i) in qaResult.sources" :key="s.chunkId" style="margin-bottom:6px;font-size:12px;color:var(--muted);">

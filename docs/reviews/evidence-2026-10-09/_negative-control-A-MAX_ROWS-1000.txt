@@ -1,0 +1,14 @@
+# 阴性对照 A：把 `MAX_ROWS` 从 10000 改回 1000，其余一字不动
+# 命令：cd privhub && node --import tsx/esm tests/office-doc.mjs
+# 退出码：1
+# 变异：plugins/privhub-svc-office/src/office-lib.mjs:42  const MAX_ROWS = 10000 → 1000
+# 只列出变红的断言行与汇总行（其余与「绿」那份逐字相同）。
+
+  ❌ MAX_ROWS 已抬离迁前的 1000（实测 1000）—— 用户实测的那张排播表有 3320 行
+
+  .doc 如实报错 + Office 族收敛断言：93 通过 / 1 失败
+
+# 读数：**恰好一条变红**，就是上限本身。
+#   ⑦ 组（`parseWordPieceText` 纯函数）不受影响 —— 它测的是解析器，不是上限。
+#   ⑧ 组其余各条仍绿 —— 它们按运行期读到的常量驱动，所以"上限变了"这条事实
+#   只能由「实测值 vs 迁前 1000」这一条抓住（这正是它存在的理由）。

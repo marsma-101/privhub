@@ -11,7 +11,7 @@
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-settings'
 export const inject = ['privhub', 'storage']
@@ -41,20 +41,19 @@ const DEFAULT_SETTINGS: Settings = {
 /**
  * D10：走 ctx.storage 读写（透明加解密 + 原子写）。
  * 此前用裸 readFile/writeFile，导致 settings.json 是明文落盘且非原子写。
+ *
+ * D4：损坏 → 隔离存证 + 抛错。此前降级成「默认设置」，随后一次 POST（改主题/开关）
+ * 就会用默认值把文件整体覆盖 —— 用户设过的上传上限、注册开关一并消失。
  */
+const SETTINGS_FILE = join(rootDir, 'data', 'settings.json')
+
 async function loadSettings(storage: StorageLike): Promise<Settings> {
-  const file = join(rootDir, 'data', 'settings.json')
-  if (!existsSync(file)) return { ...DEFAULT_SETTINGS }
-  try {
-    const raw = await storage.readText(file)
-    const parsed = JSON.parse(raw) as Partial<Settings>
-    return { ...DEFAULT_SETTINGS, ...parsed }
-  } catch { return { ...DEFAULT_SETTINGS } }
+  const parsed = await readJsonStore<Partial<Settings>>(storage, SETTINGS_FILE, {})
+  return { ...DEFAULT_SETTINGS, ...parsed }
 }
 
 async function saveSettings(storage: StorageLike, s: Settings): Promise<void> {
-  const file = join(rootDir, 'data', 'settings.json')
-  await storage.writeText(file, JSON.stringify(s, null, 2))
+  await storage.writeText(SETTINGS_FILE, JSON.stringify(s, null, 2))
 }
 
 /** ctx.storage 的最小接口（避免直接依赖 svc-storage 的具体类型）。 */
@@ -78,13 +77,18 @@ export function apply(ctx: Context): void {
     if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可修改设置' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
-    const cur = await loadSettings(ctx.storage)
-    const next: Settings = { ...cur }
-    if (body.theme === 'light' || body.theme === 'dark') next.theme = body.theme
-    if (body.defaultView === 'grid' || body.defaultView === 'list') next.defaultView = body.defaultView
-    if (typeof body.maxUploadMB === 'number' && body.maxUploadMB >= 1 && body.maxUploadMB <= 8192) next.maxUploadMB = Math.floor(body.maxUploadMB)
-    if (typeof body.allowSelfRegister === 'boolean') next.allowSelfRegister = body.allowSelfRegister
-    await saveSettings(ctx.storage, next)
+    /* D6：设置是「读全量 → 合并 → 写全量」。不串行的话，两个管理员（或同一人两个标签页）
+     * 同时改不同项时，后写的会把先写的整项改回旧值 —— 典型表现是「我开的开关自己关了」。 */
+    const next = await svc.withFileLock(SETTINGS_FILE, async () => {
+      const cur = await loadSettings(ctx.storage)
+      const merged: Settings = { ...cur }
+      if (body.theme === 'light' || body.theme === 'dark') merged.theme = body.theme
+      if (body.defaultView === 'grid' || body.defaultView === 'list') merged.defaultView = body.defaultView
+      if (typeof body.maxUploadMB === 'number' && body.maxUploadMB >= 1 && body.maxUploadMB <= 8192) merged.maxUploadMB = Math.floor(body.maxUploadMB)
+      if (typeof body.allowSelfRegister === 'boolean') merged.allowSelfRegister = body.allowSelfRegister
+      await saveSettings(ctx.storage, merged)
+      return merged
+    })
     json(res, 200, { ok: true, settings: next })
   }, 'settings')
 }

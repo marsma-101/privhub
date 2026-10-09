@@ -85,7 +85,7 @@ export class WatermarkService extends Service {
    * 返回可直接套用的 CSS 描述（含右下角定位），供程序化叠加。
    * @param user - 当前用户。
    */
-  applyTo(user: { username: string; displayName?: string }): Record<string, string> {
+  applyTo(user: { username: string; displayName?: string }): Record<string, string | number> {
     const v = this.render(user)
     return {
       position: 'fixed',

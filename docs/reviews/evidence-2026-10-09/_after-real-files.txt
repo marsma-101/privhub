@@ -1,0 +1,25 @@
+# 只读端到端取证：拿**真实用户文件**跑**产品函数**（office-lib.mjs 的 readDoc / readXlsx）
+# 脚本：C:\Users\Administrator\.claude\jobs\1dc2c93b\tmp\e2e.mjs（只读：解密到内存，不写任何文件）
+# 退出码：0
+# 注：正文/表头内容类片段在入库时已隐去（用户内容不入库），长度 / 行数 / 计数保留原样。
+
+=== .doc：data-files/AI小说研究/参考文/2.男频小说投稿信誉网站.doc（解密后 59904 字节）===
+[改前 · 主路 getBody()] 长度=2  内容="\n\n"
+[readDoc] ok=true 长度=5037
+  头 100 字: <已隐去（用户正文；首句为文档标题行）>
+  尾 60 字: <已隐去（用户正文）>
+  含 NUL 个数=0
+
+=== xlsx：data-files/A项目/_内联_mtfgnv1r/2026年9月28日-9月30日排播表.xlsx（解密后 411077 字节）===
+  [排播] rows=3320 totalRows=3320 truncatedRows=false totalCols=18 truncatedCols=false
+  [备播] rows=492 totalRows=492 truncatedRows=false totalCols=10 truncatedCols=false
+  [留存] rows=12 totalRows=12 truncatedRows=false totalCols=5 truncatedCols=false
+  [Sheet4] rows=87 totalRows=87 truncatedRows=false totalCols=9 truncatedCols=false
+  [Sheet1] rows=0 totalRows=0 truncatedRows=false totalCols=0 truncatedCols=false
+  [Sheet2] rows=0 totalRows=0 truncatedRows=false totalCols=0 truncatedCols=false
+  [Sheet3] rows=0 totalRows=0 truncatedRows=false totalCols=0 truncatedCols=false
+  [Sheet5] rows=0 totalRows=0 truncatedRows=false totalCols=0 truncatedCols=false
+  [Sheet6] rows=0 totalRows=0 truncatedRows=false totalCols=0 truncatedCols=false
+  ⇒ 「排播」表：界面上会显示 3320 行；被截断=false（迁移前只有 1000 行且无任何提示）
+  ⇒ 首行内容: <已隐去（用户表头）>
+  ⇒ 末行内容: <已隐去（用户数据）>

@@ -1,7 +1,7 @@
 # PrivHub Agent API 接入指南（智能体接入速查）
 
 > 适用：局域网内其他设备的 AI 智能体（Claude Code / Codex / DSH / 自定义脚本）接入 PrivHub。
-> 完整设计见 `PrivHub-AgentAPI-智能体接口方案.md`；本文件是**实操速查**。
+> 完整设计见 `v3/PrivHub-AgentAPI-智能体接口方案.md`（已实施归档）；本文件是**实操速查**。
 > 状态：后端已可用（M1+M2 交付）；**开发者平台界面已交付**（图标栏「🔌 智能体接入」）。
 > 版本：**3.0.1**（变更记录见仓库根 `CHANGELOG.md`）
 

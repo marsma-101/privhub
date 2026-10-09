@@ -1,0 +1,10 @@
+{
+  "id": "privhub-shell-home",
+  "title": "工作台",
+  "icon": "📊",
+  "description": "工作台：进来干什么 —— 概览问候、AI 连接状态、最近打开、我的收藏、快捷入口",
+  "slots": ["home"],
+  "barItems": [
+    { "icon": "📊", "title": "工作台", "slot": "app-iconbar", "view": "home" }
+  ]
+}

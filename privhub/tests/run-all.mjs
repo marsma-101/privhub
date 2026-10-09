@@ -24,6 +24,8 @@ import { build as buildFirstScreen } from './first-screen.mjs'
 import { build as buildPersonalSpace } from './personal-space.mjs'
 import { build as buildPersonalRename } from './personal-rename.mjs'
 import { build as buildAgentSandbox } from './agent-sandbox.mjs'
+import { build as buildTaskboard } from './taskboard.mjs'
+import { build as buildSelfService } from './selfservice.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -86,7 +88,8 @@ async function main() {
   // 首屏链放最前：它验证「能不能进得去」，是其它一切用例的前提
   const suites = [
     buildFirstScreen(), buildSmoke(), buildSecurity(), buildHardening(),
-    buildPersonalSpace(), buildPersonalRename(), buildAgentSandbox(),
+    buildPersonalSpace(), buildPersonalRename(), buildAgentSandbox(), buildTaskboard(),
+    buildSelfService(),
   ]
   const results = []
   for (const s of suites) results.push({ suite: s.name, results: await s.run() })
@@ -94,8 +97,8 @@ async function main() {
   let pass = report(results)
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
-  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'office-doc.mjs']) {
+  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range')
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -113,8 +116,18 @@ function runChild(script) {
      *                            （本机 Node 24 本身也能剥类型，但走 tsx 与全仓口径一致、更稳）；
      *   · office-doc.mjs      —— 同上（读 `file-exts.ts`），另外直接 import `svc-office/src/index.ts`
      *                            来驱动 `read()` 的契约断言。
+     *   · model-parsing.mjs   —— 进程内 `import()` 真身 `plugins/privhub-svc-model/src/index.ts`
+     *                            （纯函数 + 假上游端到端），必须走 tsx。
+     *   · storage-migration.mjs —— 进程内挂真身 `plugins/privhub-svc-storage/src/index.ts`
+     *                            （造一个各类文件齐全的 data/，验证迁移的守卫与保底），必须走 tsx。
+     *   · json-corruption.mjs —— `import()` 真身 `plugins/privhub-core/src/json-store.ts`
+     *                            （进程内验语义 + 另起隔离实例验 HTTP 行为），必须走 tsx。
+     *   · write-serialization.mjs —— 【不需要 tsx】：它自带隔离实例（内部用 tsx 拉服务），
+     *                            脚本自身只发 HTTP、不 import 任何 .ts 源码。
+     *   · media-preview.mjs   —— 进程内 `import()` 真身 `plugins/privhub-core/src/http-range.ts`
+     *                            （纯函数区间解析断言 + 另起隔离实例验 HTTP Range），必须走 tsx。
      * 其余静态脚本不需要，保持原样调用。 */
-    const needsTsx = /(rag-resilience|file-exts|office-doc)\.mjs$/.test(script)
+    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|storage-migration|json-corruption|media-preview)\.mjs$/.test(script)
     const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))

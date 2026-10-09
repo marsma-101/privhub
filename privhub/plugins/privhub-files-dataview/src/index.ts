@@ -38,12 +38,8 @@ h1{font-size:20px;border-bottom:1px solid #eee;padding-bottom:10px}
 }
 
 export function apply(ctx: Context): void {
-  const svc = ctx.privhub as unknown as {
-    route: (path: string, handler: (req: unknown, res: unknown) => Promise<void> | void, name?: string) => void
-    requireUser: (req: unknown, res: unknown) => { username: string; role: string } | null
-    canAccess: (u: { username: string; role: string }, project: string) => boolean
-    isValidProjectName: (n: string) => boolean
-  }
+  /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
+  const svc = ctx.privhub
   const office = ctx.office as unknown as {
     write: (project: string, relPath: string, content: unknown) => Promise<{ ok: boolean; error?: string }>
   }

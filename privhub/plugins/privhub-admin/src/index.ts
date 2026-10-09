@@ -8,10 +8,11 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { basename } from 'node:path'
 import { json, readBody, hashPassword } from '../../privhub-core/src/index'
 
 export const name = 'privhub-admin'
-export const inject = ['privhub', 'audit', 'eventBus']
+export const inject = ['privhub', 'audit', 'eventBus', 'storage']
 
 export function apply(ctx: Context): void {
   /* E1 事件声明 */
@@ -85,7 +86,10 @@ export function apply(ctx: Context): void {
     }
 
     if (body.role === 'admin' || body.role === 'user') rec.role = body.role
-    if (Array.isArray(body.projects)) rec.projects = [...new Set(body.projects.filter((p: unknown) => typeof p === 'string'))]
+    if (Array.isArray(body.projects)) {
+      const names = (body.projects as unknown[]).filter((p): p is string => typeof p === 'string')
+      rec.projects = [...new Set(names)]
+    }
     await svc.saveUsers()
 
     // 广播放在 registry 落盘之后：监听方（rag/recent）据此清理旧目录名引用
@@ -137,4 +141,57 @@ export function apply(ctx: Context): void {
     json(res, 200, { ok: true })
     void audit(u, 'user-reset-password', username)
   }, 'admin-user-reset-password')
+
+  /* ---------- 系统数据：明文→密文（D13）----------
+   * 为什么需要它：读写早就统一走 ctx.storage（新写入自动是密文），但**在此之前**写入的
+   * 文件不会自己变密文 —— 只有「下次被写」才会。于是那些再也不会被写的旧数据
+   * （老邀请码、老批注、旧发布链接）就永远停在明文，而它们恰恰可能含免登录取证。
+   *
+   * 两条路由分开：先能**看见**（GET），再决定**动手**（POST）。管理端一进来就能看到
+   * 「还有几个明文」，而不是点了迁移才知道。 */
+
+  /* 列出仍以明文落盘的系统数据文件（管理员） */
+  svc.route('/privhub/api/storage/plaintext', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const files = await ctx.storage.scanPlaintextSystemFiles()
+    /* 只回文件名与体积，不回绝对路径：管理员要判断的是「哪个文件、多大」，
+     * 盘符与目录结构对这件事没有帮助，少泄露一点是一点。 */
+    json(res, 200, {
+      ok: true,
+      encryptionEnabled: ctx.storage.active,
+      total: files.length,
+      files: files.map((f) => ({ name: basename(f.file), bytes: f.bytes })),
+    })
+  }, 'storage-plaintext')
+
+  /* 迁移为密文（管理员）：迁移前自动备份明文，逐文件回报结果 */
+  svc.route('/privhub/api/storage/migrate', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    if (!ctx.storage.active) return json(res, 400, { ok: false, error: '加密未启用（storage.enabled=false），迁移无意义' })
+    const files = (await ctx.storage.scanPlaintextSystemFiles()).map((f) => f.file)
+    if (files.length === 0) return json(res, 200, { ok: true, migrated: 0, failed: 0, results: [] })
+
+    const results = await ctx.storage.migrateFilesToEncrypted(files)
+    const migrated = results.filter((r) => r.status === 'migrated').length
+    const failed = results.filter((r) => r.status === 'failed')
+    for (const r of results) {
+      void audit(u, 'storage-migrate', basename(r.file),
+        r.status + (r.reason ? '：' + r.reason : '') + (r.backup ? ' backup=' + basename(r.backup) : ''))
+    }
+    json(res, 200, {
+      ok: failed.length === 0,
+      migrated, failed: failed.length,
+      ...(failed.length ? { error: '有 ' + failed.length + ' 个文件迁移失败（原文件已保持/还原为明文，详见 results）' } : {}),
+      results: results.map((r) => ({
+        name: basename(r.file), status: r.status, reason: r.reason,
+        backup: r.backup ? basename(r.backup) : undefined,
+      })),
+    })
+  }, 'storage-migrate')
 }

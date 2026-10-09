@@ -70,7 +70,7 @@ const UploadQueue = {
     clearTimeout(this._retryTimer)
   },
   template: `
-    <div v-if="open" style="position:fixed;right:14px;bottom:14px;z-index:1200;width:340px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.2);overflow:hidden">
+    <div v-if="open" style="position:fixed;right:14px;bottom:14px;z-index:var(--z-drawer,1200);width:340px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.2);overflow:hidden">
       <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600">
         <span>📥 上传队列</span>
         <span class="spacer"></span>
