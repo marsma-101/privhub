@@ -171,6 +171,11 @@ function newId(prefix: string): string {
 
 export function apply(ctx: Context): void {
   ctx.eventBus.declareEmit('audit:logged', 'privhub-task-board', '看板写操作成功审计广播（S1 闭环）')
+  /* task:changed：看板写操作的领域事件（Webhook / 通知等消费方用）。
+   * 与 audit:logged 分开是因为两者受众不同：审计要「谁在什么时候干了什么」，
+   * 领域事件要「任务的状态变成了什么」—— 后者不该逼消费方去解析审计的 detail 文本。
+   * 载荷只带标识与动作（见 privhub-core/events.ts 的说明），不带整板快照。 */
+  ctx.eventBus.declareEmit('task:changed', 'privhub-task-board', '任务看板变更（卡片/列增删改、拖拽）')
   const svc = ctx.privhub
 
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
@@ -212,6 +217,7 @@ export function apply(ctx: Context): void {
       })
       if (!hit) return json(res, 404, { ok: false, error: '卡片不存在' })
       json(res, 200, { ok: true })
+      ctx.emit('task:changed', { project, action: 'card-delete', cardId: id })
       void audit(u, 'taskboard-card-delete', project, 'id=' + id)
       return
     }
@@ -259,6 +265,7 @@ export function apply(ctx: Context): void {
       })
       if (!card) return json(res, 400, { ok: false, error: failed || '建卡失败' })
       json(res, 200, { ok: true, card })
+      ctx.emit('task:changed', { project, action: 'card-create', cardId: card.id, title: card.title, columnId: card.columnId })
       void audit(u, 'taskboard-card-create', project, 'title=' + title)
       return
     }
@@ -291,6 +298,7 @@ export function apply(ctx: Context): void {
       })
       if (!hit) return json(res, 404, { ok: false, error: '卡片不存在或标题为空' })
       json(res, 200, { ok: true })
+      ctx.emit('task:changed', { project, action: 'card-update', cardId: id })
       void audit(u, 'taskboard-card-update', project, 'id=' + id)
       return
     }
@@ -311,6 +319,7 @@ export function apply(ctx: Context): void {
     const toColumnId = str(body.toColumnId, 64)
     const file = boardFile(project)
     let failed = ''
+    let movedFrom = ''
     const okMove = await svc.withFileLock(file, async () => {
       const board = await loadBoard(ctx.storage, file, project)
       const card = board.cards.find((c) => c.id === id)
@@ -322,6 +331,7 @@ export function apply(ctx: Context): void {
       const want = typeof body.order === 'number' && Number.isFinite(body.order) ? Math.trunc(body.order) : others.length
       const idx = Math.max(0, Math.min(others.length, want))
       card.columnId = to.id
+      movedFrom = from
       others.splice(idx, 0, card)
       others.forEach((c, i) => { c.order = i })
       card.updatedAt = Date.now()
@@ -331,6 +341,12 @@ export function apply(ctx: Context): void {
     })
     if (!okMove) return json(res, 404, { ok: false, error: failed || '移动失败' })
     json(res, 200, { ok: true })
+    ctx.emit('task:changed', {
+      project, action: 'card-move', cardId: id, columnId: toColumnId,
+      // 只在真的换列时给出「从哪来」：列内排序也是 card-move，但没有「跨列」这回事，
+      // 一律填上会让消费方收到一堆 from === to 的噪音事件。
+      ...(movedFrom && movedFrom !== toColumnId ? { fromColumnId: movedFrom } : {}),
+    })
     void audit(u, 'taskboard-card-move', project, `id=${id} → ${toColumnId}`)
   }, 'taskboard-cards-move')
 
@@ -362,6 +378,7 @@ export function apply(ctx: Context): void {
       })
       if (!done) return json(res, 400, { ok: false, error: failed || '删列失败' })
       json(res, 200, { ok: true })
+      ctx.emit('task:changed', { project, action: 'column-delete', columnId: id })
       void audit(u, 'taskboard-column-delete', project, 'id=' + id)
       return
     }
@@ -388,6 +405,7 @@ export function apply(ctx: Context): void {
         column = col
       })
       json(res, 200, { ok: true, column })
+      ctx.emit('task:changed', { project, action: 'column-create', ...(column ? { columnId: (column as Column).id } : {}), title })
       void audit(u, 'taskboard-column-create', project, 'title=' + title)
       return
     }
@@ -417,6 +435,7 @@ export function apply(ctx: Context): void {
       })
       if (!hit) return json(res, 400, { ok: false, error: badWip ? 'WIP 上限需为 1–999 的整数' : '列不存在或列名为空' })
       json(res, 200, { ok: true })
+      ctx.emit('task:changed', { project, action: 'column-update', columnId: id })
       void audit(u, 'taskboard-column-update', project, 'id=' + id)
       return
     }

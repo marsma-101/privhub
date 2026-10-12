@@ -1,0 +1,8 @@
+{
+  "name": "privhub-files-refcheck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub 附件引用检查：扫出孤儿附件与断链引用，只报告 + 导出 CSV，绝不删除",
+  "main": "src/index.ts"
+}

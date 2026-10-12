@@ -48,6 +48,9 @@ const ROUTES = [
   { key: 'content/trash', label: '回收站', short: '回收站', section: 'content', icon: '🗑️', view: 'trash', slot: 'admin-trash', entryOf: 'trash', implemented: true },
 
   { key: 'ops/audit', label: '审计日志', short: '审计日志', section: 'ops', icon: '🧾', view: 'audit', slot: 'audit', entryOf: 'audit', implemented: true },
+  /* Webhook 订阅：视图与 slot 都由 privhub-webhook 插件声明（本文件不认识插件 id，
+   * 只认这个名字；插件没装载时该条目自动显示「未安装」而不是点开空白）。 */
+  { key: 'ops/webhook', label: 'Webhook 订阅', short: 'Webhook', section: 'ops', icon: '🪝', view: 'admin-webhook', slot: 'admin-webhook', entryOf: 'admin-webhook', implemented: true },
   { key: 'ops/settings', label: '系统设置', short: '系统设置', section: 'ops', icon: '⚙️', view: 'settings', slot: 'settings', entryOf: 'settings', implemented: true },
   { key: 'ops/backup', label: '自动备份', short: '自动备份', section: 'ops', icon: '💾', view: '', builtin: 'backup', adminOnly: true },
   { key: 'ops/watermark', label: '水印配置', short: '水印配置', section: 'ops', icon: '💧', view: '', builtin: 'watermark', adminOnly: true },

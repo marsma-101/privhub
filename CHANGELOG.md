@@ -22,7 +22,135 @@
 
 ---
 
-> 本文件当前有**两个 `[未发布]` 段**（均未随部署包同步、未升版本号）：**音视频预览**（方法照 `nowen-note`，用户指定）与**表格行上限 + `.doc` 正文直读**（用户实测缺陷）。两段互相独立，按需分别发布。
+> 本文件当前有**多个 `[未发布]` 段**（均未随部署包同步、未升版本号）：**音视频预览**、**表格行上限 + `.doc` 正文直读**、**项目看板**、**引用检查 + 任务日历**、**Webhook 订阅**。各段互相独立，按需分别发布。
+
+## [未发布] — 新插件：Webhook 订阅 `privhub-webhook`（全事件出网 + HMAC 签名 + 重试 + 管理面板）
+
+来源：同一轮 `nowen-note` 对照中，用户点名「也是我生产环境需要的功能」。用户选择：**全部事件**（文件/任务/看板/审计）。
+完整取证见 `docs/PrivHub-新功能批-Webhook-2026-10-12.md`。
+
+**接口无破坏性变更**：新插件（新目录），既有路由一个未动；另增两个**新事件**（见下），只 `emit` 不改变任何既有行为。
+
+### 一、订阅模型
+
+- 一条订阅 = 地址 + 事件白名单（空 = 全部）+ 可选项目过滤 + 开关，上限 50 条。
+- 签名：`x-privhub-signature: sha256=<HMAC-SHA256(secret, rawBody)>`，与 GitHub/Stripe 同构。
+  **对实际发出的那串字节签名**（不是重新 `JSON.stringify` 一次），否则订阅方验签会因一个空格差异失败。
+- 密钥是**只写**的：`secret` 永不出现在任何响应里（只在生成/轮换那一次回显），列表里只回 `hasSecret`。
+
+### 二、全事件 = 逐事件订阅（总线无通配）
+
+`ctx.emit` 是同步的，且总线**没有通配订阅**，所以「全部事件」落成对每个事件名各挂一个 `ctx.on`（`LISTEN` 常量 7 项）。
+监听器**先裁剪载荷、再异步入队，立即返回** —— 不能让一个 IPC/HTTP 投递挡住写路径；单个监听器抛错被 try/catch 吞掉，不冒泡进调用方。
+投递走**每个订阅一条串行链**：某个黑洞地址只会拖慢它自己的队列，不牵连别的订阅。
+
+### 三、两个新事件（本插件需要、原本没有）
+
+`task:changed`（任务看板：卡片增删改/拖拽/列操作，含 `fromColumnId→columnId`）与
+`dashboard:changed`（项目看板写入/重置，带 `revision`/`sections`）。
+在 `plugins/privhub-task-board/src/index.ts`、`plugins/privhub-project-dashboard/src/index.ts` 各自 `declareEmit` + `emit`；
+契约类型加在 `plugins/privhub-core/src/events.ts`，注册表文档同步。**既有事件一个未动。**
+
+### 四、防放大与重试口径
+
+- `file:saved` 载荷自带**整篇正文**，原样转发等于把一次保存变成对订阅方的磁盘/带宽放大。故只投
+  `docBytes` + `docPreview`（前 500 字）+ `docTruncated`；要全文的订阅方拿 `project`+`path` 走文件接口（那才是鉴权正确的路）。
+  `trimPayload` **必须幂等**（入队与构造正文两处都调；不幂等会把已裁载荷二次裁剪成 `docBytes:0` 的假摘要 —— 本批踩过并修）。
+- 正文超 32 KB 降级为极简信封并标 `truncated`。重试按 `classifyStatus` 分类：网络不通 / 408 / 429 / 5xx 才重试，
+  其余 4xx 是终态失败（地址写错重试无意义），共 3 次尝试、退避 500/1500 ms，单次超时 8 s。
+- 投递日志 300 条环形，`data/webhook-log.json` **宽松读**（可重建）；订阅配置 `data/webhooks.json` **严格读** + `assertStoreWritable`。
+
+### 五、路由与界面
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/privhub/api/webhook/list` | 订阅列表（剥 secret）+ 运行计数 |
+| GET | `/privhub/api/webhook/events` | 可订阅事件目录 + 每事件近期投递数 |
+| POST | `/privhub/api/webhook/save` | 新建/保存（新建时回显一次生成的密钥） |
+| POST | `/privhub/api/webhook/delete` · `/toggle` | 删除 / 启停 |
+| GET | `/privhub/api/webhook/deliveries` | 投递日志（可按订阅过滤） |
+| POST | `/privhub/api/webhook/replay` · `/test` | 人工重放某条 / 发一次测试投递 |
+
+全部 **仅管理员**（`requireUser → role!=='admin' → 403`），顺序 `method → auth → authz`。
+管理面板 `client/`（`admin-webhook` 槽 + `admin-console` 路由 `ops/webhook`）：左订阅列表 / 右表单 / 下日志表。
+
+### 六、测试与回归
+
+- `tests/webhook.mjs`（23 条）：自带本地 sink 校验**对收到的那串原始字节**验签、事件过滤、项目过滤、
+  5xx 恰好重试 3 次、连不上 `httpStatus:null`、404 一次即终态、禁用/删除后不再投递、重放（同事件新投递 id）、
+  密钥只回显一次且列表不含密钥、`file:saved` 不放大、`task:changed` 有序、权限 401/403。
+- `tests/integrity.mjs` +9（含**反漂移**三连：事件目录 ⊇ 全仓所有 `ctx.emit('x'` 事件名、目录无幽灵事件、
+  每个目录名都出现在 `LISTEN` 块内）。
+- 回归 `node tests/run-all.mjs --spawn` → **HTTP 214 / 静态 1226 = 1440 通过 / 0 失败**（较上段 +32；退出码 0）。
+- **既有断言仅改一条**：`tests/admin-console.mjs` 的管理路由条数 `13 → 14`（新增一条 console 路由，该断言是精确花名册，须随新路由增长）。
+- 本段**未提交、未推送**。
+
+## [未发布] — 新插件：引用检查 `privhub-files-refcheck`（只报告）+ 任务日历 `privhub-task-calendar`（月/周/日）
+
+来源：与 `nowen-note`（弄文笔记）的源码对照（4 个子智能体分头读源码、非读 README）列出 ~57 项差距后，
+用户圈定三件生产环境真要用的功能。本段做其中两件，**Webhook 留待下一批**（已完成，见上一段）；导出/分享两项用户已明确排除。
+
+**接口无破坏性变更**：两件都是**新增插件**（新目录 = 新功能，装卸即增删目录），既有路由一个未动。
+完整取证见 `docs/PrivHub-新功能批-引用检查与任务日历-2026-10-12.md`。
+
+### 一、任务日历（`privhub-task-calendar`，纯客户端插件）
+
+- **形态**：只有 `client/`（无 `src/index.ts`，不挂服务端路由），把任务看板已有的 `dueDate` 铺成**月/周/日三视图**，
+  外加「未排期」区。改期/排期/移出排期走的还是既有接口（`PATCH|POST /privhub/api/taskboard/cards`），
+  **不改数据结构**（用户选择：先只用截止日期，日粒度）。
+- **接线**：`frontend/index.html` 三处（视图注释 `:538`、barItem 分发 `:868`、渲染链 `:1160-1161`），
+  少一处就是「点开一片空白且不报错」，`tests/integrity.mjs:354-358` 把它钉成契约。
+- **测试**：`tests/task-calendar.mjs`（7 条）刻意打在**日历依赖的服务端契约**上 ——
+  `dueDate` 可建/可回读为「当天 0 点」/可改到另一天/可置 null 清空（界面本身由 `frontend-templates.mjs` 编译校验）。
+
+### 二、附件引用检查（`privhub-files-refcheck`，服务端 + 只读界面）
+
+- **口径**（用户拍板）：**只报告 + 导出 CSV，绝不删除**。本插件没有任何删除/移动/改写接口，
+  对磁盘只读，唯一写入是审计记录；界面上不放删除按钮，页脚明写「本页只报告」。
+- **两类问题**：**孤儿附件**（磁盘上有、没有任何引用指向它，按体积降序）与**断链引用**
+  （引用写在那里、目标不存在，带来源文件 + 行号；任务卡来的标「任务卡」）。
+- **引用来源三种**：Markdown 双链 `[[name]]`（与图谱同一套语法，但**保留**图谱会丢弃的悬空目标，
+  否则报不出断链）、Markdown 链接/图片（只认项目内相对路径，`scheme:` 外链不算）、
+  任务卡 `relatedFiles`（全仓唯一的结构化跨文件引用，可跨项目）。
+- **权限**：`requireUser(401) → 项目名(400) → canAccess(403)` + 扫描内部逐文件 ACL 过滤
+  （不走 `admin-acl` 的 `GUARD_PATHS`：本路由的文件标识是「一次扫出成百上千条」，表驱动守卫无从下手）。
+  **不可见的文件既不进孤儿、也不作为断链目标**（否则等于把无权查看的文件名念给用户），这类命中只回数量（`suppressed`）。
+- **规模闸门**（沿用 W-C 口径，截断必明说）：深度 24 / 文件 200000 / 单文件解析 1 MB / 读并发 8 /
+  返回各 5000 条 / 逐用户缓存 5 分钟（事件失效）。不跟随符号链接（junction 逃逸面已封）。
+- **路由**：`GET /privhub/api/refcheck?project=|all=1[&refresh=1]`、`GET /privhub/api/refcheck/export?…&kind=orphans|dangling|all`（CSV 带 BOM）。
+- **测试**：`tests/refcheck.mjs`（18 条）覆盖两类问题、行号、外链不算引用、任务卡断链、缓存、
+  400/403、**文件级 ACL 不泄露**（配规则后基线自证 → 摘除 → 复原）、CSV 导出与鉴权、all=1 汇总。
+- **实际跑出来的是真问题**（开发库）：A项目 108 文件 58 文档 34 ms → 孤儿 50、断链 4
+  （断链全部是历史文档指向已删 `公告.txt` 的 `[[双链]]`；孤儿是几份没人引用的 office 附件）。
+
+### 三、共用改动
+
+- `plugins/privhub-core/src/index.ts:268`：原本模块私有的 `fmtSize` 加 `export`（**纯新增导出、零行为变化**），
+  供引用检查按与 `listFiles` 同一口径展示体积，不再各自造一份人类可读格式函数。
+- 回归：`node tests/run-all.mjs --spawn` → **HTTP 191 / 静态 1217 = 1408 通过 / 0 失败**
+  （新增断言只增不改：`tests/run-all.mjs:34,108,110`、`tests/integrity.mjs:354-367`）。
+
+### 四、未做/待观察
+
+- **未在浏览器里目视验证**观感（已验证：契约回归全绿、65 个 Vue 模板零错误零警告、
+  `/privhub/api/shell/manifest` 确实返回这三个插件）。
+- 首次扫描需要把项目里全部 Markdown 读一遍，故界面**不自动扫描**，由用户点「开始扫描」触发。
+- 本段及 Z 批（项目看板）**均未提交、未推送**。
+
+## [未发布] — 新插件：项目看板 `privhub-project-dashboard`（AI 可控的纵向分区页）
+
+每个项目一块看板：`sections[]` 自上而下堆叠，`width=full|half` 决定全宽或两栏并排。
+**布局与内容交给 AI 智能体**（智能体重写整份文档即可调整分区大小/顺序/内容），人只读。
+
+- **路由**：`GET /privhub/api/dashboard?project=`（含实时 facts）、`PUT`（覆盖写，需可编辑权限）、
+  `POST /reset`（还原默认）、`GET /schema`（组件契约，供智能体发现能写什么）。
+- **智能体写入车道**：`POST /privhub/api/agent/v1/dashboard`（`X-Agent-Key`），
+  是本仓 `projectWriteExceptions` 的**唯一**登记项。写入共用同一份清洗（`sanitizeDashboard`）。
+- **数据**：`data/dashboards/<project>.json`，经 `ctx.storage` 透明加密（PHENC1）；
+  读改写整体包进 `svc.withFileLock` 并递增 `revision`（D6：不做无锁读改写）。
+- **前端渲染**：受限 Markdown（**先转义再渲染**，禁 HTML 直出），支持 `stats`（可引用实时指标）/`plan` 两种组件。
+- **测试**：`tests/dashboard.mjs`（19 条，含智能体车道的 scope 越界 403 与加密落盘断言）。
+- 详见 `docs/PrivHub-Z批-项目看板-2026-10-12.md`。
 
 ## [未发布] — 音视频预览（原生播放 + HTTP Range，做法照 `nowen-note`）
 

@@ -374,7 +374,10 @@ ok(headChildren.some((e) => e._attrs['data-privhub-admin-console'] !== undefined
 console.log('\n── 路由与视图可用性 ──')
 const routes = mod.routes
 ok(routes.SECTIONS.length === 4, `侧栏分为 4 组（实际 ${routes.SECTIONS.length}）`)
-ok(routes.ROUTES.length === 13, `管理路由 13 条（实际 ${routes.ROUTES.length}）`)
+/* 名册计数：新增一条管理路由（ops/webhook，由 privhub-webhook 提供面板）就要 +1。
+ * 这条断言的价值不在于「13」这个数字，而在于「路由表被改动时有人会看一眼」——
+ * 仍然精确相等，少一条、多一条都会红。 */
+ok(routes.ROUTES.length === 14, `管理路由 14 条（实际 ${routes.ROUTES.length}）`)
 ok(routes.hashToKey('#/admin/access/acl') === 'access/acl', '#/admin/access/acl 解析为 access/acl')
 ok(routes.hashToKey('#/admin/overview') === 'overview', '#/admin/overview 解析为 overview')
 ok(routes.hashToKey('#/admin') === '', '#/admin 归一为空键（落到上次位置/概览）')

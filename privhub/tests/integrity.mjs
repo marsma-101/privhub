@@ -343,6 +343,58 @@ ok(/"view":\s*"taskboard"/.test(tbManifest), '看板插件声明 taskboard 视�
 ok(/slotComps\['taskboard-view'\]/.test(feSrc), '骨架模板挂载 taskboard-view（// [kanban] 挂载点，勿丢）')
 ok(/view === 'taskboard'/.test(feSrc), '骨架 barItem 分发包含 taskboard 视图')
 
+/* 项目看板（privhub-project-dashboard）与任务日历（privhub-task-calendar，client-only）
+ * 同属「主视图」形态：manifest 声明 + 骨架两处挂载点，缺一即点开空白且不报错。 */
+const dbManifest = readFileSync(join(ROOT, 'plugins', 'privhub-project-dashboard', 'client', 'manifest.json'), 'utf8')
+ok(/"dashboard-view"/.test(dbManifest), '项目看板插件声明 dashboard-view slot')
+ok(/"view":\s*"dashboard"/.test(dbManifest), '项目看板插件声明 dashboard 视图 barItem')
+ok(/slotComps\['dashboard-view'\]/.test(feSrc), '骨架模板挂载 dashboard-view（// [dashboard] 挂载点，勿丢）')
+ok(/view === 'dashboard'/.test(feSrc), '骨架 barItem 分发包含 dashboard 视图')
+
+const calManifest = readFileSync(join(ROOT, 'plugins', 'privhub-task-calendar', 'client', 'manifest.json'), 'utf8')
+ok(/"calendar-view"/.test(calManifest), '任务日历插件声明 calendar-view slot')
+ok(/"view":\s*"calendar"/.test(calManifest), '任务日历插件声明 calendar 视图 barItem')
+ok(/slotComps\['calendar-view'\]/.test(feSrc), '骨架模板挂载 calendar-view（// [calendar] 挂载点，勿丢）')
+ok(/view === 'calendar'/.test(feSrc), '骨架 barItem 分发包含 calendar 视图')
+
+/* 引用检查（privhub-files-refcheck）：主视图形态 + 服务端插件必须被 L3 自动发现
+ * （有 src/index.ts 才会被装配；漏了就是「界面点开一片空白、控制台无报错」）。 */
+const rcManifest = readFileSync(join(ROOT, 'plugins', 'privhub-files-refcheck', 'client', 'manifest.json'), 'utf8')
+ok(/"refcheck-view"/.test(rcManifest), '引用检查插件声明 refcheck-view slot')
+ok(/"view":\s*"refcheck"/.test(rcManifest), '引用检查插件声明 refcheck 视图 barItem')
+ok(/slotComps\['refcheck-view'\]/.test(feSrc), '骨架模板挂载 refcheck-view（// [refcheck] 挂载点，勿丢）')
+ok(/view === 'refcheck'/.test(feSrc), '骨架 barItem 分发包含 refcheck 视图')
+ok(existsSync(join(ROOT, 'plugins', 'privhub-files-refcheck', 'src', 'index.ts')), '引用检查服务端入口存在（L3 发现靠它）')
+
+/* Webhook 订阅（privhub-webhook）：管理面板形态（slot + 控制台路由条目 + 服务端入口），
+ * 外加一条**防漂移**契约 —— 它把「全仓实际 emit 的事件」与「本插件声明可订阅的目录」
+ * 对齐。这两边分属不同插件，没有任何编译器能把它们连起来：漏一个事件的后果是
+ * 「那个事件永远投不出去，而且没有任何报错」，只能靠这条静态比对兜住。 */
+const whkManifest = readFileSync(join(ROOT, 'plugins', 'privhub-webhook', 'client', 'manifest.json'), 'utf8')
+ok(/"slots":\s*\[[^\]]*"admin-webhook"/.test(whkManifest), 'Webhook 插件声明 admin-webhook slot')
+ok(/"view":\s*"admin-webhook"/.test(whkManifest), 'Webhook 插件声明 admin-webhook 入口 barItem')
+ok(/"adminOnly":\s*true/.test(whkManifest), 'Webhook 入口为 adminOnly（普通用户看不到入口）')
+const acRoutesSrc = readFileSync(join(ROOT, 'plugins', 'privhub-admin-console', 'client', 'routes.js'), 'utf8')
+ok(/entryOf:\s*'admin-webhook'/.test(acRoutesSrc), '管理控制台路由表含 Webhook 订阅条目')
+ok(/slot:\s*'admin-webhook'/.test(acRoutesSrc), '管理控制台条目的 slot 指向 admin-webhook')
+ok(existsSync(join(ROOT, 'plugins', 'privhub-webhook', 'src', 'index.ts')), 'Webhook 服务端入口存在（L3 发现靠它）')
+
+const whkCoreSrc = readFileSync(join(ROOT, 'plugins', 'privhub-webhook', 'src', 'core.ts'), 'utf8')
+const whkSrc = readFileSync(join(ROOT, 'plugins', 'privhub-webhook', 'src', 'index.ts'), 'utf8')
+const emitNames = new Set()
+for (const f of walkTs(join(ROOT, 'plugins'))) {
+  for (const m of readFileSync(f, 'utf8').matchAll(/ctx\.emit\(\s*'([^']+)'/g)) emitNames.add(m[1])
+}
+const catalogNames = new Set()
+for (const m of whkCoreSrc.matchAll(/\{\s*name:\s*'([^']+)',\s*desc:/g)) catalogNames.add(m[1])
+const notCovered = [...emitNames].filter((n) => !catalogNames.has(n)).sort()
+const ghostEvents = [...catalogNames].filter((n) => !emitNames.has(n)).sort()
+ok(notCovered.length === 0, `Webhook 事件目录覆盖全部实际 emit 的事件${notCovered.length ? '，缺：' + notCovered.join(', ') : `（${emitNames.size} 个）`}`)
+ok(ghostEvents.length === 0, `Webhook 事件目录不含没人发的事件${ghostEvents.length ? '，多：' + ghostEvents.join(', ') : ''}`)
+const listenBlock = whkSrc.slice(whkSrc.indexOf('const LISTEN'), whkSrc.indexOf('] as const'))
+const notListened = [...catalogNames].filter((n) => !listenBlock.includes(`'${n}'`)).sort()
+ok(notListened.length === 0, `Webhook 对目录里每个事件都真的注册了监听${notListened.length ? '，漏：' + notListened.join(', ') : ''}`)
+
 /* 工作台（privhub-shell-home）同样是「主视图」形态，且它还是 client-only 插件 ——
  * 少一行挂载点就是白屏且不报错，把这四处钉成契约。 */
 const homeManifest = readFileSync(join(ROOT, 'plugins', 'privhub-shell-home', 'client', 'manifest.json'), 'utf8')

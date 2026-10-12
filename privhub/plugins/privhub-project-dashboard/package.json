@@ -1,0 +1,8 @@
+{
+  "name": "privhub-project-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub 每项目一块看板（纵向分区页）：布局由 AI 智能体重写，人只读",
+  "main": "src/index.ts"
+}

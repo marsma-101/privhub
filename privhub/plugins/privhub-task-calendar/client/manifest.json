@@ -1,0 +1,10 @@
+{
+  "id": "privhub-task-calendar",
+  "title": "任务日历",
+  "icon": "📅",
+  "description": "把任务看板的截止日期铺到月/周/日三种视图：一眼看清每天要做什么，可拖动改期",
+  "slots": ["calendar-view"],
+  "barItems": [
+    { "icon": "📅", "title": "任务日历", "slot": "app-iconbar", "view": "calendar" }
+  ]
+}

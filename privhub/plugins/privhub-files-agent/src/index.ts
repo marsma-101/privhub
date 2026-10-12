@@ -33,6 +33,8 @@ import { tokenOf, readJsonStore } from '../../privhub-core/src/index'
  * 语义不变：`TEXT_EXT` 只在两处用于分流（写覆盖时"存快照 还是 落 .bak 备份"），不减任何既有能力。 */
 import { TEXT_EXTS as SHARED_TEXT_EXTS, SENSITIVE_EXTS_BARE } from '../../privhub-core/src/file-exts'
 import { WriteGate, Idempotency, QuotaLedger, RateLimiter, PathLocks, versionSnapshot, startFlusher, restoreRateBuckets, fileEtag, sha256 as sha256m, M2Config, M2_DEFAULTS } from './m2'
+/* Z 批：项目看板的存储/清洗与网页路由同源（core.ts 纯逻辑，不注册路由）。 */
+import { computeFactsCached, dashFile, loadDashboard, sanitizeDashboard, writeDashboard } from '../../privhub-project-dashboard/src/core'
 
 export const name = 'privhub-files-agent'
 export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus']
@@ -441,6 +443,7 @@ export function apply(ctx: Context, config?: M2Config): void {
       boundary: {
         projectReadOnly: true,
         writeScope: '沙箱 = 绑定用户的个人空间（data-files/<真实姓名>/，按 key scope 分区）；项目只读',
+        projectWriteExceptions: ['/privhub/api/agent/v1/dashboard —— 仅项目【看板文档】（展示布局），不碰任何项目文件'],
         sensitiveExts: SENSITIVE_EXTS,
         channel: '仅 X-Agent-Key 通道；禁止使用网页会话',
       },
@@ -455,6 +458,8 @@ export function apply(ctx: Context, config?: M2Config): void {
         { name: 'delete', method: 'POST', path: '/privhub/api/agent/v1/delete', body: '{ path }', desc: '删除专属空间文件（进回收站，可经管理员恢复）' },
         { name: 'versions', method: 'GET', path: '/privhub/api/agent/v1/versions?path=', params: { path: '专属空间文件相对路径' }, desc: '专属空间版本历史（覆盖前快照，最多 20 版）' },
         { name: 'versions_restore', method: 'POST', path: '/privhub/api/agent/v1/versions/restore', body: '{ path, at }', desc: '恢复到指定版本（写回 + 生成新版本可反悔）' },
+        { name: 'dashboard', method: 'GET', path: '/privhub/api/agent/v1/dashboard?project=', params: { project: '项目名' }, desc: '读项目看板（布局 + 实时 facts：文件数/成员/近7天变更…）。项目只读的例外之一' },
+        { name: 'dashboard_set', method: 'POST', path: '/privhub/api/agent/v1/dashboard', body: '{ project, dashboard }', desc: '重写项目看板【布局文档】（纵向分区页；组件 markdown/stats/plan）。只改看板，不改任何项目文件；需该密钥 scope 命中该项目且 ACL 允许编辑' },
       ],
       errorCodes: [
         { code: 'AGENT-4001', desc: '参数缺失/非法/缺少幂等键' }, { code: 'AGENT-4010', desc: '无效/缺失密钥' }, { code: 'AGENT-4011', desc: '密钥过期' }, { code: 'AGENT-4012', desc: '密钥吊销' },
@@ -1199,6 +1204,54 @@ export function apply(ctx: Context, config?: M2Config): void {
       json(res, 200, { ok: true }, { 'x-request-id': env.rid })
     }), 'agent-trash-' + op)
   }
+
+  /* ---------- 项目看板（Z 批：项目只读的唯一例外 —— 仅「看板文档」） ----------
+   * 智能体可读/写某项目的**看板布局文档**（调整分区大小/顺序/内容）。
+   * 这是它唯一能产生的「项目级变更」：改的是展示布局，**不碰任何项目文件**
+   * （上方所有写端点仍一律 403 硬隔离，本例外不影响它们）。
+   * 鉴权：withAgent → scope 命中该项目 → 绑定用户可访问 → ACL edit（路径=项目根）。 */
+  svc.route('/privhub/api/agent/v1/dashboard', withAgent(async (ctx, env, a, req, res, extra) => {
+    const url = new URL(req.url ?? '/', 'http://x')
+
+    if (req.method === 'GET') {
+      const project = relOf(url.searchParams.get('project') ?? '')
+      if (!ctx.privhub.isValidProjectName(project)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失/非法', hint: '需要 ?project=<项目名>', requestId: env.rid }, extra)
+      const pr = await authProjectRead(ctx, a, project, '')
+      if (!pr.ok) return json(res, pr.status, { ok: false, code: pr.code, error: pr.hint, hint: pr.hint, requestId: env.rid }, extra)
+      const [dashboard, facts] = await Promise.all([
+        loadDashboard(ctx.storage, project),
+        computeFactsCached(ctx, project),
+      ])
+      void audit(ctx, 'ai:' + a.key.name, 'agent-dashboard-read', project, 'via=' + a.user.username)
+      json(res, 200, { ok: true, dashboard, facts }, extra)
+      return
+    }
+
+    if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST', requestId: env.rid }, extra)
+
+    let body: any
+    try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', hint: '请求体不是合法 JSON', requestId: env.rid }, extra) }
+    const project = String(body.project ?? url.searchParams.get('project') ?? '')
+    if (!ctx.privhub.isValidProjectName(project)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失/非法', hint: '需要 body.project', requestId: env.rid }, extra)
+    if (!scopeAllows(a.key, project, '')) return json(res, 403, { ok: false, code: 'AGENT-4031', error: '超出 scope', hint: '目标超出密钥授权 scope', requestId: env.rid }, extra)
+    if (!ctx.privhub.canAccess(a.user as never, project)) return json(res, 403, { ok: false, code: 'AGENT-4034', error: '绑定用户无权限', hint: '绑定用户无权访问该项目', requestId: env.rid }, extra)
+    const aclD = ctx.acl.can(a.user as never, 'edit', project, '')
+    if (aclD && !aclD.allow) return json(res, 403, { ok: false, code: 'AGENT-4031', error: 'ACL 拒绝', hint: '文件级 ACL 拒绝编辑该项目', requestId: env.rid }, extra)
+
+    const clean = sanitizeDashboard(body.dashboard, project, 'ai:' + a.key.name, 'agent')
+    if (!clean) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '看板结构非法', hint: 'dashboard 需含 sections 数组', requestId: env.rid }, extra)
+
+    const file = dashFile(project)
+    const saved = await ctx.privhub.withFileLock(file, async () => {
+      const prev = await loadDashboard(ctx.storage, project)
+      clean.revision = (Number(prev.revision) || 0) + 1
+      clean.updatedAt = Date.now()
+      await writeDashboard(ctx.storage, clean)
+      return clean
+    })
+    void audit(ctx, 'ai:' + a.key.name, 'agent-dashboard-write', project, 'via=' + a.user.username + ' sections=' + saved.sections.length + ' rev=' + saved.revision)
+    json(res, 200, { ok: true, dashboard: saved }, extra)
+  }), 'agent-dashboard')
 
   console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 沙箱=个人空间 / 配额限流 / 版本快照）')
 }

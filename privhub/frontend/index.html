@@ -535,7 +535,7 @@
       searchView: false,
       favView: false,
       /* ⑤ 视图化（llm_wiki 范式）：单一 activeView 状态源，天然互斥无残留
-         'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki | rag | agent | taskboard | home
+         'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki | rag | agent | taskboard | calendar | dashboard | refcheck | home
          trashView/searchView/favView 为兼容镜像（视图型测试仍可读） */
       activeView: 'files',
       /* P2-3：骨架级内联输入模态（{ title, value, onOk } | null） */
@@ -865,6 +865,9 @@
       else if (view === 'settings' || view === 'acl' || view === 'audit' ||
                view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki' ||
                view === 'rag' || view === 'agent' || view === 'taskboard' ||   // [kanban] 任务看板视图
+               view === 'calendar' ||                                         // [calendar] 任务日历视图
+               view === 'dashboard' ||                                        // [dashboard] 项目看板视图
+               view === 'refcheck' ||                                         // [refcheck] 引用检查视图
                view === 'home') {                                             // [home] 工作台视图
         nav.setActiveView(view)
       }
@@ -1152,6 +1155,13 @@
               <component v-for="c in slotComps['agent-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'agent' && slotComps['agent-view'] && slotComps['agent-view'].length" @close="nav.setActiveView('files')"></component>
               <!-- [kanban] 任务看板主视图（privhub-task-board 提供，PLAN-01）：升级时勿丢本行 -->
               <component v-for="c in slotComps['taskboard-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'taskboard' && slotComps['taskboard-view'] && slotComps['taskboard-view'].length" @close="nav.setActiveView('files')"></component>
+              <!-- [dashboard] 项目看板主视图（privhub-project-dashboard 提供）：纵向分区页，布局由 AI 智能体维护 -->
+              <component v-for="c in slotComps['dashboard-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'dashboard' && slotComps['dashboard-view'] && slotComps['dashboard-view'].length" @close="nav.setActiveView('files')"></component>
+              <!-- [calendar] 任务日历主视图（privhub-task-calendar 提供）：月/周/日三视图，数据同任务看板 -->
+              <component v-for="c in slotComps['calendar-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'calendar' && slotComps['calendar-view'] && slotComps['calendar-view'].length" @close="nav.setActiveView('files')"></component>
+              <!-- [refcheck] 引用检查主视图（privhub-files-refcheck 提供）：孤儿附件 + 断链引用，只报告
+                   （模板挂载点，升级时勿丢本行；integrity 契约会校验） -->
+              <component v-for="c in slotComps['refcheck-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'refcheck' && slotComps['refcheck-view'] && slotComps['refcheck-view'].length" @close="nav.setActiveView('files')"></component>
               <!-- 管理控制台（admin-console slot，privhub-admin-console 提供）：
                    统一管理外壳 = 顶部栏 + 左侧管理导航 + 内容区。
                    外壳通过 slot-comps 拿到全部插件组件，按当前管理路由渲染对应界面。 -->

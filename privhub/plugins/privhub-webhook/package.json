@@ -1,0 +1,8 @@
+{
+  "name": "privhub-webhook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub 事件订阅：把全部事件（文件/任务/看板/审计）POST 到指定地址，HMAC-SHA256 签名 + 失败重试 + 投递日志",
+  "main": "src/index.ts"
+}

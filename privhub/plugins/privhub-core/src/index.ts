@@ -264,7 +264,8 @@ export function verifyPassword(raw: string, stored: string): boolean {
   return target.length === attempt.length && timingSafeEqual(target, attempt)
 }
 
-function fmtSize(bytes: number): string {
+/** 体积人类可读化（B/KB/MB/GB）。供 listFiles 与外部扫描类插件（引用检查等）共用一处口径。 */
+export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`

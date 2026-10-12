@@ -29,6 +29,10 @@ import { build as buildSelfService } from './selfservice.mjs'
 import { build as buildAclFileFilter } from './acl-file-filter.mjs'
 import { build as buildDupVerdict } from './dup-verdict.mjs'
 import { build as buildEditLock } from './edit-lock.mjs'
+import { build as buildDashboard } from './dashboard.mjs'
+import { build as buildTaskCalendar } from './task-calendar.mjs'
+import { build as buildRefCheck } from './refcheck.mjs'
+import { build as buildWebhook } from './webhook.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -99,6 +103,15 @@ async function main() {
     // W-D 新增：查重判定（verdict 分类 / canDelete 只读标记 / 近似族）。同样放最后。
     buildDupVerdict(),
     buildEditLock(),
+    // Z 批新增：项目看板（纵向分区页；含智能体 X-Agent-Key 写入车道）
+    buildDashboard(),
+    // 任务日历（client-only 插件；验它依赖的任务看板 dueDate 契约）
+    buildTaskCalendar(),
+    // 附件引用检查：孤儿附件 / 断链引用只报告不删除；含「不可见文件不得泄露」断言
+    buildRefCheck(),
+    // Webhook 事件订阅：放最后 —— 它会在测试期挂上指向本进程 sink 的订阅，
+    // 清理用例保证跑完不留订阅（残留会让后续每个写入都去重试三次）。
+    buildWebhook(),
   ]
   const results = []
   for (const s of suites) results.push({ suite: s.name, results: await s.run() })
