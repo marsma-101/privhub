@@ -425,6 +425,24 @@ console.log('\n── F 顶栏层数与重叠（用户反馈：三层顶栏、�
     'office2 预览页：`sheets` 不得直接塞数组 `out`（GD-002 根因：数组下标 0/1… 与 sheetOrder 的 s0/s1… 对不上）')
   ok(/sheetOrder:\s*out\.map\(\(x\)\s*=>\s*x\.id\)/.test(o2ViewBare),
     'office2 预览页：`sheetOrder` 与 `sheets` 的键是同一批 id（两边一旦不是同源，取值就落空）')
+
+  // ⑨ 主题跟随（2026-10-10 用户要求：画布跟主题、内容留白纸）
+  /* 病根：本页整页写死浅色 ⇒ 深色主题下是一整块刺眼亮块，且"白卡片套灰画布"是双层背景。
+   * 修法：画布/工具条用变量跟随应用主题；文档页（docx-preview 的 section.docx）与
+   * 表格页（#sheet）保持白纸。主题来源：嵌入时读宿主 documentElement 的 data-theme，
+   * 单独打开时读 localStorage。 */
+  ok(/window\.parent\.document\.documentElement\.getAttribute\('data-theme'\)/.test(o2View) &&
+     /localStorage\.getItem\('privhub_theme'\)/.test(o2View) &&
+     /setAttribute\('data-theme'/.test(o2View),
+    'office2 预览页：主题取自宿主 documentElement 的 data-theme（嵌入时）/ localStorage（单独打开时）')
+  ok(/\[data-theme="dark"\]\s*\{[^}]*--c-canvas/.test(o2View) && /\[data-theme="dark"\]\s*\{[^}]*--c-surface/.test(o2View),
+    'office2 预览页：深色主题覆盖画布（--c-canvas）与工具条（--c-surface）两组变量')
+  ok(/#docx[^{]*\{[^}]*background:\s*transparent/.test(o2View) && /#sheet[^{]*\{[^}]*background:\s*#fff/.test(o2View),
+    'office2 预览页：文档容器改为透明（露出主题画布），表格页 #sheet 仍白纸')
+  ok(/#docx \.docx-wrapper[^{]*\{[^}]*background:\s*transparent/.test(o2View),
+    'office2 预览页：抹平 docx-preview 注入的 `.docx-wrapper{background:gray}`，让文档页直接落在主题画布上')
+  ok(/office2-frame[^}]*background:\s*var\(--bg\)/.test(o2Src),
+    'office2 入口：iframe 自身的背景跟随主题（迁前写死 #fff ⇒ 深色下加载期白闪）')
 }
 
 console.log('\n── G 内容区所有权契约（docx 残留防治，方案 §9.2 A1~A4）──')
@@ -2231,6 +2249,30 @@ console.log('\n── N 编辑器三态：纯编辑 / 纯预览 / 分屏（默�
     '图片外层改成宿主自己的类（不再靠内联 text-align:center），图片仍可点开放大（lightbox 未被弄坏）')
   ok(/fillLayout\s*:\s*''/.test(TREE_PANEL) && /this\.syncFillLayout\(\)/.test(TREE_PANEL),
     '铺满状态由宿主自己的响应式 data（fillLayout）承载，并在 viewer 派生之后同步（顺序有意义：判据之一是「没有 viewer 在场」）')
+}
+
+/* ================= 12.1 `.doc/.pptx` 空白修复 + 文件夹单击展开（2026-10-10） =================
+ * 用户报告的两条现场缺陷，各钉一条防回归：
+ *   ① `.doc`（以及同样没有专属 viewer 的 `.pptx`）点开内容区全白 —— 后端正文已到手
+ *      （`content.office.markdown`，见 content.js:140），但宿主 `renderMd()` 只读
+ *      `content.markdown` ⇒ 恒得 undefined ⇒ 空串。`.docx/.xlsx` 因被 office2 的 iframe
+ *      整块接走而看不出这个洞。修法：renderMd 回落到 `content.office.markdown`。
+ *   ② 左侧目录树迁前只有**双击**才展开（单击只导航）。用户要单击展开：
+ *      单击 = 未展开则展开 + 进入该目录；收起仍走箭头/双击（不折叠，避免"想浏览却被收起"）。 */
+{
+  ok(/renderMd\(\)\s*\{[\s\S]{0,500}office\.markdown/.test(TREE_PANEL),
+    '【.doc 空白】renderMd 在 content.markdown 之外回落到 content.office.markdown（取不到就空串＝全白）')
+  ok(/<template v-else-if="content\.office">[\s\S]{0,500}class="v3-office-page"[\s\S]{0,300}renderMd\(\)/.test(TREE_PANEL),
+    '【.doc 空白】Office 提取分支渲染在「白纸」容器 .v3-office-page 里（画布跟主题、正文留白纸）')
+  ok(/\.v3-content--viewer \.v3-office-page\s*\{\s*display:none/.test(TREE_STYLES),
+    '【.doc 空白】有 viewer 上场时（.docx/.xlsx）那块白纸一起让位（display:none），不在 viewer 后面露白边')
+  ok(/onClick\(\)\s*\{[\s\S]{0,300}isDir[\s\S]{0,220}toggleTree\(this\.project, this\.path\)[\s\S]{0,140}nav\.openDir/.test(TREE_TREE),
+    '【单击展开】目录节点单击 → 未展开则展开（toggleTree）+ 进入该目录（openDir）')
+  ok(/onRootOpen\(\)\s*\{[\s\S]{0,220}rootExpanded[\s\S]{0,100}toggleTree\(nav\.project, ''\)/.test(TREE_TREE),
+    '【单击展开】项目根节点同理：单击展开（未展开时）+ 进入项目根')
+  ok(/@click="entry\.isDir \? onClick\(\) : openFileInDir\(\)"/.test(TREE_TREE) &&
+     /@click="onRootOpen"/.test(TREE_TREE),
+    '【单击展开】树节点与根节点的单击仍绑 onClick / onRootOpen（展开不在双击上）')
 }
 
 /* ================= 13. 批注锚点与渲染根交接（第二步 d，最后一家） =================

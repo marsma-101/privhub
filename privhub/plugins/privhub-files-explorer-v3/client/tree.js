@@ -9,6 +9,7 @@ import { openTab } from './tabs.js'
 import { loadTree, treeOf, toggleTree } from './treecache.js'
 import { openMenuFor, cancelRename, submitRename, submitMkdirV3, newSheetFile, newPageFile } from './ops.js'
 import { esc, inline } from './content.js'
+import { titleCollision } from './collide.js'
 
 /* ================= 递归树节点 ================= */
 const TreeNodeV3 = {
@@ -22,15 +23,33 @@ const TreeNodeV3 = {
     expanded() { const n = this.node; return n ? n.expanded : false },
     children() { const n = this.node; return n ? n.children : [] },
     isActive() { return nav.project === this.project && nav.path === this.path },
+    /* 撞名即时提示：只在「就是这个节点在改名」且有该目录的树缓存时才算。
+     * 拿不到缓存（该目录没展开过 / 已被 refreshTree 失效）就【不提示】——
+     * 宁可沉默，也不拿当前目录的 nav.entries 去猜另一个目录的兄弟，那会指出错的撞名对象。 */
+    renameCollision() {
+      const st = store.renameState
+      if (!st || st.rel !== this.entry.path) return null
+      const node = treeOf(st.project, st.dirPath)
+      if (!node) return null
+      const names = (node.children || []).filter((c) => c.name !== st.entry.name).map((c) => c.name)
+      return titleCollision(names, st.value)
+    },
   },
   methods: {
     onToggle() { void toggleTree(this.project, this.path) },
+    /* 文件夹单击（2026-10-09 用户要求）＝ 展开 + 进入该目录。
+     * 迁前展开只挂在双击上、单击只导航，用户要单击能展开。
+     * 「只展开、不收起」是刻意的：点文件夹多半是想进去看内容，若顺带把已展开的树折叠，
+     * 会出现「想浏览却被收起」。收起仍走箭头 ▸/▾（单击，tree-arrow 的 onToggle）或双击。
+     * 文件单击仍是打开标签，行为不变。 */
     onClick() {
-      if (this.entry.isDir) nav.openDir(this.project, this.path)
-      else openTab(this.entry, this.project, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '')
+      if (this.entry.isDir) {
+        if (!this.expanded) void toggleTree(this.project, this.path)
+        nav.openDir(this.project, this.path)
+      } else openTab(this.entry, this.project, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '')
     },
     onDots(ev) { ev.stopPropagation(); openMenuFor(this.entry, this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '', ev.clientX, ev.clientY + 6) },
-    /* 文件夹双击：展开 / 再双击收起（树形目录惯例） */
+    /* 文件夹双击：展开 / 再双击收起（树形目录惯例）—— 保留，作为「收起」的第二入口 */
     onDblClick() {
       if (this.entry.isDir) void toggleTree(this.project, this.path)
     },
@@ -48,14 +67,27 @@ const TreeNodeV3 = {
           {{ entry.isDir ? (expanded ? '▾' : '▸') : '·' }}
         </span>
         <template v-if="store.renameState && store.renameState.rel === entry.path">
-          <input
-            v-model="store.renameState.value"
-            @keyup.enter="submitRename"
-            @keyup.esc="cancelRename"
-            @click.stop
-            @mousedown.stop
-            style="flex:1;min-width:0;padding:2px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
-          />
+          <span style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <input
+              v-model="store.renameState.value"
+              @keyup.enter="submitRename"
+              @keyup.esc="cancelRename"
+              @click.stop
+              @mousedown.stop
+              style="width:100%;padding:2px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
+            />
+            <!-- 撞名提示（W-§3.4）：只是提前告知，不拦提交 —— 同名拦截仍由 rename 接口返回错误 -->
+            <span
+              v-if="renameCollision && renameCollision.level === 'exact'"
+              style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+              :title="'同目录已有「' + renameCollision.conflict + '」'"
+            >⚠ 同目录已有「{{ renameCollision.conflict }}」</span>
+            <span
+              v-else-if="renameCollision && renameCollision.level === 'prefix'"
+              style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+              :title="'与「' + renameCollision.conflict + '」前 ' + renameCollision.n + ' 字相同，可能撞名'"
+            >⚠ 与「{{ renameCollision.conflict }}」前 {{ renameCollision.n }} 字相同，可能撞名</span>
+          </span>
         </template>
         <template v-else>
           <span @click="entry.isDir ? onClick() : openFileInDir()" @dblclick.stop="onDblClick" style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0">
@@ -93,7 +125,11 @@ const TreeV3 = {
   },
   methods: {
     onRootToggle() { void toggleTree(nav.project, '') },
-    onRootOpen() { nav.openDir(nav.project, '') },
+    /* 项目根节点同理（2026-10-09）：单击展开（未展开时）+ 进入项目根；收起走箭头/双击。 */
+    onRootOpen() {
+      if (!this.rootExpanded) void toggleTree(nav.project, '')
+      nav.openDir(nav.project, '')
+    },
     onNewFolder() { store.newMenu = false; submitMkdirV3() },
     onNewDoc() { store.newMenu = false; nav.setActiveView('template') },
     onNewSheet() { store.newMenu = false; void newSheetFile() },

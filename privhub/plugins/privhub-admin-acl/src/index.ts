@@ -110,6 +110,9 @@ const GUARD_PATHS: Record<string, Partial<Record<string, MethodGuard>>> = {
   '/privhub/api/fulltext/search': { GET: { action: 'view' } },
   '/privhub/api/search': { GET: { action: 'view' } },
   '/privhub/api/kg': { GET: { action: 'view' } },
+  /* 反向链接（W-C / §2.4）：返回的是**其他文件**的正文片段，逐条 ACL 过滤在
+   * kg 插件内部做；这里管住被查询的那个文件本身（project/path 走 query）。 */
+  '/privhub/api/kg/backlinks': { GET: { action: 'view' } },
   '/privhub/api/meta/tags': { GET: { action: 'view' }, POST: { action: 'edit', fromBody: true } },
   '/privhub/api/meta/tagged': { GET: { action: 'view' } },
   '/privhub/api/mdpage/generate': { POST: { action: 'edit', fromBody: true } },

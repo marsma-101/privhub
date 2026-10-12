@@ -58,7 +58,7 @@ const MARK = 'data-v3-injected'
 const styleEl = document.createElement('style')
 styleEl.textContent = `
 .v3-viewer-host[data-viewer="${VIEWER_ID}"] { display:flex; flex:1 1 auto; min-height:0; }
-.v3-viewer-host[data-viewer="${VIEWER_ID}"] iframe.office2-frame { display:block; flex:1 1 auto; min-height:0; width:100%; height:100%; border:none; background:#fff; }
+.v3-viewer-host[data-viewer="${VIEWER_ID}"] iframe.office2-frame { display:block; flex:1 1 auto; min-height:0; width:100%; height:100%; border:none; background:var(--bg); }
 `
 document.head.appendChild(styleEl)
 

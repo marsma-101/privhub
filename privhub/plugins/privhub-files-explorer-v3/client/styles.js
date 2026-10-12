@@ -32,7 +32,7 @@ styleEl.textContent = `
  * 迁前它是 office2 注入的 .v3-content--office + iframe.office2-frame ——
  * 插件按类名声称拥有别人的容器，正是硬约束 5 要治的那种写法。 */
 .v3-content--viewer { display:flex; flex-direction:column; padding:0; overflow:hidden; }
-.v3-content--viewer .v3-md, .v3-content--viewer .v3-text { display:none; }
+.v3-content--viewer .v3-md, .v3-content--viewer .v3-text, .v3-content--viewer .v3-office-page { display:none; }
 /* 图片 / PDF 铺满（本轮新增形态）：与 --viewer / --editor 同一范式 ——
  * 状态由**宿主自己派生**（panel.js 的 fillLayout，写进响应式 data）、规则写在
  * **宿主自己的样式**里、插件一个字节都不参与。
@@ -92,6 +92,19 @@ styleEl.textContent = `
 .v3-op-btn { font-size:12px; padding:4px 10px; border-radius:6px; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; }
 .v3-op-btn:hover { color:var(--accent); border-color:var(--accent); }
 .v3-md { font-size:var(--v3-preview-font, 13.5px); line-height:1.75; color:var(--text); max-width:900px; }
+/* Office 提取正文（.doc / .pptx 这类没有专属 viewer 的）：白纸容器。
+ * 2026-10-09 用户要求 —— 画布跟随主题、正文留白纸（参照 nowen-note）。
+ * 为什么需要它：.v3-md 的文字色跟主题（深色主题下是浅色字），若直接压在白纸上会看不见；
+ * 这里把「纸上的字」一律钉成浅色主题的深色字/浅色代码底 —— 纸恒白、字恒深，两套主题下都读得清。
+ * ⚠ 与 --viewer 让位：.docx/.xlsx 有 viewer 上场时（宿主给整个内容区加 --viewer），
+ *   这块纸必须一起 display:none，否则会在 viewer 后面露出一圈白边（见上面那条）。 */
+.v3-office-page { max-width:900px; margin:0 auto; background:#fff; border-radius:8px; padding:28px 36px; box-shadow:0 1px 3px rgba(0,0,0,.12); }
+.v3-office-page .v3-md { color:#1f2329; max-width:none; }
+.v3-office-page .v3-md pre, .v3-office-page .v3-md code { background:#f2f4f7; border-color:#e2e6ee; color:#1f2329; }
+.v3-office-page .v3-md th { background:#f2f4f7; }
+.v3-office-page .v3-md th, .v3-office-page .v3-md td { border-color:#e2e6ee; }
+.v3-office-page .v3-md blockquote { color:#5c6779; }
+.v3-office-page .v3-md a { color:#3a63be; }
 .v3-md h1,.v3-md h2,.v3-md h3 { margin:16px 0 8px; }
 .v3-md pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; font-size:12.5px; }
 .v3-md code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12.5px; }
@@ -125,7 +138,7 @@ styleEl.textContent = `
  * 迁前是 width:100% + height:calc(100vh - 260px) + 1px 边框 + 8px 圆角 ——
  * 写死高度与实际 chrome 高度无关（标签行/顶栏一变就对不上），边框圆角等于给
  * 浏览器内置 PDF 阅读器套了个相框，页面自己的背景反而显示不出来。 */
-.v3-pdf { width:100%; height:100%; border:0; display:block; }
+.v3-pdf { width:100%; height:100%; border:0; display:block; background:var(--bg); }
 /* 音视频（2026-10-09）：宿主亲儿子第三支，与图片/PDF 同一族（铺满形态也走 .v3-content--fill）。
  * 只给"不超出容器"这一条 —— 与图片同口径：不加边框圆角、不写死高度、不加装饰底色。
  * ⚠ audio 要单独放开高度：它继承 max-height:100% 会在铺满布局里被压成一条缝（原生控件高度是固定的）。
@@ -160,6 +173,11 @@ detailStyle.textContent = `
 .v3-detail-tags { margin-top: 10px; }
 .v3-detail-tags .v3-detail-tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 9px; border-radius: 10px; background: var(--accent-soft, rgba(90,130,200,.14)); color: var(--accent); font-size: 11.5px; }
 .v3-detail-tags input { width: 100%; padding: 5px 9px; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 12px; outline: none; }
+/* 反向链接条目（§2.4）：可点击定位到来源文件 */
+.v3-bl-item { padding: 4px 7px; margin-top: 3px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; }
+.v3-bl-item:hover { border-color: var(--accent); }
+.v3-bl-name { font-size: 12px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v3-bl-snippet { font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v3-detail-actions { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .v3-detail-act { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-size: 11.5px; color: var(--text); position: relative; }
 .v3-detail-act:hover { border-color: var(--accent); color: var(--accent); }

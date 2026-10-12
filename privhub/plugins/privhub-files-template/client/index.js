@@ -11,6 +11,11 @@
  * @module privhub-files-template/client
  */
 
+/* 撞名提示复用 explorer-v3 的纯函数（W-§3.4）。浏览器里插件文件按
+ * `/privhub-plugins/<插件名>/<文件>` 服务（`client/` 段在 URL 里被吃掉），
+ * 因此这里的相对路径写成 `../privhub-files-explorer-v3/collide.js`。 */
+import { titleCollision } from '../privhub-files-explorer-v3/collide.js'
+
 const { api, nav, AUTH, bus, toast } = window.PrivHub
 
 /* 可选格式（ext 用于命名/校验；hint 显示在创建提示） */
@@ -37,6 +42,8 @@ const TemplateDoc = {
       templates: [],
       pick: '',              // md 模板 id（'' = 空白文档）
       fileName: '',
+      sib: [],               // 目标目录现有条目名（撞名提示用）
+      sibSeq: 0,             // 目录切换竞态：只采纳最后一次拉取的结果
       dirTree: [],           // [{ name, path, depth }]
       dirLoading: false,
       dir: '',               // 保存目录（项目内相对路径，'' = 项目根）
@@ -70,6 +77,13 @@ const TemplateDoc = {
       return true
     },
     canNext3() { return this.canNext2 && !this.dirLoading },
+    /* 新建文档的撞名即时提示：拿目标目录现有条目名与「将创建」的完整文件名比对。
+     * 只用提示、不阻断 —— 真正的同名拦截仍在 create() 里（会返回明确错误）。 */
+    collide() {
+      const v = this.fullName
+      if (!v) return { level: '', conflict: '', n: 0 }
+      return titleCollision(this.sib, v)
+    },
   },
   methods: {
     async load() {
@@ -117,6 +131,16 @@ const TemplateDoc = {
         if (!this.dirTree.find((d) => d.path === (nav.path || ''))) this.dir = ''
       } finally { this.dirLoading = false }
     },
+    /* 拉取目标目录现有条目名，供 collide 提示。
+     * 用序号丢弃过期结果：用户快速切换目录时，先发的请求可能后到。 */
+    async loadSib() {
+      if (!nav.project) { this.sib = []; return }
+      const seq = ++this.sibSeq
+      const dir = this.dir || ''
+      const r = await api('/privhub/api/list?project=' + encodeURIComponent(nav.project) + (dir ? '&path=' + encodeURIComponent(dir) : ''))
+      if (seq !== this.sibSeq) return
+      this.sib = r.ok ? (r.entries || []).map((e) => e.name) : []
+    },
     /* 步骤导航 */
     async next() {
       if (this.step === 1) {
@@ -125,6 +149,7 @@ const TemplateDoc = {
         this.step = 2
         if (!this.fileName.trim()) this.fileName = (this.fmt === 'md' && this.picked) ? this.picked.name : '未命名文档'
         this.status = ''
+        await this.loadSib()
       } else if (this.step === 2) {
         if (!this.canNext2) { this.status = '请先输入文档名称（不能包含 \\ / : * ? " < > |）'; return }
         this.step = 3
@@ -210,9 +235,14 @@ const TemplateDoc = {
       else this.status = r.error || '删除失败'
     },
   },
+  watch: {
+    /* 第三步改选保存目录时，撞名对象要跟着换（第二步用的是默认的当前目录）。 */
+    dir() { void this.loadSib() },
+  },
   async mounted() {
     this.dir = nav.path || ''
     await this.load()
+    await this.loadSib()
   },
   template: `
     <div class="view-page">
@@ -285,6 +315,9 @@ const TemplateDoc = {
                 将创建：<strong style="color:var(--accent)">{{ fullName || '（输入名称后显示）' }}</strong>
               </div>
               <div v-if="fileName.trim() && badNameRe.test(fileName.trim())" style="margin-top:4px;font-size:12px;color:var(--danger)">名称不能包含 \\ / : * ? " &lt; &gt; | 字符</div>
+              <!-- 撞名提示（W-§3.4）：只提示不阻断，create() 仍会拦同名 -->
+              <div v-if="collide.level === 'exact'" style="margin-top:4px;font-size:12px;color:var(--danger)">⚠ 同目录已有「{{ collide.conflict }}」</div>
+              <div v-else-if="collide.level === 'prefix'" style="margin-top:4px;font-size:12px;color:var(--danger)">⚠ 与「{{ collide.conflict }}」前 {{ collide.n }} 字相同，可能撞名</div>
               <div v-if="picked" style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--panel2)">
                 <div style="font-size:12px;color:var(--muted);margin-bottom:4px">模板「{{ picked.name }}」预览：</div>
                 <pre style="max-height:130px;overflow:auto;font-size:12px;background:var(--bg);padding:8px;border-radius:6px;white-space:pre-wrap;margin:0">{{ picked.content.slice(0, 220) }}{{ picked.content.length > 220 ? '…' : '' }}</pre>
@@ -308,6 +341,9 @@ const TemplateDoc = {
                 </label>
               </div>
               <div style="margin-top:6px;font-size:12px;color:var(--muted)">新文件：{{ dirLabel }} / {{ fullName }}</div>
+              <!-- 目录选定后这里才是最终保存位置，撞名提示也放一份（与第二步同一口径） -->
+              <div v-if="collide.level === 'exact'" style="margin-top:4px;font-size:12px;color:var(--danger)">⚠ 该目录已有「{{ collide.conflict }}」</div>
+              <div v-else-if="collide.level === 'prefix'" style="margin-top:4px;font-size:12px;color:var(--danger)">⚠ 与「{{ collide.conflict }}」前 {{ collide.n }} 字相同，可能撞名</div>
             </div>
 
             <div style="display:flex;gap:8px;margin-top:14px;align-items:center">

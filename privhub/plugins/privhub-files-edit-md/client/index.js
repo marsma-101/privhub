@@ -210,6 +210,8 @@ const MdEditor = {
       versions: [],
       restoring: false,
       meta: {},
+      /* Y 批：悲观编辑锁。null=未锁定/自己持有；字符串=正被别人修改（只读并轮询重试） */
+      lockedBy: null,
       /* 编辑器三态（本批改）：'edit' 纯编辑（默认）| 'preview' 纯预览 | 'split' 分屏。
        * ⚠ 每次打开文件都由 `openEditor()` 复位成 'edit'，**不做持久化**（不记上次选择）；
        *   迁前这里是 `previewOpen: true`，且 `openEditor()` 里 `= this.isMd`
@@ -299,6 +301,8 @@ const MdEditor = {
        * 少了它，下面几行会把 this.doc / this.path 直接改写，那就是一处静默丢字。
        * ⚠ 必须放在改写 this.path 之前（否则 this.path !== rel 永远为假，防线等于没有）。 */
       if (this.open && this.mode === 'inline' && this.dirty && this.path !== rel) this.leaveInline('superseded')
+      /* Y 批：换文件 → 放掉旧文件的锁（在途静默保存的回包落盘后再放，见 releaseSoon） */
+      if (this.open && this.path !== rel) this.releaseSoon()
       this.project = (payload && payload.project) || nav.project || ''
       this.dir = dir || ''
       this.path = rel
@@ -375,6 +379,90 @@ const MdEditor = {
         this.$nextTick(() => { this.initMde() })
       }
       bus.emit('md:opened', { project: this.project, path: this.path })
+      /* Y 批：打开即申请编辑锁（被占则转只读预览并轮询，见 acquireLock） */
+      void this.acquireLock()
+    },
+    /* ============ Y 批：编辑锁（悲观独占） ============
+     * 与 office2 共用服务端 ctx.lock。语义：
+     *   · 打开文件 → POST /api/lock 申请；被占（409, locked）→ 只读预览 + 每 10s 重试；
+     *   · 持锁期间每 60s 心跳续期（renew 失败=锁已失效 → 提示重新打开）；
+     *   · 退场（切文件/关标签/卸载）→ 释放，且**等本轮静默保存回包之后**再释放，
+     *     避免「刚放开就被别人抢走、我们自己的在途 PUT 反被拦」。
+     * 只锁「编辑器里的文件」；脚本/模板直接写盘不受影响（锁由人来申请）。 */
+    async acquireLock() {
+      const project = this.project
+      const path = this.path
+      if (!project || !path) return
+      let r = null
+      try {
+        r = await api('/privhub/api/lock', { method: 'POST', body: JSON.stringify({ project, path }) })
+      } catch { return } // 锁是尽力而为：申请本身失败不能影响打开文件
+      // 回包期间已切文件/会话 → 丢弃本次结果（否则会给错文件加锁或改错状态）
+      if (this.project !== project || this.path !== path) return
+      if (r && r.ok) {
+        const wasLocked = this.lockedBy !== null
+        this.lockedBy = null
+        this.stopLockPoll()
+        this.startLockHeart()
+        if (wasLocked) this.status = '✅ 已获得编辑锁，可修改'
+        return
+      }
+      if (r && r.locked) {
+        this.lockedBy = (r.holder && r.holder.user) || '他人'
+        this.status = '🔒 ' + this.lockedBy + ' 正在修改，请稍后重试'
+        if (this.viewMode === 'edit') this.viewMode = 'preview'
+        this.startLockPoll()
+      }
+      /* 其余失败（无写权限 403 / 网络）：不改状态，留给保存时的既有提示 */
+    },
+    /* 定时器一律先做存在性判断：最小 DOM 桩（personal-ui 的 K 沙箱）里没有 setInterval，
+     * 直接调用会把「打开文件」这条主路径炸掉（本项目头号事故类型）。退化成「无心跳/无轮询」可接受。 */
+    startLockHeart() {
+      this.stopLockHeart()
+      if (typeof setInterval !== 'function') return
+      this._lockHeart = setInterval(() => { void this.renewLock() }, 60 * 1000)
+    },
+    stopLockHeart() {
+      if (this._lockHeart && typeof clearInterval === 'function') clearInterval(this._lockHeart)
+      this._lockHeart = null
+    },
+    startLockPoll() {
+      if (this._lockPoll || typeof setInterval !== 'function') return
+      this._lockPoll = setInterval(() => { void this.acquireLock() }, 10 * 1000)
+    },
+    stopLockPoll() {
+      if (this._lockPoll && typeof clearInterval === 'function') clearInterval(this._lockPoll)
+      this._lockPoll = null
+    },
+    async renewLock() {
+      if (!this.open || !this.path) return
+      const r = await api('/privhub/api/lock/renew', { method: 'POST', body: JSON.stringify({ project: this.project, path: this.path }) })
+      if (r && r.ok) return
+      // 续期失败 = 锁已过期/被管理员释放：停心跳并如实提示（否则保存时才发现，是静默型毛病）
+      this.stopLockHeart()
+      this.lockedBy = '锁已失效'
+      this.status = '⚠ 编辑锁已失效（超时或被管理员释放），保存前请重新打开该文件'
+    },
+    /** 释放锁（不等待）。若本轮有在途静默保存，用 releaseSoon 等它落盘后再放。
+     *  可传显式 project/path（换文件时用于放**旧文件**的锁）；只有释放的是当前文件时
+     *  才清 UI 状态与定时器 —— 否则会把新文件的锁状态/心跳一起误清。 */
+    releaseLock(project, path) {
+      const proj = project !== undefined ? project : this.project
+      const pth = path !== undefined ? path : this.path
+      if (proj === this.project && pth === this.path) {
+        this.stopLockHeart()
+        this.stopLockPoll()
+        this.lockedBy = null
+      }
+      if (!proj || !pth) return
+      void api('/privhub/api/lock?project=' + encodeURIComponent(proj) + '&path=' + encodeURIComponent(pth), { method: 'DELETE' }).catch(() => {})
+    },
+    releaseSoon() {
+      const project = this.project
+      const path = this.path
+      const p = this._pendingSave
+      const done = p && typeof p.then === 'function' ? p.catch(() => {}) : Promise.resolve()
+      void done.then(() => this.releaseLock(project, path))
     },
     /* ---- inline 模式（VS Code/Trae 式） ---- */
     onSrcInput() {
@@ -473,6 +561,7 @@ const MdEditor = {
       noteLife('editor-close', { project: this.project, path: this.path, reason: 'exit' })
       this.open = false
       this.mode = 'float'
+      this.releaseLock() // Y 批：退出编辑 → 放锁
       // 通知 V3 刷新内容区为最新内容
       bus.emit('md:changed', { project: this.project, path: this.path })
     },
@@ -522,11 +611,12 @@ const MdEditor = {
       if (this.dirty && this.canEditProject(this.project)) {
         const snap = this.captureForSave(why)
         noteLife('save-capture', { project: snap.project, path: snap.path, reason: why, bytes: utf8Bytes(snap.doc) })
-        void this.save(false, snap)
+        this._pendingSave = this.save(false, snap)
       }
       this.emitEditorState(false, why)
       this.open = false      // ← 到这一步才拆编辑器（Vue 下一帧撤掉 teleport 里的节点）
       this.mode = 'float'
+      this.releaseSoon()     // Y 批：等这次静默保存回包后再放锁
       noteLife('editor-close', { project: this.project, path: this.path, reason: why })
       return true
     },
@@ -642,6 +732,7 @@ const MdEditor = {
     tryClose() {
       if (this.dirty && !confirm('有未保存的修改，确定关闭？')) return
       this.open = false
+      this.releaseLock() // Y 批：关闭浮层 → 放锁
       this.destroyMde()
     },
     /* F21：导出当前文档（HTML / PDF / Word，读权限即可） */
@@ -718,6 +809,7 @@ const MdEditor = {
     /* 组件被整体卸载（登出 / 骨架换视图）同样等于「编辑器要没了」：
      * 先捕获数据、先发出保存，再摘监听。这是本文件里最后一道丢内容防线。 */
     this.leaveInline('unmount')
+    this.releaseLock() // Y 批：组件卸载 → 兜底放锁（leaveInline 已排过一次，这里是幂等的保险）
     this.unbindDocKeys()
     if (this._off) this._off()
     if (this._offAuto) this._offAuto()
@@ -734,11 +826,13 @@ const MdEditor = {
         <div style="display:flex;align-items:center;gap:8px;padding:5px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;font-size:12.5px">
           <span :style="{ color: dirty ? 'var(--warn)' : 'var(--accent)', fontSize: '12px' }">{{ dirty ? '● 未保存修改' : (saving ? '保存中…' : '') }}</span>
           <span :style="{ color: /失败|错误|取消/.test(status) ? 'var(--danger)' : 'var(--muted)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '45%' }">{{ status }}</span>
+          <!-- Y 批：他人持锁 → 明确只读提示（status 里也有同一句，这里常驻不随其它提示被覆盖） -->
+          <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
           <span style="flex:1"></span>
           <!-- 三态按钮排：保存 ｜ 预览 ｜ 分屏 ｜ 只读。选中样式复用骨架既有的 .icon-btn.on
                （index.html 里就有：color/border=var(--accent)、底色 var(--accent-soft)）——
                不新增 CSS、不引入新主题。再点一次选中态即回「纯编辑」。 -->
-          <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
+          <button class="icon-btn" :disabled="saving || !!lockedBy" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
           <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
           <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
           <button class="icon-btn" title="退出编辑（只读预览）" @click="exitInline()">✕ 只读</button>
@@ -778,6 +872,7 @@ const MdEditor = {
               ref="src"
               class="md-src"
               v-model="doc"
+              :readonly="!!lockedBy"
               @input="onSrcInput"
               @scroll="syncScroll"
               spellcheck="false"
@@ -810,9 +905,10 @@ const MdEditor = {
           <span style="font-size:16px">📝</span>
           <strong>{{ name }}</strong>
           <span style="color:var(--muted);font-size:12px">{{ project }}/{{ path }}</span>
+          <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
           <span style="flex:1"></span>
           <!-- 浮层与内嵌同一套三态按钮排（同一批语义、同一个 viewMode）。 -->
-          <button class="icon-btn" :disabled="saving" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
+          <button class="icon-btn" :disabled="saving || !!lockedBy" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
           <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
           <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
           <button class="icon-btn" @click="loadVersions()">🕘 版本</button>

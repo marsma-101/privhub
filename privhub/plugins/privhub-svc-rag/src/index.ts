@@ -27,6 +27,9 @@ import { readdir, stat, mkdir } from 'node:fs/promises'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { VectorStore, docKeyOf } from './vec'
+// 错误文案脱敏：本插件的 catch 把 e.message 原样回给前端（toast / SSE error 帧），
+// 是密钥可能外泄的最后一道边界，与 svc-model 内部同一套规则（W-B/§1.5）。
+import { sanitizeError } from '../../privhub-svc-model/src/index'
 
 export const name = 'privhub-svc-rag'
 export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'model', 'office', 'search', 'acl']
@@ -233,32 +236,60 @@ function minHashOf(text: string): number[] {
   return sig.map((v) => (v === Infinity ? 0 : v))
 }
 
-/** 近似相似度：候选对在指定 band 撞桶（L1 只报告，不做删除） */
+/**
+ * MinHash 签名一致率 = 逐位相同的比例，是标准的 Jaccard 相似度估计量
+ * （16 特征 → 分辨率 1/16 ≈ 0.0625）。
+ *
+ * 为什么不用「命中 band 数 / 总 band」：banding 只负责把 O(n²) 的两两比较
+ * 收敛成候选对，它给出的相似度只有 0 / 0.25 / 0.5 / 0.75 / 1 五档（4 band）。
+ * 阈值 NEAR_THRESHOLD = 0.55 正好落在 0.5 与 0.75 之间 —— 按 band 比算，
+ * 实际门槛被抬到「3/4 band 全中」，近似文档几乎不会被报出；而且前端要显示
+ * 「相似度百分比」，五档值根本给不出。签名一致率是连续量，可直接与阈值比较、
+ * 也可直接当百分比展示。
+ */
+function minHashSimilarity(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length)
+  if (n === 0) return 0
+  let same = 0
+  for (let i = 0; i < n; i++) if (a[i] === b[i]) same++
+  return same / n
+}
+
+/**
+ * 近似重复候选：MinHash banding 出候选对 → 按签名一致率算真实相似度，低于
+ * NEAR_THRESHOLD 丢弃（L1 口径：只报告、不做删除）。
+ *
+ * 修复记录（2026-10-11）：迁前这里把 score 写死 0.25，而过滤条件是
+ * `score >= NEAR_THRESHOLD * 0.5`（= 0.275）⇒ 0.25 < 0.275，函数恒返回空数组，
+ * MinHash 那套从未生效（near 类在「待裁决」里永远缺席）。现在 score 是真实算出来的。
+ */
 function nearCandidates(docs: CorpusDoc[]): Array<{ a: string; b: string; score: number }> {
-  const out: Array<{ a: string; b: string; score: number }> = []
-  const bucket = new Map<string, string[]>()
+  const sigOf = new Map<string, number[]>()
   for (const d of docs) {
-    if (!d.minHash || d.minHash.length < MINHASH_FEATURES) continue
-    const rows = Math.floor(MINHASH_FEATURES / MINHASH_BANDS)
+    if (d.minHash && d.minHash.length >= MINHASH_FEATURES) sigOf.set(d.docId, d.minHash)
+  }
+  const rows = Math.floor(MINHASH_FEATURES / MINHASH_BANDS)
+  const bucket = new Map<string, string[]>()
+  const pairs = new Map<string, { a: string; b: string; score: number }>()
+  for (const [id, sig] of sigOf) {
     for (let b = 0; b < MINHASH_BANDS; b++) {
-      const band = d.minHash.slice(b * rows, (b + 1) * rows).join(',')
-      const key = b + ':' + sha256(band).slice(0, 8)
+      const key = b + ':' + sha256(sig.slice(b * rows, (b + 1) * rows).join(',')).slice(0, 8)
       const list = bucket.get(key) ?? []
       for (const other of list) {
-        if (other === d.docId) continue
-        const a = d.docId < other ? d.docId : other
-        const b2 = d.docId < other ? other : d.docId
-        if (!out.some((x) => x.a === a && x.b === b2)) {
-          // 相似度 = 共享 band 数 / 总 band
-          const score = 0.25 // 至少 1 band 命中（保守标记，人工复核）
-          out.push({ a, b: b2, score })
-        }
+        if (other === id) continue
+        const a = id < other ? id : other
+        const b2 = id < other ? other : id
+        const pk = a + '\u0000' + b2 // 路径/项目名不含换行，分隔符不会与内容撞车
+        if (pairs.has(pk)) continue // 同一对可能在多个 band 撞桶 → 只算一次
+        pairs.set(pk, { a, b: b2, score: minHashSimilarity(sigOf.get(a)!, sigOf.get(b2)!) })
       }
-      list.push(d.docId)
+      list.push(id)
       bucket.set(key, list)
     }
   }
-  return out.filter((x) => x.score >= NEAR_THRESHOLD * 0.5)
+  return [...pairs.values()]
+    .map((x) => ({ ...x, score: Math.round(x.score * 100) / 100 }))
+    .filter((x) => x.score >= NEAR_THRESHOLD)
 }
 
 /* ============ 存储 ============ */
@@ -478,15 +509,28 @@ async function rebuild(ctx: Context): Promise<{ scanned: number; updated: number
 
 interface PendingGroup {
   kind: 'exact' | 'near' | 'version'
-  docs: Array<{ docId: string; path: string; project: string; updated: number; hash: string }>
+  docs: Array<{ docId: string; path: string; project: string; updated: number; hash: string; size: number }>
   reason: string
+  /** 近似组：组内两两相似度的最大值（0~1）。精确/版本组没有这个概念，故为 undefined。 */
+  score?: number
+  /** 版本组：归一后的族名（basename），界面用来分组折叠 */
+  label?: string
 }
 
-async function scanPending(ctx: Context): Promise<{ groups: PendingGroup[]; stats: { exact: number; near: number; version: number } }> {
-  const manifest = await loadManifest(ctx)
-  const docs = Object.values(manifest).filter((d) => !d.scanOnly)
+/**
+ * 语料重复分析（精确 / 版本族 / 近似三类）。
+ *
+ * 为什么抽成独立函数：查重页（§3.2-A3）要显示「近似 / 版本族」，而这两类此前只活在
+ * 「语料治理 → 待裁决」里。抽出来让**两处跑同一段算法**，只是喂进去的语料范围不同
+ * （治理 = 全库，查重页 = 本项目）—— 若各写一份，两边的口径迟到会漂移，
+ * 用户会在两个页面看到对同一批文件的不同结论。
+ */
+function corpusGroups(docs: CorpusDoc[]): { groups: PendingGroup[]; stats: { exact: number; near: number; version: number } } {
   const stats = { exact: 0, near: 0, version: 0 }
   const groups: PendingGroup[] = []
+  const byId = new Map<string, CorpusDoc>()
+  for (const d of docs) byId.set(d.docId, d)
+  const brief = (d: CorpusDoc, hash: string) => ({ docId: d.docId, path: d.path, project: d.project, updated: d.updated, hash: hash.slice(0, 10), size: d.size })
   // 精确重复
   const byDup = new Map<string, CorpusDoc[]>()
   for (const d of docs) {
@@ -497,7 +541,7 @@ async function scanPending(ctx: Context): Promise<{ groups: PendingGroup[]; stat
   }
   for (const [h, list] of byDup) {
     if (list.length >= 2) {
-      groups.push({ kind: 'exact', docs: list.map((d) => ({ docId: d.docId, path: d.path, project: d.project, updated: d.updated, hash: h.slice(0, 10) })), reason: '内容完全相同的 ' + list.length + ' 个文档' })
+      groups.push({ kind: 'exact', docs: list.map((d) => brief(d, h)), reason: '内容完全相同的 ' + list.length + ' 个文档' })
       stats.exact++
     }
   }
@@ -511,28 +555,44 @@ async function scanPending(ctx: Context): Promise<{ groups: PendingGroup[]; stat
   }
   for (const [v, list] of byVer) {
     const uniq = list.filter((d, i) => list.findIndex((x) => x.dupHash === d.dupHash) === i)
-    if (uniq.length >= 2 && !groups.some((g) => g.kind === 'version' && g.reason.includes(v))) {
-      groups.push({ kind: 'version', docs: uniq.map((d) => ({ docId: d.docId, path: d.path, project: d.project, updated: d.updated, hash: d.dupHash.slice(0, 10) })), reason: '版本族「' + v + '」存在 ' + uniq.length + ' 个版本（请确认权威版）' })
+    if (uniq.length >= 2 && !groups.some((g) => g.kind === 'version' && g.label === v)) {
+      groups.push({ kind: 'version', label: v, docs: uniq.map((d) => brief(d, d.dupHash)), reason: '版本族「' + v + '」存在 ' + uniq.length + ' 个版本（请确认权威版）' })
       stats.version++
     }
   }
   // 近似重复（MinHash banding 候选）
   const near = nearCandidates(docs)
+  const pairScore = new Map<string, number>()
   const nearSet = new Map<string, Set<string>>()
   for (const n of near) {
+    pairScore.set(n.a + '\u0000' + n.b, n.score)
     const s = nearSet.get(n.a) ?? new Set()
     s.add(n.b)
     nearSet.set(n.a, s)
   }
   for (const [a, set] of nearSet) {
-    const da = manifest[a]
-    const list = [a, ...set].map((id) => manifest[id]).filter(Boolean)
+    const ids = [a, ...set]
+    const list = ids.map((id) => byId.get(id)).filter((d): d is CorpusDoc => !!d)
     if (list.length >= 2 && !groups.some((g) => g.kind === 'near' && g.docs.some((d) => d.docId === a))) {
-      groups.push({ kind: 'near', docs: list.map((d) => ({ docId: d.docId, path: d.path, project: d.project, updated: d.updated, hash: d.hash.slice(0, 10) })), reason: '内容高度相似的 ' + list.length + ' 个文档（请核对是否重复/合并）' })
+      // 组内最强的那条边的相似度 = 这组的代表分（用户看"这几篇像到什么程度"）
+      let mx = 0
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const key = ids[i] < ids[j] ? ids[i] + '\u0000' + ids[j] : ids[j] + '\u0000' + ids[i]
+          const s = pairScore.get(key)
+          if (s !== undefined && s > mx) mx = s
+        }
+      }
+      groups.push({ kind: 'near', docs: list.map((d) => brief(d, d.hash)), score: Math.round(mx * 100) / 100, reason: '内容高度相似的 ' + list.length + ' 个文档（请核对是否重复/合并）' })
       stats.near++
     }
   }
   return { groups, stats }
+}
+
+async function scanPending(ctx: Context): Promise<{ groups: PendingGroup[]; stats: { exact: number; near: number; version: number } }> {
+  const manifest = await loadManifest(ctx)
+  return corpusGroups(Object.values(manifest).filter((d) => !d.scanOnly))
 }
 
 /* ============ 项目查重（全员可用；范围 = 单个项目） ============ */
@@ -577,64 +637,205 @@ async function walkProjectFiles(ctx: Context, project: string): Promise<DupFileE
   return out
 }
 
+/** 文件级 ACL 放行判定：未命中任何规则（undefined）= 放行，由项目级权限兜底。 */
+function aclAllows(ctx: Context, user: UserRecord, project: string, path: string): boolean {
+  const d = ctx.acl.can(user, 'view', project, path)
+  return !d || d.allow
+}
+
+/**
+ * 文件级删除权限（§3.6 验收②）。
+ *
+ * 为什么要在查重结果里回带它：删除动作本来就会被 `/api/delete` 的 ACL 守卫拦下，
+ * 但只读账号会「点了才被拒」—— 用户已经勾了一屏文件、点了删除才收到"无权限"。
+ * 服务端在返回结果时把 `canDelete` 一起判好，界面就能**先**置灰并说明原因。
+ * 注意这只是**提前告知**，真正的裁决仍在 `/api/delete` 的守卫上（此处放宽了也不会真的删掉）。
+ */
+function canDeleteFile(ctx: Context, user: UserRecord, project: string, path: string): boolean {
+  const d = ctx.acl.can(user, 'delete', project, path)
+  return !d || d.allow
+}
+
+/** 同名同大小的分组键分隔符：'\0' 不会出现在文件名里；用 charCode 而不是转义序列，
+ *  避免源码里出现真实控制字符（历史上踩过一次：转义被工具链解码成了裸 NUL 落盘）。 */
+const DUP_KEY_SEP = String.fromCharCode(0)
+
+/** 指纹计算的文件大小上限：超过就不读了，如实标成"未校验"（不猜）。 */
+const FINGERPRINT_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * 单份文件的内容指纹（§3.2-A2：同名同大小**还不够**判重复，要再比一次内容）。
+ *
+ * 返回 null = 未校验（文件过大 / 读不到），调用方据此**不下"重复"结论**——
+ * 这正是这一版要修的病：旧实现用 `文件名 + 字节大小` 当分组键，两个同名同大小但
+ * 内容完全不同的文件会被判成重复，用户照着删就删错了。宁可不判，也不误判。
+ *
+ * 口径：语料内文档直接复用摄取时算好的 `dupHash`（同一套 normalizeText + sha256）；
+ * 语料外文件现场算 —— 文本类走**同一套 normali​zeText 口径**（否则"一个进了语料、
+ * 一个没进"的两个同内容文件会被误判成内容不同），二进制只能按原始字节比。
+ */
+async function fingerprintOf(ctx: Context, project: string, relPath: string, size: number, corpus: Map<string, CorpusDoc>): Promise<string | null> {
+  const d = corpus.get(docIdOf(project, relPath))
+  if (d && !d.scanOnly) return d.dupHash
+  if (size > FINGERPRINT_MAX_BYTES) return null
+  const abs = await ctx.privhub.resolveReal(project, relPath).catch(() => null)
+  if (abs === null || !existsSync(abs)) return null
+  const buf = await ctx.storage.readBuffer(abs).catch(() => null)
+  if (buf === null) return null
+  if (TEXT_EXTS.has(extname(relPath).toLowerCase())) {
+    const txt = buf.toString('utf8')
+    if (txt.indexOf(String.fromCharCode(0)) < 0) return sha256(normalizeText(txt))
+  }
+  return 'raw:' + createHash('sha256').update(buf).digest('hex')
+}
+
+/** 查重页近似/版本族的单组上限：超了只回前面的，并如实回带总量（§3.5）。 */
+const NEAR_GROUP_CAP = 30
+
+interface DupFileItem {
+  path: string
+  mtime: string
+  canDelete: boolean
+  /** 校验过后的内容指纹前 10 位；null = 未校验（过大/读不到），此时**不下重复结论** */
+  fingerprint: string | null
+  /** 同组内**已证明内容相同**的另一份路径（取第一个）；null = 本组内没有与它内容相同的兄弟 */
+  sameAs: string | null
+}
+
+interface DupFileGroup {
+  name: string
+  size: number
+  sizeText: string
+  count: number
+  /** same=已证明内容一致；differ=已证明内容不同（同名同大小但其实是两份不同的东西）；unknown=没能校验（过大/读不到） */
+  verdict: 'same' | 'differ' | 'unknown'
+  files: DupFileItem[]
+}
+
 /**
  * 项目查重（只查本项目，不跨项目）：
- *  - fileGroups   = 文件名 + 大小均相同（覆盖所有文件类型，含未入语料的二进制/图片）
+ *  - fileGroups   = 文件名 + 大小均相同（覆盖所有文件类型，含未入语料的二进制/图片），
+ *                   再逐份算内容指纹给出 verdict（§3.2-A2）
  *  - contentGroups= 内容一字不差（仅语料内可解析文档；成员已命中文件层的不同步列出，避免重复）
- * 两组合起来 = 项目内所有可判定的重复；查重只报告，删除动作由前端经 /api/delete（回收站）执行。
+ *  - nearGroups   = 近似 / 版本族（与「语料治理 → 待裁决」同一段算法，喂本项目语料）
+ * 三组只报告不删除；删除动作由前端经 /api/delete（回收站）执行。
+ *
+ * §3.2-A2（2026-10-11）：旧实现直接拿「文件名 + 字节大小」当重复判据，两个同名同大小
+ * 但内容完全不同的文件会被摆成一对重复，用户照着删就删错了。现在组内再算一次内容指纹，
+ * 给出 same / differ / unknown 三种结论：**只有 same 的才敢说"重复"**，differ 明说
+ * "名字大小一样但内容不同"，unknown 如实说没验证（不猜）。宁可少报，不可误报。
+ *
+ * 权限（W-A 安全修复，2026-10-11）：此前只做项目级 canAccess，项目内被文件级 ACL
+ * 拒绝的文件，其**文件名与路径**仍会出现在查重列表里（只读泄漏）。现在在收集阶段
+ * 就按 acl.can(view) 摘掉：文件层过滤走盘列表，内容层过滤走 manifest，两处同一判据，
+ * 保证「已摘文件」不会从另一条路径重新出现。
+ * §3.6（同一批）：结果里每份文件回带 canDelete —— 只读账号的删除按钮**事先**置灰并说明
+ * 原因，而不是勾完一屏点下去才被拒；真正的裁决仍在 /api/delete 的守卫上。
  */
-async function dupCheckProject(ctx: Context, project: string): Promise<{
+async function dupCheckProject(ctx: Context, project: string, user: UserRecord): Promise<{
   project: string
-  fileGroups: Array<{ name: string; size: number; sizeText: string; count: number; files: Array<{ path: string; mtime: string }> }>
-  contentGroups: Array<{ count: number; files: Array<{ path: string; size: number; updated: number }> }>
+  fileGroups: DupFileGroup[]
+  contentGroups: Array<{ count: number; files: Array<{ path: string; size: number; updated: number; canDelete: boolean }> }>
+  nearGroups: Array<{ kind: 'near' | 'version'; label?: string; score?: number; reason: string; docs: Array<{ path: string; size: number; updated: number; canDelete: boolean }> }>
+  nearGroupsTotal: number
+  caps: { nearGroups: number }
 }> {
-  // ① 文件层：同名同大小
-  const files = await walkProjectFiles(ctx, project)
+  // ① 文件层：同名同大小（先按文件级 ACL 摘除无权查看的文件）
+  const files = (await walkProjectFiles(ctx, project)).filter((f) => aclAllows(ctx, user, project, f.path))
   const byKey = new Map<string, DupFileEntry[]>()
   for (const f of files) {
-    const key = f.name + '\u0000' + f.size
+    const key = f.name + DUP_KEY_SEP + f.size
     const arr = byKey.get(key)
     if (arr) arr.push(f)
     else byKey.set(key, [f])
   }
-  const fileGroups: Array<{ name: string; size: number; sizeText: string; count: number; files: Array<{ path: string; mtime: string }> }> = []
+  const manifest = await loadManifest(ctx)
+  const corpus = new Map<string, CorpusDoc>()
+  for (const d of Object.values(manifest)) if (d.project === project) corpus.set(d.docId, d)
+
+  const fileGroups: DupFileGroup[] = []
   const inFileDup = new Set<string>() // 文件层已覆盖的路径（内容层不再重复列出）
   for (const [key, arr] of byKey) {
     if (arr.length < 2) continue
-    const name = key.slice(0, key.indexOf('\u0000'))
+    const name = key.slice(0, key.indexOf(DUP_KEY_SEP))
     arr.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    for (const f of arr) inFileDup.add(f.path)
+    // 逐份算指纹（§3.2-A2）：这一步是"同名同大小 ≠ 重复"的唯一凭据
+    const fps = await Promise.all(arr.map((f) => fingerprintOf(ctx, project, f.path, f.size, corpus)))
+    const buckets = new Map<string, string[]>()
+    for (let i = 0; i < arr.length; i++) {
+      const fp = fps[i]
+      if (fp === null) continue
+      const b = buckets.get(fp)
+      if (b) b.push(arr[i].path)
+      else buckets.set(fp, [arr[i].path])
+    }
+    let verdict: 'same' | 'differ' | 'unknown' = 'unknown'
+    if ([...buckets.values()].some((b) => b.length >= 2)) verdict = 'same'
+    else if (fps.every((fp) => fp !== null)) verdict = 'differ'
+    // 只有**证明内容一致**的那组才算"已覆盖"：differ/unknown 的文件仍可能出现在
+    // 近似族里（它们与别的文档相似是另一回事），不该被这里吞掉。
+    if (verdict === 'same') for (const f of arr) inFileDup.add(f.path)
     fileGroups.push({
       name,
       size: arr[0].size,
       sizeText: dupSizeText(arr[0].size),
       count: arr.length,
-      files: arr.map((f) => ({ path: f.path, mtime: f.mtime.replace('T', ' ').slice(0, 16) })),
+      verdict,
+      files: arr.map((f, i) => {
+        const fp = fps[i]
+        // sameAs 只在"确实有另一份同指纹"时才给：用户据此才敢删其中任意一份
+        const sameAs = fp === null ? null : (buckets.get(fp) ?? []).find((p) => p !== f.path) ?? null
+        return {
+          path: f.path,
+          mtime: f.mtime.replace('T', ' ').slice(0, 16),
+          canDelete: canDeleteFile(ctx, user, project, f.path),
+          fingerprint: fp === null ? null : fp.slice(0, 10),
+          sameAs,
+        }
+      }),
     })
   }
   fileGroups.sort((a, b) => (b.size - a.size) || (a.name < b.name ? -1 : 1))
 
   // ② 内容层：语料内本项目文档、内容哈希相同（名字或大小不同但内容一字不差）
-  const manifest = await loadManifest(ctx)
   const byDup = new Map<string, Array<{ path: string; size: number; updated: number }>>()
   for (const d of Object.values(manifest)) {
     if (d.project !== project || d.scanOnly) continue
     if (inFileDup.has(d.path)) continue // 文件层已列出
+    if (!aclAllows(ctx, user, project, d.path)) continue // 文件级 ACL 拒绝 → 不列出
     const abs = await ctx.privhub.resolveReal(d.project, d.path).catch(() => null)
     if (abs === null || !existsSync(abs)) continue
     const list = byDup.get(d.dupHash) ?? []
     list.push({ path: d.path, size: d.size, updated: d.updated })
     byDup.set(d.dupHash, list)
   }
-  const contentGroups: Array<{ count: number; files: Array<{ path: string; size: number; updated: number }> }> = []
+  const contentGroups: Array<{ count: number; files: Array<{ path: string; size: number; updated: number; canDelete: boolean }> }> = []
   for (const [, list] of byDup) {
     if (list.length < 2) continue
     list.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    contentGroups.push({ count: list.length, files: list })
+    contentGroups.push({ count: list.length, files: list.map((x) => ({ ...x, canDelete: canDeleteFile(ctx, user, project, x.path) })) })
   }
   contentGroups.sort((a, b) => b.files.length - a.files.length || (a.files[0].path < b.files[0].path ? -1 : 1))
 
-  return { project, fileGroups, contentGroups }
+  // ③ 近似 / 版本族（§3.2-A3）：与治理页共用 corpusGroups，范围收窄到本项目，
+  //    并摘掉前面两层已经列过的路径（同一批文件不在页面上出现两次）。
+  const projectDocs = [...corpus.values()].filter((d) => !d.scanOnly && aclAllows(ctx, user, project, d.path))
+  const { groups } = corpusGroups(projectDocs)
+  const nearAll = groups
+    .filter((g) => g.kind === 'near' || g.kind === 'version')
+    .map((g) => ({
+      kind: g.kind as 'near' | 'version',
+      label: g.label,
+      score: g.score,
+      reason: g.reason,
+      docs: g.docs
+        .filter((d) => !inFileDup.has(d.path))
+        .map((d) => ({ path: d.path, size: d.size, updated: d.updated, canDelete: canDeleteFile(ctx, user, project, d.path) })),
+    }))
+    .filter((g) => g.docs.length >= 2)
+  const nearGroups = nearAll.slice(0, NEAR_GROUP_CAP)
+
+  return { project, fileGroups, contentGroups, nearGroups, nearGroupsTotal: nearAll.length, caps: { nearGroups: NEAR_GROUP_CAP } }
 }
 
 /* ============ 策展动作 ============ */
@@ -846,12 +1047,29 @@ interface RagSource {
   snippet: string
 }
 
+/** 检索方式（§1.7）：这是对「实际发生了什么」的如实记录 ——
+ *  · hybrid  —— BM25 与向量两路都真的跑了，按 RRF 融合；
+ *  · keyword —— 只有 BM25。向量通道不可用（未建索引 / 调用失败 / 维数不符）时如实降级。
+ *  注意 hybrid 也可能是 0 条命中（融合后没有任何文档过得了权限），那仍是 hybrid：
+ *  这里记的是「走了哪条路」，不是「有没有结果」。 */
+type RetrievalMode = 'hybrid' | 'keyword'
+
+interface RagSearchResult {
+  sources: RagSource[]
+  scopeProjects: string[]
+  mode: RetrievalMode
+  /** mode 为 keyword 时的降级原因（面向用户的中文短语）；hybrid 时为空串 */
+  modeReason: string
+}
+
 /** 混合检索（BM25 + 向量 RRF 融合）+ 权限过滤（visible ∩ ACL view）+ 父上下文 */
-async function ragSearch(ctx: Context, user: UserRecord, q: string, collection: string, topK = ASK_TOPK): Promise<{ sources: RagSource[]; scopeProjects: string[] }> {
+async function ragSearch(ctx: Context, user: UserRecord, q: string, collection: string, topK = ASK_TOPK): Promise<RagSearchResult> {
   const visible = await ctx.privhub.visibleProjects(user)
   let scope = visible
   if (collection && collection !== 'all') {
-    if (!visible.includes(collection)) return { sources: [], scopeProjects: scope }
+    if (!visible.includes(collection)) {
+      return { sources: [], scopeProjects: scope, mode: 'keyword', modeReason: '指定的集合不可见或不存在，未做检索' }
+    }
     scope = [collection]
   }
   // 源1：BM25（服务端已按 visible 过滤）
@@ -877,14 +1095,26 @@ async function ragSearch(ctx: Context, user: UserRecord, q: string, collection: 
     Object.values(manifest).filter((d) => scope.includes(d.project)).map((d) => d.docId),
   )
   let vecHits: Array<{ chunkId: string; distance: number }> = []
+  // §1.7：先假定位向量通道不可用，只有真的取到同维向量并算了命中才算 hybrid。
+  // 判据放在这里而不是「有没有命中」，是因为 0 命中与「没走这条路」是两回事。
+  let mode: RetrievalMode = 'keyword'
+  let modeReason = '尚未建立向量索引（先在「向量化」里生成索引，或先填入 embedding 模型）'
   const store = storeOf()
-  if (store.dims()) {
+  const dims = store.dims()
+  if (dims) {
     const emb = await ctx.model.embed(ctx, [q]).catch(() => null)
-    if (emb && emb[0] && emb[0].length === store.dims()) {
+    if (emb && emb[0] && emb[0].length === dims) {
+      mode = 'hybrid'
+      modeReason = ''
       vecHits = store.search(Float32Array.from(emb[0]), topK * 6).filter((h) => {
         const docId = docIdOfChunk(h.chunkId, keyToDocId)
         return docId !== null && scopeDocs.has(docId)
       })
+    } else {
+      // 端点通、索引也在，但这次向量化没成——最常见的两种是「模型不可达」和「换了模型维数对不上」
+      modeReason = emb && emb[0]
+        ? `向量维数(${emb[0].length})与索引(${dims})不一致，需重建向量索引`
+        : '向量化调用失败（模型未配置或不可达）'
     }
   }
   // 文档级 RRF 融合
@@ -939,11 +1169,37 @@ async function ragSearch(ctx: Context, user: UserRecord, q: string, collection: 
       sources.push({ docId, project: doc.project, path: doc.path, chunkId: c.chunkId, snippet: (c.text ?? '').slice(0, 160) })
     }
   }
-  return { sources, scopeProjects: scope }
+  return { sources, scopeProjects: scope, mode, modeReason }
 }
 
 /** 问答用的对话消息（与 svc-model 的 ChatMessage 同形） */
 type AskMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+
+/* ---------- 多轮对话（§1.6）----------
+ * 历史**只用来消解指代**（「那保修呢」里的「那」），**不参与检索**：
+ *   · 权限上：历史里出现过的资料不在本轮 ACL 复核范围内，把它们并进检索
+ *     等于让上一轮的结果绕过本轮的权限判定；
+ *   · 质量上：把旧问题一起丢进 BM25，会把本轮真正命中的文档从排名里挤下去。
+ * 所以检索永远只用本轮 question，history 只进模型的 messages。
+ * 上限是双保险（条数 + 单条字数），超出的从**最旧**开始丢 —— 最近的一轮最有用。 */
+const HISTORY_MAX_MSGS = 6
+const HISTORY_MAX_CHARS = 2000
+
+/** 把客户端送来的 history 收敛成可信形状：只认 user/assistant、只认字符串、丢空条。 */
+function sanitizeHistory(raw: unknown): AskMessage[] {
+  if (!Array.isArray(raw)) return []
+  const out: AskMessage[] = []
+  for (const m of raw) {
+    if (!m || typeof m !== 'object') continue
+    const role = (m as { role?: unknown }).role
+    const content = (m as { content?: unknown }).content
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') continue
+    const text = content.trim()
+    if (!text) continue
+    out.push({ role, content: text.slice(0, HISTORY_MAX_CHARS) })
+  }
+  return out.slice(-HISTORY_MAX_MSGS)
+}
 
 /** 语料为空时的如实答复（不调用模型，也不编造） */
 const NO_SOURCE_ANSWER = '未在语料中找到相关资料（或您对这些资料没有查看权限）。请换一种问法，或确认语料已向量化。'
@@ -955,24 +1211,29 @@ const NO_SOURCE_ANSWER = '未在语料中找到相关资料（或您对这些资
  * 权限范围必须**逐字共享**——否则两条路径迟早会分叉，而分叉最可能的地方恰恰是
  * 「谁能看到哪些资料」这种不该出错的地方。`messages === null` 表示语料为空，
  * 此时 `answer` 是既定的如实答复，调用方直接送出、不请求模型。
+ *
+ * `history`（§1.6）只拼进 messages，**不进 ragSearch** —— 理由见 sanitizeHistory。
  */
-async function ragPrepare(ctx: Context, user: UserRecord, question: string, collection: string): Promise<{ messages: AskMessage[] | null; answer: string; sources: RagSource[] }> {
-  const { sources } = await ragSearch(ctx, user, question, collection, ASK_TOPK)
-  if (sources.length === 0) return { messages: null, answer: NO_SOURCE_ANSWER, sources: [] }
+async function ragPrepare(ctx: Context, user: UserRecord, question: string, collection: string, history: AskMessage[] = []): Promise<{ messages: AskMessage[] | null; answer: string; sources: RagSource[]; mode: RetrievalMode; modeReason: string }> {
+  const { sources, mode, modeReason } = await ragSearch(ctx, user, question, collection, ASK_TOPK)
+  // 空结果也把检索方式带出去：用户最需要知道「找不到」是资料里真没有，还是向量通道没起来
+  if (sources.length === 0) return { messages: null, answer: NO_SOURCE_ANSWER, sources: [], mode, modeReason }
   const blocks = sources.map((s, i) => `[${i + 1}] 来源 ${s.project}/${s.path}\n${s.snippet}`).join('\n\n')
   const messages: AskMessage[] = [
     { role: 'system', content: '你是「私域枢纽 PrivHub」的知识助手。严格基于提供的资料回答问题，回答中用 [n] 标注来源编号；资料中没有的内容请明确回答「资料中未找到」，不要编造。' },
+    // 历史夹在系统提示与本轮之间（§1.6）：只帮模型理解指代，本轮资料仍是唯一依据
+    ...history,
     { role: 'user', content: `资料：\n${blocks}\n\n问题：${question}` },
   ]
-  return { messages, answer: '', sources }
+  return { messages, answer: '', sources, mode, modeReason }
 }
 
 /** 组装问答上下文并调用 LLM（mock 可测）。非流式的一次性答复。 */
-async function ragAsk(ctx: Context, user: UserRecord, question: string, collection: string): Promise<{ answer: string; sources: RagSource[] }> {
-  const prep = await ragPrepare(ctx, user, question, collection)
-  if (prep.messages === null) return { answer: prep.answer, sources: prep.sources }
+async function ragAsk(ctx: Context, user: UserRecord, question: string, collection: string, history: AskMessage[] = []): Promise<{ answer: string; sources: RagSource[]; mode: RetrievalMode; modeReason: string }> {
+  const prep = await ragPrepare(ctx, user, question, collection, history)
+  if (prep.messages === null) return { answer: prep.answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason }
   const answer = await ctx.model.chat(ctx, prep.messages)
-  return { answer, sources: prep.sources }
+  return { answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason }
 }
 
 /* ============ M3.1：模型服务自动发现 ============ */
@@ -1265,12 +1526,16 @@ export function apply(ctx: Context): void {
     }
   }, 'model-config')
 
-  /* 模型自检（admin） */
+  /* 模型自检（admin）
+   *   ?force=1 → 不吃 60s 缓存
+   *   ?deep=1  → 额外真调一次 embedding，回维数与耗时（W-B/§1.4）。
+   *              **默认不开**：这条路由会被首页轮询，默认打 embedding 就是每次轮询烧一次调用。 */
   svc.route('/privhub/api/model/status', async (req, res) => {
     const admin = adminOf(req, res)
     if (!admin) return
     const force = req.url?.includes('force=1') ?? false
-    json(res, 200, { ok: true, ...await ctx.model.check(ctx, force) })
+    const deep = req.url?.includes('deep=1') ?? false
+    json(res, 200, { ok: true, ...await ctx.model.check(ctx, force, deep) })
   }, 'model-status')
 
   /* RAG 总览状态（admin） */
@@ -1311,7 +1576,7 @@ export function apply(ctx: Context): void {
     // 查重只针对「项目」：个人空间是私人沙箱，不做跨文件重复治理
     if (svc.isPersonalDir(project)) return json(res, 400, { ok: false, error: '查重仅针对项目，不作用于个人空间' })
     try {
-      json(res, 200, { ok: true, ...await dupCheckProject(ctx, project) })
+      json(res, 200, { ok: true, ...await dupCheckProject(ctx, project, u) })
     } catch (e) {
       json(res, 500, { ok: false, error: e instanceof Error ? e.message : '查重失败' })
     }
@@ -1389,11 +1654,11 @@ export function apply(ctx: Context): void {
     if (!q) return json(res, 400, { ok: false, error: 'q 必填' })
     const k = Math.min(10, Number(url.searchParams.get('k')) || ASK_TOPK)
     try {
-      const { sources } = await ragSearch(ctx, u, q, collection, k)
-      void audit(ctx, u.username, 'rag-search', '', 'q=' + q.slice(0, 40) + ' hits=' + sources.length)
-      json(res, 200, { ok: true, hits: sources })
+      const { sources, mode, modeReason } = await ragSearch(ctx, u, q, collection, k)
+      void audit(ctx, u.username, 'rag-search', '', 'q=' + q.slice(0, 40) + ' hits=' + sources.length + ' mode=' + mode)
+      json(res, 200, { ok: true, hits: sources, mode, modeReason })
     } catch (e) {
-      json(res, 500, { ok: false, error: String(e instanceof Error ? e.message : e).slice(0, 200) })
+      json(res, 500, { ok: false, error: sanitizeError(e instanceof Error ? e.message : e, 200) })
     }
   }, 'rag-search')
 
@@ -1407,6 +1672,9 @@ export function apply(ctx: Context): void {
     const question = String(body.question ?? '').trim()
     const collection = String(body.collection ?? '')
     if (!question) return json(res, 400, { ok: false, error: 'question 必填' })
+    // 多轮上下文（§1.6）：形状不可信就当作没有历史，绝不因为一段脏历史而让问答失败。
+    // 下面 SSE 与 JSON 两条分支共用这一份（同一路由、同一鉴权，只是送出方式不同）。
+    const history = sanitizeHistory(body.history)
 
     /* 流式分支：**同一个路由、同一段鉴权与权限范围**，只是一个 query/body 开关。
      * 这样不新增权限面（requireUser + ragPrepare 内的 ACL 过滤原样生效），
@@ -1414,10 +1682,12 @@ export function apply(ctx: Context): void {
      * 只有「把模型的话怎么送出去」不同：一次 JSON 换成逐块 SSE。
      *
      * 帧约定（event/data 成对，空行结束一帧）：
-     *   sources → { sources }        先给来源，界面立刻能显示引用了哪几篇，不必等正文
-     *   delta   → { text }           正文增量，可能很多帧
-     *   done    → { answer, sources } 终帧：完整正文（客户端可据此校对拼接结果）
-     *   error   → { error }          出错：检索失败 / 模型报错 / 中途断流都在这里落地
+     *   sources   → { sources }       先给来源，界面立刻能显示引用了哪几篇，不必等正文
+     *   retrieval → { mode, reason }  检索方式（§1.7）：hybrid=两路融合，keyword=仅关键词，
+     *                                 紧跟在 sources 之后（两者同一次检索的产物，分开送旧客户端也不炸）
+     *   delta     → { text }          正文增量，可能很多帧
+     *   done      → { answer, sources, mode } 终帧：完整正文（客户端可据此校对拼接结果）
+     *   error     → { error }         出错：检索失败 / 模型报错 / 中途断流都在这里落地
      */
     if (body.stream === true) {
       res.writeHead(200, {
@@ -1431,8 +1701,9 @@ export function apply(ctx: Context): void {
         try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n') } catch { /* 客户端已断开 */ }
       }
       try {
-        const prep = await ragPrepare(ctx, u, question, collection)
+        const prep = await ragPrepare(ctx, u, question, collection, history)
         send('sources', { sources: prep.sources })
+        send('retrieval', { mode: prep.mode, reason: prep.modeReason })
         let answer: string
         if (prep.messages === null) {
           answer = prep.answer          // 语料为空：如实说明，不请求模型
@@ -1440,11 +1711,11 @@ export function apply(ctx: Context): void {
         } else {
           answer = await ctx.model.chat(ctx, prep.messages, { stream: true, onChunk: (d) => send('delta', { text: d }) })
         }
-        send('done', { answer, sources: prep.sources })
-        void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + prep.sources.length + ' stream=1')
+        send('done', { answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason })
+        void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + prep.sources.length + ' mode=' + prep.mode + ' stream=1')
       } catch (e) {
         // 出错也必须让界面知道，否则前端只会看到一个永远停在半句的回答
-        send('error', { error: e instanceof Error ? e.message : '问答失败' })
+        send('error', { error: sanitizeError(e instanceof Error ? e.message : '问答失败') })
       } finally {
         res.end()
       }
@@ -1452,11 +1723,11 @@ export function apply(ctx: Context): void {
     }
 
     try {
-      const r = await ragAsk(ctx, u, question, collection)
-      void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + r.sources.length)
-      json(res, 200, { ok: true, answer: r.answer, sources: r.sources })
+      const r = await ragAsk(ctx, u, question, collection, history)
+      void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + r.sources.length + ' mode=' + r.mode)
+      json(res, 200, { ok: true, answer: r.answer, sources: r.sources, mode: r.mode, modeReason: r.modeReason })
     } catch (e) {
-      json(res, 400, { ok: false, error: e instanceof Error ? e.message : '问答失败' })
+      json(res, 400, { ok: false, error: sanitizeError(e instanceof Error ? e.message : '问答失败') })
     }
   }, 'rag-ask')
 

@@ -113,7 +113,9 @@ const WikiView = {
         // 当前目录 README.md，缺省 fallback index.md
         const rel = nav.path ? nav.path + '/README.md' : 'README.md'
         let r = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(rel))
-        if (!r.ok || !r.ok && !r.status) {
+        // 原写作 `!r.ok || !r.ok && !r.status` —— `&&` 优先级高于 `||`，整个条件恒等于 `!r.ok`
+        // （恒等死分支，2026-10-11 清除）。语义不变：README 取不到就退 index.md。
+        if (!r.ok) {
           const alt = nav.path ? nav.path + '/index.md' : 'index.md'
           r = await api('/privhub/api/doc?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(alt))
         }

@@ -34,6 +34,7 @@ import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
 import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
 import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
+import * as svcLock from '../plugins/privhub-svc-lock/src/index.ts'
 import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
 import * as svcModel from '../plugins/privhub-svc-model/src/index.ts'
 /* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
@@ -45,7 +46,7 @@ import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
  * 生产环境跑在 deploy/privhub-deploy 时即扫描该目录，与开发环境零耦合。 */
 const CORE_PLUGINS = new Set([
   'privhub-svc-storage', 'privhub-svc-events', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
-  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-office', 'privhub-svc-model',
+  'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-lock', 'privhub-svc-office', 'privhub-svc-model',
   'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
   'privhub-admin', 'privhub-shell',
 ])
@@ -193,6 +194,8 @@ async function main(): Promise<void> {
   await mount(svcSearch, { maxHits: 200, skipHidden: true })
   await mount(svcMeta, { file: '' })
   await mount(svcCollab, { maxSessions: 500, maxPatches: 100 })
+  /* Y 批：文件排他编辑锁（content 长锁 + name 瞬时锁），纯内存，供 L1/L3 编辑写路径 inject */
+  await mount(svcLock, { ttlMs: 10 * 60 * 1000, maxLocks: 5000 })
   await mount(svcOffice)
   /* M0 模型接入层（配置经 RAG 界面/API 动态写入 data/model.json，无需改代码） */
   await mount(svcModel)

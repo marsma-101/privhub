@@ -18,6 +18,10 @@ const RightDetail = {
       tagInput: '',
       tagBusy: false,
       tagLoadedFor: '',
+      /* 反向链接：谁引用了本文（incoming）/ 本文引用了谁（outgoing）。 */
+      backlinks: { incoming: [], outgoing: [] },
+      blLoadedFor: '',
+      blBusy: false,
     }
   },
   computed: {
@@ -60,8 +64,12 @@ const RightDetail = {
   },
   watch: {
     target(n, o) {
-      if (!n || !o || n.project !== o.project || n.path !== o.path) this.loadTags()
+      if (!n || !o || n.project !== o.project || n.path !== o.path) { this.loadTags(); this.loadBacklinks() }
     },
+  },
+  mounted() {
+    /* 面板打开时若已有选中文件，watch 不会触发（非 immediate）：补一次初载 */
+    if (this.target) { this.loadTags(); this.loadBacklinks() }
   },
   methods: {
     close() { nav.rightOpen = false },
@@ -96,6 +104,35 @@ const RightDetail = {
         .then(r => { if (r.ok) { this.tags = r.tags || [] } else window.PrivHub.toast(r.error || '标签保存失败', 'error') })
         .catch(() => window.PrivHub.toast('标签保存失败', 'error'))
         .finally(() => { this.tagBusy = false })
+    },
+    /* ---- 反向链接（§2.4）----
+     * 服务端 /api/kg/backlinks 会**逐条过 ACL**（引用方和被引用方都查），
+     * 这里拿到的就是「当前用户看得到的」关系，前端不再过滤。 */
+    async loadBacklinks() {
+      const t = this.target
+      this.backlinks = { incoming: [], outgoing: [] }
+      this.blLoadedFor = ''
+      if (!t) return
+      this.blBusy = true
+      try {
+        const r = await api('/privhub/api/kg/backlinks?project=' + encodeURIComponent(t.project) + '&path=' + encodeURIComponent(t.path))
+        if (r.ok) {
+          this.backlinks = { incoming: r.incoming || [], outgoing: r.outgoing || [] }
+          this.blLoadedFor = t.path
+        }
+      } catch { /* 图谱未就绪等情况：静默，不打扰文件详情 */ }
+      this.blBusy = false
+    },
+    /** 跳转到引用条目的源文件（与图谱节点点击同语义：切目录 + 选中 + 打开） */
+    async openRef(it) {
+      if (!it || !it.path) return
+      const dir = it.path.includes('/') ? it.path.slice(0, it.path.lastIndexOf('/')) : ''
+      try {
+        await nav.openDir(it.project, dir)
+      } catch { /* openDir 失败时仍尝试定位已加载的条目 */ }
+      const e = nav.entries.find((x) => x.name === it.name && !x.isDir)
+      if (e) { nav.selectEntry(e); bus.emit('entry:open', { entry: e, project: it.project, path: dir }) }
+      else window.PrivHub.toast('未在当前目录找到 ' + it.name, 'error')
     },
     /* ---- 操作按钮 ---- */
     fav() {
@@ -182,6 +219,29 @@ const RightDetail = {
               <span v-for="tg in tags" :key="tg" class="v3-detail-tag" :title="'移除标签' + tg" style="cursor:pointer" @click="removeTag(tg)">{{ tg }} ✕</span>
             </div>
             <input v-model="tagInput" @keyup.enter="addTag" :disabled="tagBusy" placeholder="输入标签名回车添加…" />
+          </div>
+
+          <!-- 反向链接（§2.4）：本文件被谁引用 / 本文件引用了谁。
+               只有 md 才对「被引用」有意义（双链写在 md 正文里），
+               但被引用方可以是任何文件（[[报表.xlsx]]），所以一律展示查到的结果。 -->
+          <div class="v3-detail-tags" v-if="isMd || backlinks.incoming.length || backlinks.outgoing.length">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:4px">
+              🔗 反向链接<template v-if="backlinks.incoming.length">（被 {{ backlinks.incoming.length }} 篇引用）</template>
+            </div>
+            <div v-if="backlinks.incoming.length">
+              <div v-for="it in backlinks.incoming" :key="'in-' + it.path" class="v3-bl-item" :title="'打开 ' + it.path" @click="openRef(it)">
+                <div class="v3-bl-name">← {{ it.name }}</div>
+                <div v-if="it.snippet" class="v3-bl-snippet">{{ it.snippet }}</div>
+              </div>
+            </div>
+            <div v-else style="font-size:12px;color:var(--muted)">{{ blBusy ? '查询中…' : (isMd ? '暂无其他文档引用本文（用 [[文件名]] 建立双链）' : '—') }}</div>
+            <template v-if="backlinks.outgoing.length">
+              <div style="font-size:12px;color:var(--muted);margin:8px 0 4px">本文引用（{{ backlinks.outgoing.length }}）</div>
+              <div v-for="it in backlinks.outgoing" :key="'out-' + it.path" class="v3-bl-item" :title="'打开 ' + it.path" @click="openRef(it)">
+                <div class="v3-bl-name">→ {{ it.name }}</div>
+                <div v-if="it.snippet" class="v3-bl-snippet">{{ it.snippet }}</div>
+              </div>
+            </template>
           </div>
 
           <!-- 功能按钮 -->

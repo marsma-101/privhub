@@ -11,7 +11,8 @@ import { api, nav, bus, AUTH, fileIcon } from './deps.js'
 import { isEditableText, relPath, tabKey, EXT, extOf } from './utils.js'
 import { store } from './store.js'
 import { persistTabs, restoreTabs, openTab, activateTab, closeTab, closeOthers } from './tabs.js'
-import { refreshTree } from './treecache.js'
+import { refreshTree, treeOf } from './treecache.js'
+import { titleCollision } from './collide.js'
 import { openMenuFor, closeMenu, openDetail, openPerm, doRename, cancelRename, submitRename, doCopyHere, doMoveOpen, doMoveSubmit, doDelete, doFavorite, doDownload, convertDocToDocx, doEdit, doMkdirHere, doMkdirHereSubmit, submitMkdirV3 } from './ops.js'
 import { loadContent, esc, renderMarkdown } from './content.js'
 import { createViewerSession, HOST_SELECTOR } from './viewers.js'
@@ -225,6 +226,17 @@ const PanelV3 = {
     isRootMenu() {
       const m = store.ctxMenu
       return m ? m.entry.isDir && m.dirPath === '' && m.entry.name === m.project : false
+    },
+    /* 行内重命名撞名提示：与侧栏树共用 collide.js 的同一口径。
+     * 目录条目优先取该目录的**树缓存**（重命名可能发生在非当前目录）；
+     * 拿不到缓存就不提示 —— 不拿当前目录的 entries 去猜，否则会报出错的撞名对象。 */
+    renameCollision() {
+      const st = store.renameState
+      if (!st) return null
+      const node = treeOf(st.project, st.dirPath)
+      if (!node) return null
+      const names = (node.children || []).filter((c) => c.name !== st.entry.name).map((c) => c.name)
+      return titleCollision(names, st.value)
     },
   },
   watch: {
@@ -678,7 +690,18 @@ const PanelV3 = {
       if (window.PrivHub.openRagDup) window.PrivHub.openRagDup()
       else window.PrivHub.toast('查重页面未就绪（AI 工具未加载）', 'error')
     },
-    renderMd() { return this.content && this.content.markdown !== undefined ? renderMarkdown(this.content.markdown) : '' },
+    /* 渲染当前内容的 Markdown。两种来源：
+     *   · md / 文本分支 → content.markdown（现状不变）；
+     *   · Office 提取分支（.doc / .pptx 这类没有专属 viewer 的）→ content.office.markdown。
+     * 2026-10-09 修：此前这里只读 content.markdown，而 office 分支的正文被存进
+     * content.office.markdown（content.js:140）⇒ 取到 undefined ⇒ 拼出空串 ⇒ 内容区全白
+     * （用户报的「.doc 点开什么都没有」）。.docx/.xlsx 因被 office2 的 iframe 整块接走而看不出。 */
+    renderMd() {
+      const c = this.content
+      if (!c) return ''
+      const md = c.markdown !== undefined ? c.markdown : (c.office ? c.office.markdown : undefined)
+      return md === undefined || md === null ? '' : renderMarkdown(md)
+    },
     /* E3：长按功能发现性——首次进入面板提示一次 */
     maybeHint() {
       if (localStorage.getItem('privhub_longpress_hint')) return
@@ -788,7 +811,13 @@ const PanelV3 = {
                把它的引用交给 comments（批注锚点插在它里面）。它是宿主自己模板里的节点，
                插件不再按 .v3-content/.v3-md 去查、也不再在它上面挂 MutationObserver。 -->
           <template v-else-if="content.office">
-            <div v-html="renderMd()" class="v3-md" ref="mdRoot"></div>
+            <!-- Office 提取正文（.doc / .pptx 这类没有专属 viewer 的）套一层「白纸」：
+                 画布跟随主题、正文留白纸（2026-10-09，用户要求，参照 nowen-note）。
+                 ⚠ 内层那串 div 的类名与 ref 一字不动：tests/personal-ui.mjs 按字面量数了两处。
+                 ⚠ 这段注释在模板串里：不写反引号。 -->
+            <div class="v3-office-page">
+              <div v-html="renderMd()" class="v3-md" ref="mdRoot"></div>
+            </div>
           </template>
           <template v-else-if="content.markdown !== undefined">
             <div v-html="renderMd()" class="v3-md" ref="mdRoot"></div>
@@ -891,15 +920,28 @@ const PanelV3 = {
               <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
               <span class="col-name">
                 <template v-if="store.renameState && store.renameState.entry.name === e.name && !e.isDir">
-                  <input
-                    v-model="store.renameState.value"
-                    @keyup.enter="submitRename"
-                    @keyup.esc="cancelRename"
-                    @click.stop
-                    @dblclick.stop
-                    @mousedown.stop
-                    style="width:100%;padding:3px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
-                  />
+                  <span style="flex:1;min-width:0;display:flex;flex-direction:column">
+                    <input
+                      v-model="store.renameState.value"
+                      @keyup.enter="submitRename"
+                      @keyup.esc="cancelRename"
+                      @click.stop
+                      @dblclick.stop
+                      @mousedown.stop
+                      style="width:100%;padding:3px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
+                    />
+                    <!-- 撞名提示（W-§3.4）：只提示不拦提交（同名仍由 rename 接口拒绝） -->
+                    <span
+                      v-if="renameCollision && renameCollision.level === 'exact'"
+                      style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                      :title="'同目录已有「' + renameCollision.conflict + '」'"
+                    >⚠ 同目录已有「{{ renameCollision.conflict }}」</span>
+                    <span
+                      v-else-if="renameCollision && renameCollision.level === 'prefix'"
+                      style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                      :title="'与「' + renameCollision.conflict + '」前 ' + renameCollision.n + ' 字相同，可能撞名'"
+                    >⚠ 与「{{ renameCollision.conflict }}」前 {{ renameCollision.n }} 字相同，可能撞名</span>
+                  </span>
                 </template>
                 <template v-else><span class="tico">{{ fileIcon(e.type) }}</span>{{ e.name }}</template>
               </span>

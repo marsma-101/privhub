@@ -38,6 +38,10 @@ const S = {
   td: 'text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);color:var(--text);',
   card: 'background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;',
   badge: 'display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;margin-right:6px;',
+  /* §3.2-A2 查重结论徽标：绿=证明内容一致；黄=名字一样但内容不同（不是重复）；灰=没验证出来 */
+  badgeOk: 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:500;background:rgba(63,185,80,.15);color:#3fb950;border:1px solid rgba(63,185,80,.4);',
+  badgeWarn: 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:500;background:rgba(210,153,34,.15);color:#d29922;border:1px solid rgba(210,153,34,.4);',
+  badgeMuted: 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:500;background:rgba(139,148,158,.12);color:var(--muted);border:1px solid var(--line);',
   tabsBtn: 'padding:6px 14px;border-radius:8px 8px 0 0;border:1px solid var(--line);border-bottom:none;background:var(--panel);color:var(--muted);cursor:pointer;font-size:13px;margin-right:4px;',
   tabsBtnOn: 'padding:6px 14px;border-radius:8px 8px 0 0;border:1px solid var(--accent);border-bottom:none;background:var(--bg);color:var(--accent);cursor:pointer;font-size:13px;margin-right:4px;',
   section: 'margin-bottom:16px;',
@@ -124,7 +128,8 @@ const HELP = {
       '① baseURL：形如 http://192.168.1.10:11434（不要带 /v1 后缀）；没有真实模型可先填 mock 体验全流程',
       '② 模型名：你服务里真实部署的名字（如 qwen3:8b、bge-m3）',
       '③ apiKey：服务有鉴权才填；填错会在自检显示「鉴权失败」',
-      '④ 保存 → 点「连通自检」：绿 ok=就绪；其它状态会给出原因（不可达/超时/鉴权/模型名不存在）',
+      '④ 点「保存并测试」：落盘后真调一次向量接口，回「向量 N 维 / 耗时 X ms」；只点「连通自检」则只验端点与模型名在不在清单里（不打向量接口）',
+      '⑤ 状态含义：ok=就绪；不可达/超时/鉴权失败=地址或密钥不对；模型名不在服务清单=名字写错；向量调用失败=端点通了但该模型不是向量模型',
     ],
     tips: 'LLM 与 embedding 可以指向不同服务（问答一台、向量一台）；配置加密存在服务器 data/model.json，他人看不到你的 apiKey。',
   },
@@ -371,17 +376,41 @@ const RagDupPanel = {
       S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, nav,
       helpKey: '', projects: [], project: '', loading: false, error: '',
       res: null, keep: {}, del: {}, deleting: false,
+      /* §3.5 一键保留策略：'newest' | 'oldest' | 'shorter' */
+      strategy: 'newest',
+      /* §3.2.1 导出/影响预览 */
+      showImpact: false,
     }
   },
   computed: {
     fileGroups() { return (this.res && this.res.fileGroups) || [] },
     contentGroups() { return (this.res && this.res.contentGroups) || [] },
-    groupCount() { return this.fileGroups.length + this.contentGroups.length },
+    /* 近似 / 版本族（§3.2-A3）：与治理页同一段算法，只作提示，不参与"每组保留1个"的删除流程 */
+    nearGroups() { return (this.res && this.res.nearGroups) || [] },
+    nearGroupsTotal() { return (this.res && this.res.nearGroupsTotal) || 0 },
+    /* 只有证明内容一致的组才敢叫"重复"：旧的 groupCount 把所有同名同大小都算进去，
+     * 于是"名字一样但内容不同"的两份也被报成重复 —— 这正是本批要修的误报。 */
+    sameGroups() { return this.fileGroups.filter((g) => g.verdict === 'same') },
+    suspectGroups() { return this.fileGroups.filter((g) => g.verdict !== 'same') },
+    groupCount() { return this.sameGroups.length + this.contentGroups.length },
     dupCount() {
-      return this.fileGroups.reduce((s, g) => s + g.count, 0) + this.contentGroups.reduce((s, g) => s + g.count, 0)
+      return this.sameGroups.reduce((s, g) => s + g.count, 0) + this.contentGroups.reduce((s, g) => s + g.count, 0)
     },
     delCount() {
       return Object.keys(this.del).reduce((s, k) => s + this.del[k].length, 0)
+    },
+    /** §3.6：所有被勾选项里是否混进了无权删除的文件（混进则禁止提交并说明） */
+    delBlocked() {
+      const out = []
+      for (const [k, idxs] of Object.entries(this.del)) {
+        const g = this.groupOf(k)
+        if (!g) continue
+        for (const fi of idxs) {
+          const f = g.files[fi]
+          if (f && f.canDelete === false) out.push(f.path)
+        }
+      }
+      return out
     },
   },
   watch: {
@@ -417,6 +446,7 @@ const RagDupPanel = {
           for (let g = 0; g < (r.contentGroups || []).length; g++) keep['c' + g] = 0
           this.keep = keep
           this.del = {}
+          this.showImpact = false
         } else this.error = r.error || '查重失败'
       } catch { this.error = '查重失败（网络错误）' }
       this.loading = false
@@ -456,18 +486,131 @@ const RagDupPanel = {
       if (this.isDel(section, gi, fi)) return base + 'background:rgba(248,81,73,.07);opacity:.6;'
       return base
     },
+    /** 由 keep/del 的键（'f3' / 'c2'）取回所属组对象 —— 删除前校验与影响预览都要用 */
+    groupOf(k) {
+      const section = k[0]
+      const gi = Number(k.slice(1))
+      const groups = section === 'f' ? this.fileGroups : section === 'c' ? this.contentGroups : []
+      return groups[gi] || null
+    },
+    /** §3.5 一键保留策略：对全部"内容一致"的组批量选保留项（仍可手动改），默认保留最新。 */
+    applyStrategy() {
+      const pick = (files) => {
+        let best = 0
+        for (let i = 1; i < files.length; i++) {
+          const a = files[i]
+          const b = files[best]
+          if (this.strategy === 'newest') {
+            const ta = Date.parse(String(a.mtime || a.updated || 0).replace(' ', 'T')) || (a.updated || 0)
+            const tb = Date.parse(String(b.mtime || b.updated || 0).replace(' ', 'T')) || (b.updated || 0)
+            if (ta > tb) best = i
+          } else if (this.strategy === 'oldest') {
+            const ta = Date.parse(String(a.mtime || a.updated || 0).replace(' ', 'T')) || (a.updated || 0)
+            const tb = Date.parse(String(b.mtime || b.updated || 0).replace(' ', 'T')) || (b.updated || 0)
+            if (ta < tb) best = i
+          } else if (this.strategy === 'shorter') {
+            if (String(a.path).length < String(b.path).length) best = i
+          }
+        }
+        return best
+      }
+      const keep = {}
+      const del = {}
+      const build = (section, groups) => {
+        for (let gi = 0; gi < groups.length; gi++) {
+          const files = groups[gi].files || []
+          // 只对**证明内容一致**的组自动勾删除：differ/unknown 是"待人工核对"，不代劳
+          if (groups[gi].verdict && groups[gi].verdict !== 'same') { keep[section + gi] = 0; continue }
+          const k = pick(files)
+          keep[section + gi] = k
+          const dl = []
+          for (let fi = 0; fi < files.length; fi++) if (fi !== k && files[fi].canDelete !== false) dl.push(fi)
+          if (dl.length) del[section + gi] = dl
+        }
+      }
+      build('f', this.fileGroups)
+      build('c', this.contentGroups)
+      this.keep = keep
+      this.del = del
+      // 组内混有"无权删除"的文件时，如实告知：它们会被跳过，不会被静默提交
+      const blocked = this.fileGroups.concat(this.contentGroups).flatMap((g) => (g.files || []).filter((f) => f.canDelete === false))
+      const n = Object.values(this.del).reduce((s, a) => s + a.length, 0)
+      window.PrivHub.toast(
+        n === 0
+          ? '已按策略标记保留项，但可删除项为空（可能都无权删除或每组只剩一份）'
+          : '已按「' + this.strategyText() + '」标记 ' + n + ' 项待删' + (blocked.length ? '（另有 ' + blocked.length + ' 份无权删除，已跳过）' : ''),
+      )
+    },
+    strategyText() {
+      return this.strategy === 'newest' ? '保留最新' : this.strategy === 'oldest' ? '保留最旧' : '保留路径最短'
+    },
+    /** §3.2.1 删除影响预览：把"将删哪些 / 保留哪些"逐条列出来，确认前先看得见 */
+    impact() {
+      const rows = []
+      for (const [k, idxs] of Object.entries(this.del)) {
+        const g = this.groupOf(k)
+        if (!g) continue
+        const files = g.files || []
+        rows.push({
+          group: g.name || (g.count ? g.count + ' 份内容相同' : '—'),
+          keep: files[this.keep[k]] ? files[this.keep[k]].path : '（未选保留项）',
+          dels: idxs.map((fi) => (files[fi] || {}).path).filter(Boolean),
+        })
+      }
+      return rows
+    },
+    /** §3.2.1 导出清单：CSV（给 Excel 里再筛）或 JSON（给脚本/留档） */
+    exportAs(fmt) {
+      const plan = []
+      for (const [k, idxs] of Object.entries(this.del)) {
+        const g = this.groupOf(k)
+        if (!g) continue
+        const files = g.files || []
+        const keepPath = files[this.keep[k]] ? files[this.keep[k]].path : ''
+        for (const fi of idxs) {
+          const f = files[fi]
+          if (f) plan.push({ group: g.name || '内容相同组', keep: keepPath, delete: f.path, size: g.size || f.size || 0 })
+        }
+      }
+      const stamp = new Date().toISOString().slice(0, 10)
+      let text, mime, ext
+      if (fmt === 'json') {
+        text = JSON.stringify({ project: this.project, exportedAt: new Date().toISOString(), strategy: this.strategy, plan }, null, 2)
+        mime = 'application/json'; ext = 'json'
+      } else {
+        const esc = (x) => '"' + String(x).replace(/"/g, '""') + '"'
+        text = '﻿' + ['组', '保留', '拟删除', '字节'].map(esc).join(',') + '\n'
+          + plan.map((r) => [r.group, r.keep, r.delete, r.size].map(esc).join(',')).join('\n')
+        mime = 'text/csv'; ext = 'csv'
+      }
+      const url = URL.createObjectURL(new Blob([text], { type: mime + ';charset=utf-8' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'privhub-dup-' + (this.project || 'project') + '-' + stamp + '.' + ext
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+      window.PrivHub.toast(plan.length ? '已导出 ' + plan.length + ' 条删除计划（' + ext.toUpperCase() + '）' : '当前没有勾选任何待删项')
+    },
     async doDelete() {
       if (this.delCount === 0) return
-      if (!confirm('将勾选的 ' + this.delCount + ' 个重复文件移入回收站？（每组保留 1 个，其余删除）')) return
+      // §3.6：勾选项里混进无权删除的文件时**就地拦下**并点名，不提交到服务端再收一堆 403。
+      // 真正裁决仍在 /api/delete 的 ACL 守卫；这里只是把"点了才被拒"提前成"点不了 + 说原因"。
+      if (this.delBlocked.length) {
+        window.PrivHub.toast('有 ' + this.delBlocked.length + ' 份文件你没有删除权限（如 ' + this.delBlocked[0] + '），请先取消勾选', 'error')
+        return
+      }
+      const lines = this.impact().map((r) => '· 保留 ' + r.keep + ' → 删除 ' + r.dels.length + ' 份')
+      const preview = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n… 共 ' + lines.length + ' 组' : '')
+      if (!confirm('将勾选的 ' + this.delCount + ' 个文件移入回收站（可从回收站找回）：\n\n' + preview)) return
       this.deleting = true
       let okCount = 0
+      let failCount = 0
       try {
         const plan = []
         for (const [k, idxs] of Object.entries(this.del)) {
-          const section = k[0]
-          const gi = Number(k.slice(1))
-          const groups = section === 'f' ? this.fileGroups : this.contentGroups
-          const g = groups[gi]
+          const g = this.groupOf(k)
           if (!g) continue
           for (const fi of idxs) {
             const file = g.files[fi]
@@ -478,11 +621,13 @@ const RagDupPanel = {
           try {
             const r = await api('/privhub/api/delete', { method: 'POST', body: JSON.stringify({ project: this.project, path }) })
             if (r.ok) okCount++
-            else window.PrivHub.toast(r.error || '删除失败：' + path, 'error')
-          } catch { /* 单条失败继续 */ }
+            else { failCount++; window.PrivHub.toast(r.error || '删除失败：' + path, 'error') }
+          } catch { failCount++ /* 单条失败继续 */ }
         }
       } finally { this.deleting = false }
-      window.PrivHub.toast('已将 ' + okCount + '/' + this.delCount + ' 个重复文件移入回收站')
+      window.PrivHub.toast(failCount
+        ? '已将 ' + okCount + ' 个移入回收站，' + failCount + ' 个失败（见上方提示）'
+        : '已将 ' + okCount + ' 个重复文件移入回收站')
       window.PrivHub.bus && window.PrivHub.bus.emit('trash:changed', {})
       await this.load() // 删除后自动重扫
     },
@@ -497,34 +642,47 @@ const RagDupPanel = {
       </select>
       <span :style="HELP_Q" @click="openHelp('dup')">?</span>
       <span style="flex:1"></span>
-      <span v-if="!loading && !error && res" style="color:var(--muted);font-size:12px;">{{ groupCount }} 组重复 · 共 {{ dupCount }} 个文件</span>
+      <span v-if="!loading && !error && res" style="color:var(--muted);font-size:12px;">
+        {{ groupCount }} 组确认重复（{{ dupCount }} 个文件）
+        <span v-if="suspectGroups.length"> · {{ suspectGroups.length }} 组待人工核对</span>
+        <span v-if="nearGroups.length"> · {{ nearGroups.length }} 组近似/版本族</span>
+      </span>
       <button class="rag-btn" :style="S.btn" :disabled="loading || !project" @click="load">🔄 重新扫描</button>
     </div>
     <div style="flex:1;min-height:0;overflow:auto;padding:16px 20px;">
       <div v-if="!project" :style="S.card">👆 先在上方选择一个项目（默认是你在文件页打开的项目）。查重只针对单个项目，不跨项目。</div>
       <div v-else-if="loading" :style="S.card">正在扫描项目「{{ project }}」…</div>
       <div v-else-if="error" :style="S.card" style="color:#f85149;">{{ error }} <button class="rag-btn" :style="S.btn" @click="load">重试</button></div>
-      <div v-else-if="groupCount === 0" :style="S.card" style="color:#3fb950;">
+      <div v-else-if="groupCount === 0 && suspectGroups.length === 0 && nearGroups.length === 0" :style="S.card" style="color:#3fb950;">
         ✅ 项目「{{ project }}」未发现重复文件（同名同大小 / 内容一字不差 两类均未命中），数据是干净的，可以放心上传新资料。
       </div>
       <template v-else>
-        <!-- 文件层：同名同大小 -->
+        <!-- 文件层：同名同大小（§3.2-A2 —— 只有内容校验通过才叫"重复"） -->
         <div v-if="fileGroups.length" :style="S.section">
-          <div :style="S.secTitle">📄 同名同大小（{{ fileGroups.length }} 组）<span style="font-weight:400;color:var(--muted);font-size:12px;">所有文件类型都算，含图片/压缩包</span></div>
+          <div :style="S.secTitle">📄 同名同大小（{{ fileGroups.length }} 组）
+            <span style="font-weight:400;color:var(--muted);font-size:12px;">所有文件类型都算；已逐份比对内容，只有"内容一致"才敢叫重复</span>
+          </div>
           <div v-for="(g, gi) in fileGroups" :key="'f' + gi" class="rag-dup-card" :style="[S.card,{marginBottom:'12px',padding:'10px 12px'}]">
-            <div style="display:flex;align-items:center;gap:10px;padding:2px 4px 8px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);">
+            <div style="display:flex;align-items:center;gap:10px;padding:2px 4px 8px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);flex-wrap:wrap;">
               <span>📄 {{ g.name }}</span>
               <span style="color:var(--muted);font-weight:400;">{{ g.sizeText }} × {{ g.count }} 份</span>
+              <span v-if="g.verdict === 'same'" :style="S.badgeOk">✅ 内容一致</span>
+              <span v-else-if="g.verdict === 'differ'" :style="S.badgeWarn">⚠ 名字/大小一样，但内容不同 —— 不是重复，请勿删</span>
+              <span v-else :style="S.badgeMuted">？ 未能校验内容（文件过大或读取失败），请人工核对</span>
               <span style="flex:1"></span>
             </div>
             <div v-for="(f, fi) in g.files" :key="'f' + gi + '-' + fi" class="rag-dup-row" :style="rowStyle('f', gi, fi)">
-              <label style="display:flex;align-items:center;gap:4px;color:var(--accent);font-size:12px;cursor:pointer;flex-shrink:0;">
+              <label v-if="g.verdict === 'same'" style="display:flex;align-items:center;gap:4px;color:var(--accent);font-size:12px;cursor:pointer;flex-shrink:0;">
                 <input type="radio" :name="'dup-keep-f-' + gi" :checked="keep['f'+gi]===fi" @click="keepFile('f',gi,fi)" /> 保留
               </label>
-              <label style="display:flex;align-items:center;gap:4px;color:#f85149;font-size:12px;cursor:pointer;flex-shrink:0;">
-                <input type="checkbox" :checked="isDel('f',gi,fi)" @click="toggleDel('f',gi,fi)" /> 删除
+              <label v-if="g.verdict === 'same'"
+                     :style="{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',flexShrink:0,color:'#f85149',cursor: f.canDelete === false ? 'not-allowed' : 'pointer', opacity: f.canDelete === false ? .45 : 1}"
+                     :title="f.canDelete === false ? '你没有该文件的删除权限' : ''">
+                <input type="checkbox" :checked="isDel('f',gi,fi)" :disabled="f.canDelete === false" @click="toggleDel('f',gi,fi)" /> 删除
               </label>
               <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);">{{ f.path }}</span>
+              <span v-if="f.canDelete === false" style="color:#d29922;font-size:11px;flex-shrink:0;">🔒 只读</span>
+              <span v-else-if="f.sameAs" style="color:var(--muted);font-size:11px;flex-shrink:0;" :title="'与 ' + f.sameAs + ' 内容相同'">≈{{ f.fingerprint }}</span>
               <span style="color:var(--muted);font-size:11.5px;flex-shrink:0;">{{ f.mtime }}</span>
             </div>
           </div>
@@ -542,12 +700,39 @@ const RagDupPanel = {
               <label style="display:flex;align-items:center;gap:4px;color:var(--accent);font-size:12px;cursor:pointer;flex-shrink:0;">
                 <input type="radio" :name="'dup-keep-c-' + gi" :checked="keep['c'+gi]===fi" @click="keepFile('c',gi,fi)" /> 保留
               </label>
-              <label style="display:flex;align-items:center;gap:4px;color:#f85149;font-size:12px;cursor:pointer;flex-shrink:0;">
-                <input type="checkbox" :checked="isDel('c',gi,fi)" @click="toggleDel('c',gi,fi)" /> 删除
+              <label :style="{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',flexShrink:0,color:'#f85149',cursor: f.canDelete === false ? 'not-allowed' : 'pointer', opacity: f.canDelete === false ? .45 : 1}"
+                     :title="f.canDelete === false ? '你没有该文件的删除权限' : ''">
+                <input type="checkbox" :checked="isDel('c',gi,fi)" :disabled="f.canDelete === false" @click="toggleDel('c',gi,fi)" /> 删除
               </label>
               <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);">{{ f.path }}</span>
+              <span v-if="f.canDelete === false" style="color:#d29922;font-size:11px;flex-shrink:0;">🔒 只读</span>
               <span style="color:var(--muted);font-size:11.5px;flex-shrink:0;">{{ fmtDate(f.updated) }}</span>
             </div>
+          </div>
+        </div>
+
+        <!-- 近似 / 版本族（§3.2-A3）：与治理页同一段算法，仅作提示，不参与"每组保留1个" -->
+        <div v-if="nearGroups.length" :style="S.section">
+          <div :style="S.secTitle">🧩 近似 / 版本族（{{ nearGroups.length }} 组）
+            <span style="font-weight:400;color:var(--muted);font-size:12px;">内容高度相似或同一份文件的不同版本 —— **仅供人工核对**，不作删除建议</span>
+          </div>
+          <div v-for="(g, ni) in nearGroups" :key="'n' + ni" class="rag-dup-card" :style="[S.card,{marginBottom:'12px',padding:'10px 12px'}]">
+            <div style="display:flex;align-items:center;gap:10px;padding:2px 4px 8px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);flex-wrap:wrap;">
+              <span v-if="g.kind === 'near'">🧩 近似内容</span>
+              <span v-else>🕓 版本族「{{ g.label }}」</span>
+              <span v-if="g.score != null" :style="S.badgeWarn">相似度 {{ Math.round(g.score * 100) }}%</span>
+              <span style="color:var(--muted);font-weight:400;">{{ g.docs.length }} 份</span>
+              <span style="flex:1"></span>
+              <span style="color:var(--muted);font-weight:400;font-size:11.5px;">{{ g.reason }}</span>
+            </div>
+            <div v-for="(f, fi) in g.docs" :key="'n' + ni + '-' + fi" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line);font-size:12.5px;">
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);">{{ f.path }}</span>
+              <span v-if="f.canDelete === false" style="color:#d29922;font-size:11px;flex-shrink:0;">🔒 只读</span>
+              <span style="color:var(--muted);font-size:11.5px;flex-shrink:0;">{{ fmtDate(f.updated) }}</span>
+            </div>
+          </div>
+          <div v-if="nearGroupsTotal > nearGroups.length" style="color:var(--muted);font-size:12px;padding:2px 4px 10px;">
+            已显示前 {{ nearGroups.length }} 组（共 {{ nearGroupsTotal }} 组，§3.5 上限），其余请缩小范围或先处理已列出的部分。
           </div>
         </div>
       </template>
@@ -557,15 +742,34 @@ const RagDupPanel = {
          修复前该栏位于列表末尾、随内容滚动 —— 重复组一多就被推到屏幕外，
          表现为「查重后找不到删除按钮」（按钮其实已渲染，只是看不见）。
          现在只要扫描出重复就一直显示，并可随时看到已勾选数量。 -->
-    <div v-if="!loading && !error && groupCount > 0"
-         style="flex-shrink:0;padding:10px 18px;border-top:1px solid var(--line);background:var(--panel2);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <button class="rag-btn rag-danger" :style="S.btnDangerPrimary" :disabled="delCount === 0 || deleting" @click="doDelete">
-        {{ deleting ? '处理中…' : '🗑 删除勾选的 ' + delCount + ' 个重复文件（移入回收站）' }}
-      </button>
-      <span style="color:var(--muted);font-size:12px;">每组必须保留 1 个（默认第一个）；删除后可从回收站找回，语料自动同步</span>
-      <span style="flex:1"></span>
-      <span v-if="delCount === 0" style="color:var(--muted);font-size:12px;">← 先在上方勾选要删除的重复项</span>
-      <span v-else style="color:#f85149;font-size:12px;">已选 {{ delCount }} 项</span>
+    <div v-if="!loading && !error && (groupCount > 0 || suspectGroups.length || nearGroups.length)"
+         style="flex-shrink:0;border-top:1px solid var(--line);background:var(--panel2);">
+      <div style="padding:10px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button class="rag-btn rag-danger" :style="S.btnDangerPrimary" :disabled="delCount === 0 || deleting || delBlocked.length > 0" @click="doDelete">
+          {{ deleting ? '处理中…' : '🗑 删除勾选的 ' + delCount + ' 个文件（移入回收站）' }}
+        </button>
+        <button class="rag-btn" :style="S.btn" :disabled="delCount === 0" @click="showImpact = !showImpact">{{ showImpact ? '收起预览' : '👁 预览影响' }}</button>
+        <button class="rag-btn" :style="S.btn" :disabled="delCount === 0" @click="exportAs('csv')">⬇ CSV</button>
+        <button class="rag-btn" :style="S.btn" :disabled="delCount === 0" @click="exportAs('json')">⬇ JSON</button>
+        <span style="width:1px;height:20px;background:var(--line);"></span>
+        <span style="color:var(--muted);font-size:12px;">保留策略</span>
+        <select :value="strategy" :style="S.select" style="max-width:140px;" @change="strategy = $event.target.value">
+          <option value="newest">保留最新</option>
+          <option value="oldest">保留最旧</option>
+          <option value="shorter">保留路径最短</option>
+        </select>
+        <button class="rag-btn" :style="S.btn" :disabled="groupCount === 0" @click="applyStrategy">⚡ 一键套用</button>
+        <span style="flex:1"></span>
+        <span v-if="delBlocked.length" style="color:#f85149;font-size:12px;">⚠ 有 {{ delBlocked.length }} 份无删除权限（{{ delBlocked[0] }}），请先取消勾选</span>
+        <span v-else-if="delCount === 0" style="color:var(--muted);font-size:12px;">← 先在上方勾选，或用「一键套用」</span>
+        <span v-else style="color:#f85149;font-size:12px;">已选 {{ delCount }} 项</span>
+      </div>
+      <!-- §3.2.1 影响预览：确认前先把"删哪些、留哪些"逐条列出来 -->
+      <div v-if="showImpact && delCount" style="max-height:150px;overflow:auto;padding:0 18px 10px;font-size:12px;color:var(--muted);">
+        <div v-for="(r, ri) in impact()" :key="'imp' + ri" style="padding:2px 0;">
+          <b>保留</b> {{ r.keep }} ｜ <span style="color:#f85149;">删除 {{ r.dels.length }} 份</span>：{{ r.dels.join('、') }}
+        </div>
+      </div>
     </div>
 
     <HelpTip v-if="helpKey" :help="HELP[helpKey]" @close="helpKey=''" />
@@ -579,12 +783,19 @@ function makeAdminView() {
   return {
     name: 'rag-admin-view',
     components: { HelpTip, RagCorpusPanel, RagKeysPanel },
-    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, mForm: { llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, qaStream: true, qaErr: '', discHosts: '', discBusy: false, discResult: null, discSel: {} } },
+    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, mForm: { llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, qaTurns: [], qaStream: true, qaErr: '', discHosts: '', discBusy: false, discResult: null, discSel: {} } },
     computed: {
       healthTxt() {
-        const h = (x) => (x?.status === 'ok' ? '✅ ok' : x?.status === 'unconfigured' ? '⚪ 未配置' : x?.status === 'unreachable' ? '❌ 不可达' : x?.status === 'timeout' ? '⏱ 超时' : x?.status === 'auth-error' ? '🔐 鉴权失败' : x?.status === 'model-missing' ? '⚠️ 模型名不在服务清单' : '❓ ' + (x?.status || '未知'))
+        const h = (x) => (x?.status === 'ok' ? '✅ ok' : x?.status === 'unconfigured' ? '⚪ 未配置' : x?.status === 'unreachable' ? '❌ 不可达' : x?.status === 'timeout' ? '⏱ 超时' : x?.status === 'auth-error' ? '🔐 鉴权失败' : x?.status === 'model-missing' ? '⚠️ 模型名不在服务清单' : x?.status === 'embed-error' ? '⚠️ 向量调用失败（端点通）' : '❓ ' + (x?.status || '未知'))
         return { llm: h(this.status?.model?.llm), embedding: h(this.status?.model?.embedding) }
       },
+      /** 自检时后端已从 {base}/v1/models 读到的模型名清单 → 接成 datalist（W-B/§1.3）。 */
+      modelNames() {
+        const pick = (x) => (Array.isArray(x?.models) ? x.models : [])
+        return { llm: pick(this.status?.model?.llm), embedding: pick(this.status?.model?.embedding) }
+      },
+      /** 会话轮数（§1.6）：只数用户提问，界面上「N 轮对话」才说得通 */
+      qaRounds() { return this.qaTurns.filter((t) => t.role === 'user').length },
       keyUsers() {
         // 生成表单：用户及其可见项目
         return this.users.map((u) => ({ username: u.username, projects: u.projects || [] }))
@@ -620,20 +831,46 @@ function makeAdminView() {
           await this.refreshVec()
         } else window.PrivHub.toast(r.error || '启动失败', 'error')
       },
+      /** 检索方式徽标（§1.7）。为什么要在答案上方显式标注：
+       * 没有向量索引时系统只会走 BM25，命中率会明显下降 —— 用户看不到这条，
+       * 就会把「检索方式退化」误判成「系统变笨了」，然后去怪模型。标注一句，
+       * 就能把「去建索引」这个动作直接指出来。旧服务端不返回 mode 时整块隐藏。 */
+      modeText(t) {
+        const m = t && t.mode
+        if (m === 'hybrid') return '检索方式：混合检索（关键词 + 向量）'
+        if (m === 'keyword') return '检索方式：仅关键词'
+        return ''
+      },
+      /** 交给服务端的多轮上下文（§1.6）：只送 user/assistant 的纯文本，不带来源与徽标。
+       * 服务端还会再截断一次（条数与字数），这里少送一点只是省流量，不是安全边界。 */
+      qaHistoryPayload() {
+        return this.qaTurns.filter((t) => t.content).map((t) => ({ role: t.role, content: t.content }))
+      },
+      newChat() {
+        this.qaTurns = []
+        this.qaResult = null
+        this.qaErr = ''
+        this.qaQuestion = ''
+      },
       async ask() {
         const q = this.qaQuestion.trim()
         if (!q) { window.PrivHub.toast('请输入问题', 'error'); return }
         this.qaBusy = true
-        this.qaResult = null
         this.qaErr = ''
+        // 上下文取的是「本轮之前」的气泡，所以必须在 push 本轮问题之前算出来
+        const history = this.qaHistoryPayload()
+        this.qaTurns.push({ role: 'user', content: q })
+        this.qaQuestion = ''
         try {
           if (!this.qaStream) {
-            const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection }) })
-            if (r.ok) { this.qaResult = r; window.PrivHub.toast(r.sources.length + ' 处引用', 'success') }
-            else window.PrivHub.toast(r.error || '问答失败', 'error')
+            const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection, history }) })
+            if (r.ok) {
+              this.qaTurns.push({ role: 'assistant', content: r.answer, sources: r.sources || [], mode: r.mode || '', modeReason: r.modeReason || '' })
+              window.PrivHub.toast((r.sources || []).length + ' 处引用', 'success')
+            } else window.PrivHub.toast(r.error || '问答失败', 'error')
             return
           }
-          await this.askStream(q)
+          await this.askStream(q, history)
         } finally { this.qaBusy = false }
       },
       /**
@@ -650,13 +887,13 @@ function makeAdminView() {
        * 兜底：若响应不是 SSE（例如中间有旧版服务、或网关把响应改写成 JSON 报错），
        * 就按普通 JSON 处理 —— 不失能，只是退回一次性出结果。
        */
-      async askStream(q) {
+      async askStream(q, history) {
         const headers = { 'content-type': 'application/json' }
         if (window.PrivHub.AUTH && window.PrivHub.AUTH.token) headers['authorization'] = 'Bearer ' + window.PrivHub.AUTH.token
         let res
         try {
           res = await fetch('/privhub/api/rag/ask', {
-            method: 'POST', headers, body: JSON.stringify({ question: q, collection: this.qaCollection, stream: true }),
+            method: 'POST', headers, body: JSON.stringify({ question: q, collection: this.qaCollection, stream: true, history: history || [] }),
           })
         } catch (e) {
           this.qaErr = '网络错误：' + ((e && e.message) || '无法连接服务器')
@@ -667,15 +904,18 @@ function makeAdminView() {
         if (!ctype.includes('text/event-stream')) {
           // 非 SSE：服务端不支持流式（旧版）或直接回了错误 JSON
           const r = await res.json().catch(() => null)
-          if (r && r.ok) { this.qaResult = r; window.PrivHub.toast(r.sources.length + ' 处引用', 'success') }
-          else this.qaErr = (r && r.error) || ('服务端未返回流式响应（HTTP ' + res.status + '）')
+          if (r && r.ok) {
+            this.qaTurns.push({ role: 'assistant', content: r.answer, sources: r.sources || [], mode: r.mode || '', modeReason: r.modeReason || '' })
+            window.PrivHub.toast((r.sources || []).length + ' 处引用', 'success')
+          } else this.qaErr = (r && r.error) || ('服务端未返回流式响应（HTTP ' + res.status + '）')
           return
         }
         const reader = res.body && res.body.getReader()
         if (!reader) { this.qaErr = '浏览器不支持读取流式响应'; return }
         const decoder = new TextDecoder()
-        // 先占住结果对象：每收到一个 delta 就地追加，界面随之长出来
-        this.qaResult = { answer: '', sources: [] }
+        // 先占住结果对象并挂进会话：每收到一个 delta 就地追加，气泡随之长出来
+        this.qaResult = { role: 'assistant', content: '', sources: [], mode: '', modeReason: '', busy: true }
+        this.qaTurns.push(this.qaResult)
         let buf = ''
         let answer = ''
         const applyFrame = (raw) => {
@@ -690,8 +930,14 @@ function makeAdminView() {
           let payload
           try { payload = JSON.parse(dataLines.join('\n')) } catch { return }
           if (event === 'sources') this.qaResult.sources = payload.sources || []
-          else if (event === 'delta') { answer += payload.text || ''; this.qaResult.answer = answer }
-          else if (event === 'done') { if (payload.answer) { answer = payload.answer; this.qaResult.answer = answer } }
+          // 检索方式（§1.7）：与 sources 同一次检索的产物，紧跟其后到达；旧服务端不发这一帧，则保持空
+          else if (event === 'retrieval') { this.qaResult.mode = payload.mode || ''; this.qaResult.modeReason = payload.reason || '' }
+          else if (event === 'delta') { answer += payload.text || ''; this.qaResult.content = answer }
+          else if (event === 'done') {
+            if (payload.answer) { answer = payload.answer; this.qaResult.content = answer }
+            // 万一流式里丢了 retrieval 帧（网关吃帧），终帧还带着同样的信息，用它兜底
+            if (payload.mode && !this.qaResult.mode) { this.qaResult.mode = payload.mode; this.qaResult.modeReason = payload.modeReason || '' }
+          }
           else if (event === 'error') this.qaErr = payload.error || '问答失败'
         }
         try {
@@ -709,8 +955,12 @@ function makeAdminView() {
         } catch (e) {
           this.qaErr = '连接中断：' + ((e && e.message) || '流式读取失败')
         }
-        // 一个字都没生成就失败了：别留一个空回答框在错误条上面（看起来像「模型答了空话」）
-        if (this.qaErr && !answer) this.qaResult = null
+        // 一个字都没生成就失败了：把这条空回答气泡整个抽掉（留着会像「模型答了空话」）
+        if (this.qaErr && !answer) {
+          const i = this.qaTurns.indexOf(this.qaResult)
+          if (i >= 0) this.qaTurns.splice(i, 1)
+          this.qaResult = null
+        } else if (this.qaResult) this.qaResult.busy = false
         if (this.qaErr) window.PrivHub.toast(this.qaErr, 'error')
         else if (answer) window.PrivHub.toast(this.qaResult.sources.length + ' 处引用', 'success')
       },
@@ -774,14 +1024,33 @@ function makeAdminView() {
         this.saving = true
         try {
           const r = await api('/privhub/api/model/config', { method: 'POST', body: JSON.stringify(this.mForm) })
-          if (r.ok) { window.PrivHub.toast('模型配置已保存', 'success'); await this.refresh() }
-          else window.PrivHub.toast(r.error || '保存失败', 'error')
+          if (r.ok) { window.PrivHub.toast('模型配置已保存', 'success'); await this.refresh(); return true }
+          window.PrivHub.toast(r.error || '保存失败', 'error')
+          return false
         } finally { this.saving = false }
       },
-      async checkModel() {
-        const r = await api('/privhub/api/model/status?force=1')
-        if (r.ok) { this.status.model = r; window.PrivHub.toast('自检完成', 'success'); }
-        else window.PrivHub.toast(r.error || '自检失败', 'error')
+      /**
+       * 自检（W-B/§1.4）。
+       * `deep` 会把 embedding 真跑一次、回维数与耗时 —— 只有「保存并测试」传 true；
+       * 注意模板里必须写 `@click="checkModel()"`：写成 `@click="checkModel"` 会把
+       * MouseEvent 当参数传进来（恒为真）⇒ 普通自检也会变成深度自检。
+       */
+      async checkModel(deep) {
+        const r = await api('/privhub/api/model/status?force=1' + (deep ? '&deep=1' : ''))
+        if (!r.ok) { window.PrivHub.toast(r.error || '自检失败', 'error'); return }
+        this.status.model = r
+        if (!deep) { window.PrivHub.toast('自检完成', 'success'); return }
+        const e = r.embedding || {}
+        // 回执必须带维数/耗时：只说「通过」等于没说 —— 维数是向量索引的必需参数
+        window.PrivHub.toast(
+          e.status === 'ok' ? `保存并测试：连通，向量 ${e.dims} 维，耗时 ${e.latencyMs}ms` : '保存并测试未通过：' + (e.error || e.status),
+          e.status === 'ok' ? 'success' : 'error',
+        )
+      },
+      /** 保存并测试：一次点击 = 落盘 + 真打一次 embedding（保存失败就不测，免得测的是旧配置）。 */
+      async saveAndTest() {
+        if (!(await this.saveModel())) return
+        await this.checkModel(true)
       },
       async loadTrash() {
         const t = await api('/privhub/api/agent/v1/trash?user=' + encodeURIComponent(this.trashUser))
@@ -846,7 +1115,7 @@ function makeAdminView() {
           <div style="font-size:13px;margin-top:6px;">
             <div>问答 LLM：<span v-html="badge(healthTxt.llm,'var(--accent)')"></span></div>
             <div style="margin-top:4px;">向量 embedding：<span v-html="badge(healthTxt.embedding,'#3fb950')"></span></div>
-            <div style="color:var(--muted);font-size:12px;margin-top:4px;">{{ status?.model?.checkedAt ? '最近检查 ' + fmtDate(status.model.checkedAt) : '' }} · <a style="color:var(--accent);cursor:pointer;" @click="checkModel">立即自检</a></div>
+            <div style="color:var(--muted);font-size:12px;margin-top:4px;">{{ status?.model?.checkedAt ? '最近检查 ' + fmtDate(status.model.checkedAt) : '' }} · <a style="color:var(--accent);cursor:pointer;" @click="checkModel()">立即自检</a></div>
           </div>
         </div>
         <div :style="S.card" style="min-width:220px;flex:1;">
@@ -891,21 +1160,37 @@ function makeAdminView() {
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--accent);">问答 LLM（chat/completions）</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">baseURL</div><input v-model="mForm.llm.baseURL" placeholder="http://192.168.x.x:11434 或 mock" :style="S.input" /></div>
-              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">模型名</div><input v-model="mForm.llm.model" placeholder="qwen3:8b" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">模型名</div><input v-model="mForm.llm.model" placeholder="qwen3:8b" :style="S.input" list="rag-llm-models" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">apiKey（可选）</div><input v-model="mForm.llm.apiKey" placeholder="无鉴权可留空" :style="S.input" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">超时 ms</div><input v-model.number="mForm.llm.timeoutMs" :style="S.input" /></div>
             </div>
             <div style="font-size:13px;font-weight:600;margin:14px 0 8px;color:#3fb950;">向量 embedding（embeddings）</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">baseURL</div><input v-model="mForm.embedding.baseURL" placeholder="http://192.168.x.x:11434 或 mock" :style="S.input" /></div>
-              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">模型名</div><input v-model="mForm.embedding.model" placeholder="bge-m3" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">模型名</div><input v-model="mForm.embedding.model" placeholder="bge-m3" :style="S.input" list="rag-emb-models" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">apiKey（可选）</div><input v-model="mForm.embedding.apiKey" placeholder="无鉴权可留空" :style="S.input" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">超时 ms</div><input v-model.number="mForm.embedding.timeoutMs" :style="S.input" /></div>
             </div>
-            <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
-              <button class="rag-btn" :style="S.btn" :disabled="saving" @click="saveModel">保存配置</button>
-              <button class="rag-btn" :style="S.btn" @click="checkModel">连通自检</button>
+            <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button class="rag-btn" :style="S.btn" :disabled="saving" @click="saveAndTest">{{ saving ? '保存中…' : '保存并测试' }}</button>
+              <button class="rag-btn" :style="S.btn" @click="checkModel()">连通自检</button>
+              <button class="rag-btn" :style="S.btn" :disabled="saving" @click="saveModel">仅保存</button>
               <span style="color:var(--muted);font-size:12px;">LLM 与 embedding 可指向同一或不同服务；baseURL 填 mock 可离线模拟。</span>
+            </div>
+            <!-- 模型名候选（W-B/§1.3）：自检时后端已经 GET 过 {base}/v1/models，这里只是把
+                 同一份清单接成 datalist（不再新开「按未保存的地址代拉列表」的端点 —— 那等于
+                 给管理员开一个不落审计的任意 URL 取数原语，而自检已能回同一份清单）。 -->
+            <datalist id="rag-llm-models"><option v-for="m in modelNames.llm" :key="m" :value="m"></option></datalist>
+            <datalist id="rag-emb-models"><option v-for="m in modelNames.embedding" :key="m" :value="m"></option></datalist>
+            <div v-if="modelNames.llm.length || modelNames.embedding.length" style="margin-top:6px;font-size:12px;color:var(--muted);">
+              📋 已读到候选模型名：LLM {{ modelNames.llm.length }} 个 · embedding {{ modelNames.embedding.length }} 个（点上面「模型名」输入框即可下拉选，不必手打）
+            </div>
+            <!-- 自检回执：深检才有维数/耗时；embed-error 时把原因原文摆出来（脱敏后端已做） -->
+            <div v-if="status?.model?.embedding?.dims" style="margin-top:8px;font-size:12px;color:#3fb950;">
+              ✅ 向量通路正常：{{ status.model.embedding.dims }} 维 · 耗时 {{ status.model.embedding.latencyMs }}ms
+            </div>
+            <div v-else-if="status?.model?.embedding?.status === 'embed-error'" style="margin-top:8px;font-size:12px;color:var(--accent);">
+              ⚠️ 端点连通，但向量调用失败：{{ status.model.embedding.error }}
             </div>
           </div>
         </div>
@@ -1065,14 +1350,32 @@ function makeAdminView() {
             流式输出（回答边生成边显示，长回答不必干等；关掉则一次性出结果）
           </label>
           <div v-if="qaErr" style="margin-top:10px;font-size:12px;color:var(--danger, #c0392b);background:var(--danger-soft, #fbeaea);border:1px solid var(--line);border-radius:8px;padding:8px 12px;">⚠ {{ qaErr }}</div>
-          <div v-if="qaResult" style="margin-top:14px;">
-            <div style="white-space:pre-wrap;font-size:13px;line-height:1.8;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;">{{ qaResult.answer }}<span v-if="qaBusy" style="color:var(--accent);">▍</span></div>
-            <div v-if="qaResult.sources && qaResult.sources.length" style="margin-top:10px;">
-              <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">📚 引用来源（{{ qaResult.sources.length }}）</div>
-              <div v-for="(s, i) in qaResult.sources" :key="s.chunkId" style="margin-bottom:6px;font-size:12px;color:var(--muted);">
-                <span style="color:var(--accent);font-weight:600;">[{{ i + 1 }}]</span> {{ s.project }}/{{ s.path }}<div style="margin-top:2px;color:var(--muted);padding-left:16px;">{{ s.snippet }}…</div>
+
+          <!-- 会话气泡（§1.6）：历史留在界面上，第二轮问「那保修呢」时用户自己也看得见上下文 -->
+          <div v-if="qaTurns.length" style="margin-top:14px;display:flex;flex-direction:column;gap:12px;">
+            <div v-for="(t, ti) in qaTurns" :key="ti">
+              <div v-if="t.role === 'user'" style="display:flex;justify-content:flex-end;">
+                <div style="max-width:82%;white-space:pre-wrap;font-size:13px;line-height:1.7;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;">{{ t.content }}</div>
+              </div>
+              <div v-else>
+                <div v-if="modeText(t)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:6px;">
+                  <span style="padding:1px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);">{{ modeText(t) }}</span>
+                  <span v-if="t.mode === 'keyword' && t.modeReason">（{{ t.modeReason }}）</span>
+                </div>
+                <div style="white-space:pre-wrap;font-size:13px;line-height:1.8;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;">{{ t.content }}<span v-if="t.busy" style="color:var(--accent);">▍</span></div>
+                <div v-if="t.sources && t.sources.length" style="margin-top:10px;">
+                  <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">📚 引用来源（{{ t.sources.length }}）</div>
+                  <div v-for="(s, si) in t.sources" :key="s.chunkId" style="margin-bottom:6px;font-size:12px;color:var(--muted);">
+                    <span style="color:var(--accent);font-weight:600;">[{{ si + 1 }}]</span> {{ s.project }}/{{ s.path }}<div style="margin-top:2px;color:var(--muted);padding-left:16px;">{{ s.snippet }}…</div>
+                  </div>
+                </div>
               </div>
             </div>
+          </div>
+
+          <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button class="rag-btn" :style="S.btn" :disabled="qaBusy || qaTurns.length === 0" @click="newChat">🆕 新会话</button>
+            <span v-if="qaRounds" style="font-size:12px;color:var(--muted);">{{ qaRounds }} 轮对话 · 提问时会带上最近几轮作为上下文（历史只发给模型，不参与检索）</span>
           </div>
         </div>
       </div>

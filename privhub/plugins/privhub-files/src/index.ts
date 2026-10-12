@@ -16,7 +16,12 @@ import { isMediaExt } from '../../privhub-core/src/file-exts'
 import { parseSingleRange } from '../../privhub-core/src/http-range'
 
 export const name = 'privhub-files'
-export const inject = ['privhub', 'audit', 'storage', 'eventBus']
+export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock']
+
+/** Y 批：名字级操作（重命名/移动/删除）撞上他人编辑锁时的统一文案。 */
+function busyMsg(holder: string): string {
+  return '文件正被 ' + holder + ' 修改，请稍后重试'
+}
 
 /**
  * JT-05：上传失败时对用户的说法。
@@ -300,10 +305,14 @@ export function apply(ctx: Context): void {
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const project = String(body.project ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const ok = await svc.moveToTrash(project, String(body.path ?? ''), u.username)
+    const delPath = String(body.path ?? '')
+    /* Y 批：删除是「名字级」操作——若该文件（或其祖先目录）正被他人编辑，先拦下 */
+    const r = await ctx.lock.withNameLock(u.username, project, [delPath], () => svc.moveToTrash(project, delPath, u.username))
+    if (!r.ok) return json(res, 409, { ok: false, error: busyMsg(r.holder.user), holder: r.holder.user })
+    const ok = r.value
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '删除失败' })
-    if (ok) void audit(u, 'delete', project + '/' + String(body.path ?? ''))
-    if (ok) changed(project, String(body.path ?? ''), 'deleted')
+    if (ok) void audit(u, 'delete', project + '/' + delPath)
+    if (ok) changed(project, delPath, 'deleted')
   }, 'delete')
 
   /* 重命名 */
@@ -314,12 +323,16 @@ export function apply(ctx: Context): void {
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const project = String(body.project ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const ok = await svc.renameEntry(project, String(body.path ?? ''), String(body.newName ?? ''))
+    const renPath = String(body.path ?? '')
+    /* Y 批：重命名是名字级操作——正在被他人编辑的文件不许改名 */
+    const r = await ctx.lock.withNameLock(u.username, project, [renPath], () => svc.renameEntry(project, renPath, String(body.newName ?? '')))
+    if (!r.ok) return json(res, 409, { ok: false, error: busyMsg(r.holder.user), holder: r.holder.user })
+    const ok = r.value
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '重命名失败' })
-    if (ok) void audit(u, 'rename', project + '/' + String(body.path ?? ''), '-> ' + String(body.newName ?? ''))
+    if (ok) void audit(u, 'rename', project + '/' + renPath, '-> ' + String(body.newName ?? ''))
     if (ok) {
       // newPath：同目录新名（目录内文件路径 → 替换最后一段）
-      const p = String(body.path ?? '').replace(/\\/g, '/')
+      const p = renPath.replace(/\\/g, '/')
       const newPath = p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) + String(body.newName ?? '') : String(body.newName ?? '')
       changed(project, p, 'renamed', newPath)
     }
@@ -344,7 +357,12 @@ export function apply(ctx: Context): void {
     const dest = join(destDir, basename(src))
     if (existsSync(dest)) return json(res, 400, { ok: false, error: '目标目录已存在同名项' })
     try {
-      await rename(src, dest)
+      /* Y 批：移动是名字级操作——源文件或目标目录被他人锁着则拒绝 */
+      const lr = await ctx.lock.withNameLock(
+        u.username, project, [from, toDir].filter((x) => x !== ''),
+        async () => { await rename(src, dest) },
+      )
+      if (!lr.ok) return json(res, 409, { ok: false, error: busyMsg(lr.holder.user), holder: lr.holder.user })
       json(res, 200, { ok: true, to: toDir === '' ? '' : toDir + '/' + basename(src) })
       void audit(u, 'move', project + '/' + from, '-> ' + (toDir === '' ? '' : toDir + '/') + basename(src))
       changed(project, from, 'moved', toDir === '' ? basename(src) : toDir + '/' + basename(src))

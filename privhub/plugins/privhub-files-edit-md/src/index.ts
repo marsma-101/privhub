@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-edit-md'
-export const inject = ['privhub', 'audit', 'storage', 'eventBus']
+export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const VERSIONS_DIR = join(rootDir, 'data', 'doc-versions')
@@ -47,6 +47,11 @@ async function saveIndex(storage: { writeText: (f: string, d: string) => Promise
 
 function isMd(path: string): boolean {
   return extname(path).toLowerCase() === '.md'
+}
+
+/** Y 批：写前撞上他人编辑锁的统一文案。 */
+function busyMsg(holder: string): string {
+  return '文件正被 ' + holder + ' 修改，请稍后重试'
 }
 
 export function apply(ctx: Context): void {
@@ -120,6 +125,9 @@ export function apply(ctx: Context): void {
       const doc = String(body.doc ?? '')
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
       if (!isMd(path)) return json(res, 400, { ok: false, error: '仅支持 .md 文档' })
+      /* Y 批：写前校验——他人正持有编辑锁则拒绝（锁方保持沉默则不影响脚本/模板写入） */
+      const heldDoc = ctx.lock.isLockedByOther(u.username, project, path)
+      if (heldDoc) return json(res, 409, { ok: false, error: busyMsg(heldDoc.user), holder: heldDoc.user })
       const target = await svc.resolveReal(project, path)
       if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
       if (!existsSync(target)) {
@@ -160,6 +168,9 @@ export function apply(ctx: Context): void {
     const path = String(body.path ?? '')
     const text = String(body.text ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+    /* Y 批：写前校验，与 /api/doc 一致 */
+    const heldText = ctx.lock.isLockedByOther(u.username, project, path)
+    if (heldText) return json(res, 409, { ok: false, error: busyMsg(heldText.user), holder: heldText.user })
     const target = await svc.resolveReal(project, path)
     if (target === null) return json(res, 400, { ok: false, error: '路径无效' })
     if (!existsSync(target)) {
@@ -210,6 +221,9 @@ export function apply(ctx: Context): void {
       const at = Number(body.version ?? 0)
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
       if (!isMd(path)) return json(res, 400, { ok: false, error: '仅支持 .md 文档' })
+      /* Y 批：回滚同样是写操作，受编辑锁约束 */
+      const heldRst = ctx.lock.isLockedByOther(u.username, project, path)
+      if (heldRst) return json(res, 409, { ok: false, error: busyMsg(heldRst.user), holder: heldRst.user })
       const index = await loadIndex(ctx.storage)
       const list = index[project + '::' + path] ?? []
       const rec = list.find((v) => v.at === at)

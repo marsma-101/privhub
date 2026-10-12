@@ -33,7 +33,7 @@ import { VERSION_TEXT_EXTS } from '../../privhub-core/src/file-exts'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-files-fulltext'
-export const inject = ['privhub', 'storage', 'search', 'audit', 'eventBus']
+export const inject = ['privhub', 'storage', 'search', 'audit', 'eventBus', 'acl']
 
 /** 参与全文索引的文本扩展名（**派生**，不手写；取值与 `privhub-files-versions` 同一份）。 */
 const TEXT_EXTS = new Set(VERSION_TEXT_EXTS)
@@ -155,7 +155,15 @@ export function apply(ctx: Context): void {
       }
       const visible = await svc.visibleProjects(u)
       const hits = await search.searchFulltext(q, projectParam ? { project: projectParam } : {}, visible)
-      json(res, 200, { ok: true, hits, stats: search.stats() })
+      // W-A 安全修复（2026-10-11）：全文命中此前只按项目过滤（visibleProjects），
+      // 项目内被文件级 ACL 拒绝的文档仍会以片段形式返回。这里与 RAG 检索链
+      // （privhub-svc-rag/src/index.ts 的 ragSearch）同源，逐条走 acl.can(view)：
+      // 未命中任何规则（undefined）表示放行，由项目级权限兜底；命中且 allow=false 才摘除。
+      const allowedHits = hits.filter((h) => {
+        const d = ctx.acl.can(u, 'view', h.project, h.path)
+        return !d || d.allow
+      })
+      json(res, 200, { ok: true, hits: allowedHits, stats: search.stats() })
     } catch (e) {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '搜索失败' })
     }

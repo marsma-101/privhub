@@ -23,12 +23,9 @@ import { json, readBody } from '../../privhub-core/src/index'
 import HTMLtoDOCX from 'html-to-docx'
 
 export const name = 'privhub-files-office2'
-export const inject = ['storage', 'privhub', 'office']
+export const inject = ['storage', 'privhub', 'office', 'lock']
 
-const LOCK_TTL_MS = 10 * 60 * 1000 // 10 分钟无操作自动释放
 const EDITABLE = new Set(['.docx', '.xlsx'])
-
-interface LockEntry { user: string; at: number }
 
 export function apply(ctx: Context): void {
   /* 单一来源：直接使用 cordis 服务的权威类型（删掉本地 unknown 影子类型）。 */
@@ -36,42 +33,28 @@ export function apply(ctx: Context): void {
   const storage = ctx.storage
   const office = ctx.office
 
-  /* ---------- 独占编辑锁（内存 + TTL） ---------- */
-  const locks = new Map<string, LockEntry>() // key = project|path
-  const lockKey = (project: string, path: string): string => project + '|' + path
-
-  const prune = (): void => {
-    const now = Date.now()
-    for (const [k, v] of locks) {
-      if (now - v.at > LOCK_TTL_MS) locks.delete(k)
-    }
-  }
+  /* ---------- 独占编辑锁 ----------
+   * Y 批：office2 原有的私有内存锁表已并入共享 ctx.lock（content 锁，默认 TTL 10 分钟）。
+   * 本路由保留原 HTTP 形状，仅为兼容既有前端；新代码请用 /privhub/api/lock。 */
 
   svc.route('/privhub/api/office2/lock', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
     const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
-    prune()
     if (req.method === 'GET' || req.method === 'DELETE') {
       const project = url.searchParams.get('project') ?? ''
       const path = url.searchParams.get('path') ?? ''
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-      const key = lockKey(project, path)
       if (req.method === 'GET') {
-        const hit = locks.get(key)
-        json(res, 200, {
-          ok: true,
-          locked: !!hit,
-          lockedBy: hit ? hit.user : null,
-          expiresAt: hit ? hit.at + LOCK_TTL_MS : null,
-        })
+        const st = ctx.lock.status(project, path)
+        json(res, 200, { ok: true, locked: st.locked, lockedBy: st.by, expiresAt: st.expiresAt })
         return
       }
-      const hit = locks.get(key)
-      if (!hit) return json(res, 200, { ok: true, released: false })
-      if (hit.user !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅锁持有者或管理员可释放' })
-      locks.delete(key)
-      json(res, 200, { ok: true, released: true })
+      const st = ctx.lock.status(project, path)
+      if (!st.locked) return json(res, 200, { ok: true, released: false })
+      if (st.by !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅锁持有者或管理员可释放' })
+      const released = ctx.lock.release(u.username, project, path, { force: u.role === 'admin' })
+      json(res, 200, { ok: true, released })
       return
     }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
@@ -80,18 +63,12 @@ export function apply(ctx: Context): void {
     const project = String(body.project ?? '')
     const path = String(body.path ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
-    const key = lockKey(project, path)
-    const hit = locks.get(key)
-    if (hit) {
-      // 自己重复取锁 → 续期
-      if (hit.user === u.username) {
-        hit.at = Date.now()
-        return json(res, 200, { ok: true, acquired: true, renew: true })
-      }
-      return json(res, 409, { ok: false, error: '文件正被 ' + hit.user + ' 编辑（约 ' + new Date(hit.at + LOCK_TTL_MS).toLocaleTimeString() + ' 前释放）' })
+    const r = ctx.lock.acquire(u.username, project, path)
+    if (!r.ok) {
+      const st = ctx.lock.status(project, path)
+      return json(res, 409, { ok: false, error: '文件正被 ' + (r.holder ?? '他人') + ' 编辑（约 ' + new Date(st.expiresAt ?? Date.now()).toLocaleTimeString() + ' 前释放）' })
     }
-    locks.set(key, { user: u.username, at: Date.now() })
-    json(res, 200, { ok: true, acquired: true, renew: false })
+    json(res, 200, { ok: true, acquired: true, renew: !!r.renew })
   }, 'office2-lock')
 
   /* ---------- 原始字节（保真渲染用，解密后下发） ---------- */
@@ -134,10 +111,8 @@ export function apply(ctx: Context): void {
     const kind = String(body.kind ?? '')
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     if (!EDITABLE.has('.' + kind)) return json(res, 400, { ok: false, error: 'kind 仅支持 docx/xlsx' })
-    const key = lockKey(project, path)
-    prune()
-    const lock = locks.get(key)
-    if (!lock || lock.user !== u.username) return json(res, 409, { ok: false, error: '需要先获取编辑锁（文件可能正被他人编辑）' })
+    /* Y 批：写前必须持有该文件的 content 锁（锁表已并入共享 ctx.lock） */
+    if (!ctx.lock.isHeldBy(u.username, project, path)) return json(res, 409, { ok: false, error: '需要先获取编辑锁（文件可能正被他人编辑）' })
     const target = await svc.resolveReal(project, path)
     if (target === null) return json(res, 404, { ok: false, error: '文件不存在' })
     try {
@@ -162,7 +137,7 @@ export function apply(ctx: Context): void {
         }) as Buffer
         await storage.writeBuffer(target, Buffer.isBuffer(buf) ? buf : Buffer.from(buf))
       }
-      lock.at = Date.now() // 保存续期
+      ctx.lock.renew(u.username, project, path) // 保存续期
       json(res, 200, { ok: true })
     } catch (e) {
       json(res, 500, { ok: false, error: e instanceof Error ? e.message : '保存失败' })

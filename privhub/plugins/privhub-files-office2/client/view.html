@@ -1,38 +1,72 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Office 预览</title>
+<script>
+/* 主题跟随宿主（2026-10-09，用户要求「画布跟主题、内容留白纸」）：
+ * 本页是 explorer 内容区里的**同源 iframe**，迁前整页写死浅色 —— 深色主题下就是一块刺眼的亮块。
+ * 现在只让「画布与工具条」跟随应用主题；文档页（#docx 的 section / #sheet）保持白纸。
+ * 取主题两条路：被嵌入时读宿主 documentElement 的 data-theme；单独打开时读 localStorage。
+ * 变更监听：宿主切主题改的是**属主文档**的属性，跨文档不会触发本页的 MutationObserver 之外的通知，
+ * 故用 storage 事件（同源不同文档会收到 localStorage 变更）＋ MutationObserver 双保险。 */
+(function () {
+  function readTheme() {
+    try {
+      if (window.parent && window.parent !== window && window.parent.document) {
+        var t = window.parent.document.documentElement.getAttribute('data-theme')
+        if (t) return t
+      }
+    } catch (e) { /* 跨域（本项目同源，不该发生）：忽略 */ }
+    try { return localStorage.getItem('privhub_theme') || 'light' } catch (e) { return 'light' }
+  }
+  function apply() { document.documentElement.setAttribute('data-theme', readTheme()) }
+  apply()
+  window.addEventListener('storage', function (e) { if (e.key === 'privhub_theme') apply() })
+  try {
+    if (window.parent && window.parent !== window && window.parent.document) {
+      new MutationObserver(apply).observe(window.parent.document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    }
+  } catch (e) { /* 忽略 */ }
+})()
+</script>
 <link rel="stylesheet" href="vendor/univer.css">
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; display: flex; flex-direction: column; height: 100vh; }
+  /* 画布与工具条用变量跟主题；#docx 的文档页 / #sheet 恒白纸（见各自的 background 硬值）。 */
+  :root { --c-bg: #f5f6f8; --c-canvas: #eef0f3; --c-surface: #fff; --c-line: #e2e4e8; --c-text: #333; --c-muted: #888; --c-btn-bg: #fff; --c-btn-line: #c9cdd4; --c-btn-text: #333; }
+  [data-theme="dark"] { --c-bg: #232834; --c-canvas: #1b1f29; --c-surface: #2a3040; --c-line: #4a5568; --c-text: #d7dde8; --c-muted: #9aa4b6; --c-btn-bg: #333a4a; --c-btn-line: #4a5568; --c-btn-text: #d7dde8; }
+  body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: var(--c-bg); color: var(--c-text); display: flex; flex-direction: column; height: 100vh; }
   /* 工具条压薄：文件名不在本页重复显示（标签栏已是文件名的唯一出处），只保留状态与操作 */
-  #bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: #fff; border-bottom: 1px solid #e2e4e8; font-size: 12.5px; flex-shrink: 0; flex-wrap: wrap; min-height: 34px; }
+  #bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--c-surface); border-bottom: 1px solid var(--c-line); font-size: 12.5px; flex-shrink: 0; flex-wrap: wrap; min-height: 34px; }
   /* 文件名默认隐藏；仅当本页被单独打开（非 V3 内容区嵌入）时才显示，避免无标题可依 */
   #bar .fname { display: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
   body.standalone #bar .fname { display: inline; }
-  #bar .st { color: #888; font-size: 12px; }
-  #bar .st.locked { color: #c0392b; }
-  #bar .st.editing { color: #2b6cb0; }
+  #bar .st { color: var(--c-muted); font-size: 12px; }
+  #bar .st.locked { color: #e06c75; }
+  #bar .st.editing { color: #4a7bd6; }
   #bar .sp { flex: 1; }
-  #bar button { padding: 3px 11px; border-radius: 6px; border: 1px solid #c9cdd4; background: #fff; cursor: pointer; font-size: 12.5px; }
+  #bar button { padding: 3px 11px; border-radius: 6px; border: 1px solid var(--c-btn-line); background: var(--c-btn-bg); color: var(--c-btn-text); cursor: pointer; font-size: 12.5px; }
   #bar button:hover { border-color: #2b6cb0; color: #2b6cb0; }
   #bar button.primary { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
   #bar button.primary:hover { filter: brightness(1.1); color: #fff; }
   #bar button:disabled { opacity: .5; cursor: not-allowed; }
-  #wrap { flex: 1; overflow: auto; background: #eef0f3; padding: 18px; }
-  #docx { max-width: 860px; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.08); border-radius: 4px; padding: 28px 36px; min-height: 70vh; }
+  #wrap { flex: 1; overflow: auto; background: var(--c-canvas); padding: 18px; }
+  /* #docx 自己**不是**纸，是画布上的容器：撑满、透明，让文档页（docx-preview 注入的
+   * section.docx，恒白）直接落在主题画布上，不再出现「白色卡片里套灰色画布」的双层背景。
+   * docx-preview 会给 `.docx-wrapper` 注入 `background: gray` —— 这里用更高特异性把它抹平成透明。 */
+  #docx { max-width: none; margin: 0; background: transparent; box-shadow: none; border-radius: 0; padding: 0; min-height: 70vh; }
   #docx:focus { outline: none; }
+  #docx .docx-wrapper { background: transparent; padding: 0 0 24px; }
   #sheet { width: 100%; height: calc(100vh - 96px); background: #fff; }
-  #etool { display: none; align-items: center; gap: 4px; padding: 6px 14px; background: #fff; border-bottom: 1px solid #e2e4e8; flex-shrink: 0; flex-wrap: wrap; }
-  #etool button { padding: 4px 10px; border: 1px solid #dfe2e7; border-radius: 5px; background: #fff; cursor: pointer; font-size: 12.5px; }
+  #etool { display: none; align-items: center; gap: 4px; padding: 6px 14px; background: var(--c-surface); border-bottom: 1px solid var(--c-line); flex-shrink: 0; flex-wrap: wrap; }
+  #etool button { padding: 4px 10px; border: 1px solid var(--c-btn-line); border-radius: 5px; background: var(--c-btn-bg); color: var(--c-btn-text); cursor: pointer; font-size: 12.5px; }
   #etool button:hover { border-color: #2b6cb0; color: #2b6cb0; }
-  #etool .sep { width: 1px; height: 18px; background: #dfe2e7; margin: 0 4px; }
+  #etool .sep { width: 1px; height: 18px; background: var(--c-line); margin: 0 4px; }
   .toast { position: fixed; right: 16px; top: 12px; z-index: 99; padding: 8px 16px; border-radius: 8px; font-size: 12.5px; background: #333; color: #fff; opacity: 0; transition: opacity .2s; }
   .toast.show { opacity: .95; }
-  #loading { display: flex; align-items: center; justify-content: center; height: 60vh; color: #888; font-size: 13px; }
+  #loading { display: flex; align-items: center; justify-content: center; height: 60vh; color: var(--c-muted); font-size: 13px; }
 </style>
 </head>
 <body>

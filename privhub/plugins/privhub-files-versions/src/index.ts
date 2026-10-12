@@ -25,7 +25,7 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 import { VERSION_TEXT_EXTS } from '../../privhub-core/src/file-exts'
 
 export const name = 'privhub-files-versions'
-export const inject = ['storage', 'privhub']
+export const inject = ['storage', 'privhub', 'lock']
 
 interface Version {
   at: number
@@ -111,6 +111,9 @@ export function apply(ctx: Context): void {
     const path = String(body.path ?? '')
     const at = Number(body.at)
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+    /* Y 批：恢复到某版本是写操作，受编辑锁约束 */
+    const held = ctx.lock.isLockedByOther(u.username, project, path)
+    if (held) return json(res, 409, { ok: false, error: '文件正被 ' + held.user + ' 修改，请稍后重试', holder: held.user })
     const target = await svc.resolveReal(project, path)
     if (target === null) return json(res, 404, { ok: false, error: '文件不存在' })
     /* D6：「回写正文 + 追加一条反悔版本」整体在锁内，否则并发快照会把这次恢复的记录冲掉。 */

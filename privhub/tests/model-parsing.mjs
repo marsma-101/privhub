@@ -105,6 +105,16 @@ const upstream = createServer((req, res) => {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(obj))
     }
+    /* 探活/模型清单：自检打的这条。回三个名字，供「模型名下拉候选」断言（§1.3）。 */
+    if (/\/v1\/models$/.test(req.url ?? '')) {
+      return json(200, { data: [{ id: 'test-model' }, { id: 'test-embed' }, { id: 'qwen3:8b' }] })
+    }
+    /* 向量接口与 chat 分开：深度自检（§1.4）打的是这条。
+     * 回 8 维（而不是标准 768/1024）是为了让「维数是不是真读来的」一眼可断言。 */
+    if (/\/v1\/embeddings$/.test(req.url ?? '')) {
+      if (mode === 'embGarbage') return json(200, { choices: [{ message: { content: '这不是向量' } }] })
+      return json(200, { data: [{ embedding: new Array(8).fill(0.25) }] })
+    }
     if (mode === 'err400') return json(400, { error: { message: 'model `no-such` not found, key sk-live-abcdefghij' } })
     if (mode === 'err429') return json(429, { error: { message: 'rate limit exceeded' } })
     if (mode === 'err500') return json(500, { error: { message: 'upstream boom' } })
@@ -231,6 +241,22 @@ ok(/127\.0\.0\.1:9/.test(rDead.err?.message ?? ''),
   `报错里带上了失败的端点地址（实测「${rDead.err?.message}」）`)
 ok(/服务已启动|地址与端口/.test(rDead.err?.message ?? ''), '并给出可执行的下一步，而不是把网络栈错误原样抛给用户')
 ok(!/\/\/[^/@]*@/.test(endpointLabel('http://user:secret@h:1/')), '端点地址里的 userinfo（可能含凭据）被剥掉')
+
+/* 地址里夹带凭据的第二处：**查询串**（Gemini 一类网关把 api_key 放 query）。
+ * W-B/§1.5 补：报错文案里必须看不见密钥，但要看得见主机端口 —— 否则报错失去定位价值。 */
+const labQuery = endpointLabel('http://h:1/v1?api_key=' + 'sk-' + 'leakme1234567890')
+ok(!labQuery.includes('leakme1234567890'), '端点地址查询串里的凭据不进报错（整段 query 抹掉）')
+ok(labQuery.includes('h:1'), '但主机端口仍要看得见（报错要能定位到地址）')
+/* 端到端复核：把「死端点 + query 里带 key」真的配上去、真的问一次。
+ * 这条在改前必红 —— 那时 `where` 原样带着 query 进 MODEL_UNREACHABLE 文案。 */
+await svc.loadConfig({ storage: { readText: async () => JSON.stringify({
+  llm: { baseURL: 'http://127.0.0.1:9/v1?api_key=' + 'sk-' + 'leakme1234567890', model: 'dead', timeoutMs: 2000 },
+  embedding: { baseURL: `http://127.0.0.1:${PORT}`, model: 'test-embed', timeoutMs: 5000 },
+  maxRetries: 0,
+}) } })
+const rDeadKey = await ask()
+ok(!/leakme1234567890/.test(rDeadKey.err?.message ?? ''), '（端到端）连不上时密钥不从报错文案漏出')
+ok(/127\.0\.0\.1:9/.test(rDeadKey.err?.message ?? ''), '（端到端）仍带主机端口，便于定位')
 /* 还原成可用配置，后面的流式档位照旧 */
 await svc.loadConfig({ storage: { readText: async () => JSON.stringify({
   llm: { baseURL: `http://127.0.0.1:${PORT}`, model: 'test-model', timeoutMs: 5000 },
@@ -256,6 +282,44 @@ ok(!!rStreamEmpty.err, '流式一帧正文都没有 → 报错，而不是回空
 /* 断言流式确实以 stream:true 发出（否则「流式测试」可能只是在测非流式） */
 const streamed = requested.filter((x) => x.url === '/v1/chat/completions' && /"stream":true/.test(x.body))
 ok(streamed.length >= 4, `（自证）确实以 stream:true 发过请求（实测 ${streamed.length} 次）`)
+
+console.log('\n── 7. 深度自检：embedding 回维数与耗时（W-B/§1.4）──')
+/* 浅自检（默认）只探活。这条路径被首页工作台轮询，若默认就打向量接口，
+ * 每次轮询都会花一次真实调用与额度 —— 所以「浅不打向量」本身就是要守住的行为。 */
+const embCalls = () => requested.filter((x) => x.url === '/v1/embeddings').length
+const before = embCalls()
+const shallow = await svc.check(ctx, true)
+ok(shallow.embedding?.status === 'ok', `浅自检 embedding 应为 ok（实测 ${shallow.embedding?.status}）`)
+/* §1.3：自检顺手把 {base}/v1/models 读到的名字带回来 —— 界面就是靠这份清单做「模型名」下拉候选 */
+ok(Array.isArray(shallow.llm?.models) && shallow.llm.models.includes('qwen3:8b'),
+  `自检回带模型名清单（界面下拉候选的来源，实测 ${JSON.stringify(shallow.llm?.models)}）`)
+ok(shallow.embedding?.dims === undefined, '浅自检**不打**向量接口、不回维数（首页轮询不烧调用）')
+ok(embCalls() === before, '（自证）浅自检确实一次向量接口都没打')
+
+const deep = await svc.check(ctx, true, true)
+ok(deep.embedding?.status === 'ok', `深度自检 embedding 应为 ok（实测 ${deep.embedding?.status}）`)
+ok(deep.embedding?.dims === 8, `深度自检回真实维数（上游给 8 维，实测 ${deep.embedding?.dims}）`)
+ok(typeof deep.embedding?.latencyMs === 'number' && deep.embedding.latencyMs >= 0,
+  `并回耗时（实测 ${deep.embedding?.latencyMs}ms）`)
+ok(embCalls() > before, '（自证）深度自检确实打了向量接口 —— 否则上面两条是假绿')
+
+/* 端点通、但该模型不是向量模型：必须与「连不上」分开报（处置方式完全不同） */
+mode = 'embGarbage'
+const badEmb = await svc.check(ctx, true, true)
+ok(badEmb.embedding?.status === 'embed-error', `向量调用失败 → embed-error（实测 ${badEmb.embedding?.status}）`)
+ok(/向量|embeddings|形状/.test(badEmb.embedding?.error ?? ''), '错误文案说清是「向量这条路」不通，而不是一句含混的失败')
+ok(badEmb.llm?.status === 'ok', '此时 LLM 那条仍是 ok（两条通道各自独立判定）')
+mode = 'std'
+
+/* mock 端点也要能给出维数：没有真实模型的用户靠它走通全流程 */
+await svc.loadConfig({ storage: { readText: async () => JSON.stringify({
+  llm: { baseURL: 'mock', model: 'mock', timeoutMs: 5000 },
+  embedding: { baseURL: 'mock', model: 'mock', timeoutMs: 5000 },
+  maxRetries: 0,
+}) } })
+const mockDeep = await svc.check(ctx, true, true)
+ok(mockDeep.embedding?.status === 'ok' && mockDeep.embedding?.dims > 0,
+  `mock 端点深检也回维数（实测 ${mockDeep.embedding?.dims} 维）—— 没真模型也能验证全流程`)
 
 /* ================= 收尾 ================= */
 

@@ -7,8 +7,9 @@
  * 能力：
  *   - embed(texts)：批量向量化（≤32/批，串行重试），返回 number[][]
  *   - chat({messages, stream, onChunk})：非流式返回全文；流式经 onChunk 输出
- *   - check()：端点半健康检查（GET {base}/v1/models），状态 ok/unconfigured/unreachable/
- *     timeout/auth-error/model-missing
+ *   - check(ctx, force, deep)：端点半健康检查（GET {base}/v1/models），状态 ok/unconfigured/
+ *     unreachable/timeout/auth-error/model-missing；`deep=true` 时额外真调一次 embedding，
+ *     回 `dims` / `latencyMs`（失败则 embed-error）——见 deepCheckEmbedding
  *   - mock：baseURL 填 'mock' 时离线可用——embedding 返回种子伪向量（64 维），
  *     chat 返回回显文本；用于无模型环境下的开发与测试
  *
@@ -38,11 +39,15 @@ export interface ModelConfig {
 }
 export type ModelHealth =
   | { status: 'unconfigured' }
-  | { status: 'ok'; models: string[] }
+  /** `dims` / `latencyMs` 只有**深度自检**（check(…, deep=true)）才会带上，见 deepCheckEmbedding */
+  | { status: 'ok'; models: string[]; dims?: number; latencyMs?: number }
   | { status: 'unreachable'; error: string }
   | { status: 'timeout' }
   | { status: 'auth-error' }
   | { status: 'model-missing'; models: string[] }
+  /** 端点活着、`/v1/models` 也答了，但**真的调一次 embedding 失败**（模型名不是向量模型、
+   *  上游不支持该接口…）。与 unreachable 分开：处置方式完全不同（改模型名 vs 改地址）。 */
+  | { status: 'embed-error'; error: string }
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 
@@ -159,11 +164,19 @@ export function extractChatText(body: unknown): { text: string; reasoning: strin
  */
 /**
  * 端点地址，用于报错里说清「连不上的是哪个地址」。
- * 剥掉 URL 里的 userinfo（`http://user:pass@host` 这种写法把凭据放在地址里，
- * 报错原文会把它显示到界面上，等于把密钥贴出去）。
+ *
+ * 地址本身不是密钥（是管理员自己填的），但**地址里可能夹着凭据**，两处都要剥：
+ *   - userinfo：`http://user:pass@host` —— 报错原文会把它显示到界面上；
+ *   - 查询串：`http://host/v1?api_key=…` —— Gemini 一类网关把凭据放 query，
+ *     照抄同样等于把密钥贴到 toast 里（2026-10-11 补，见 W-B/§1.5）。
+ * 剥法是「整段 query 换成 `?…`」而不是打码：报错要保留的是主机与端口（定位用），
+ * query 里没有任何有助于定位的信息。
  */
 export function endpointLabel(baseURL: string): string {
-  return String(baseURL ?? '').replace(/\/+$/, '').replace(/\/\/[^/@]*@/, '//')
+  return String(baseURL ?? '')
+    .replace(/\/+$/, '')
+    .replace(/\/\/[^/@]*@/, '//')
+    .replace(/\?[^#]*/, '?…')
 }
 
 export function describeShape(body: unknown): string {
@@ -258,16 +271,41 @@ export class ModelService extends Service {
 
   /* ---------- 健康检查 ---------- */
 
-  async check(ctx: Context, force = false): Promise<{ llm: ModelHealth; embedding: ModelHealth; checkedAt: number }> {
+  async check(ctx: Context, force = false, deep = false): Promise<{ llm: ModelHealth; embedding: ModelHealth; checkedAt: number }> {
     const cfg = this.cfg
     if (!cfg) return { llm: { status: 'unconfigured' }, embedding: { status: 'unconfigured' }, checkedAt: Date.now() }
     const key = JSON.stringify(cfg)
-    if (!force && this.healthCache && this.healthCache.key === key && Date.now() - this.healthCache.at < 60000) {
+    // deep 不吃缓存：否则「测试」按钮可能一次真实调用都没发生就报「通过」
+    if (!force && !deep && this.healthCache && this.healthCache.key === key && Date.now() - this.healthCache.at < 60000) {
       return { llm: this.healthCache.llm, embedding: this.healthCache.embedding, checkedAt: this.healthCache.at }
     }
     const [llm, embedding] = await Promise.all([this.probe(ctx, cfg.llm), this.probe(ctx, cfg.embedding)])
-    this.healthCache = { key, at: Date.now(), llm, embedding }
-    return { llm, embedding, checkedAt: Date.now() }
+    const emb = deep ? await this.deepCheckEmbedding(ctx, embedding) : embedding
+    // 深度结果不进缓存：它带一次真实调用的耗时，缓存下来只会变成「假新鲜」
+    if (!deep) this.healthCache = { key, at: Date.now(), llm, embedding: emb }
+    return { llm, embedding: emb, checkedAt: Date.now() }
+  }
+
+  /**
+   * 深度自检 embedding（W-B/§1.4）：真的调一次，回维数与耗时。
+   *
+   * 为什么必须显式开启而不是并进普通 check：`/api/model/status` 会被首页工作台轮询，
+   * 若默认就打 embedding，等于每次轮询都花一次真实调用（与额度）。
+   *
+   * 维数是有用的信号：它既证明「这条路真的通」，又是配向量索引的必要参数 ——
+   * 之前的自检只证明 `/v1/models` 答了，答了不代表 embeddings 这条能跑。
+   */
+  private async deepCheckEmbedding(ctx: Context, h: ModelHealth): Promise<ModelHealth> {
+    if (h.status !== 'ok') return h // 端点本身都不通/模型名都不对，不必再打一次
+    const t0 = Date.now()
+    try {
+      const v = await this.embed(ctx, ['连通自检'])
+      const dims = v[0]?.length ?? 0
+      if (!dims) return { status: 'embed-error', error: '上游没有返回向量（该模型名可能不是向量模型，或该端点未实现 embeddings）' }
+      return { ...h, dims, latencyMs: Date.now() - t0 }
+    } catch (e) {
+      return { status: 'embed-error', error: sanitizeError(e instanceof Error ? e.message : String(e), 200) }
+    }
   }
 
   private async probe(ctx: Context, ep: ModelEndpoint): Promise<ModelHealth> {
@@ -285,7 +323,9 @@ export class ModelService extends Service {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/timeout|abort/i.test(msg)) return { status: 'timeout' }
-      return { status: 'unreachable', error: msg.slice(0, 200) }
+      // 这条 error 会经 /api/model/status、/api/rag/status 一路显示到界面（shell-home 的
+      // 状态卡）：与 call() 同一条理由，整句脱敏（W-B/§1.5）。
+      return { status: 'unreachable', error: sanitizeError(msg, 200) }
     }
   }
 
@@ -340,10 +380,13 @@ export class ModelService extends Service {
        * 对配置者毫无信息量 —— 他不知道是地址写错、服务没启、还是端口不通。
        * 地址不是密钥（是管理员自己填的），但要剥掉 URL 里的 userinfo。 */
       const where = endpointLabel(baseURL)
-      if ((e as Error).name === 'AbortError') throw new ModelError('MODEL_TIMEOUT', '模型端点超时（>' + timeoutMs + 'ms）：' + where)
-      throw new ModelError('MODEL_UNREACHABLE',
+      if ((e as Error).name === 'AbortError') throw new ModelError('MODEL_TIMEOUT', sanitizeError('模型端点超时（>' + timeoutMs + 'ms）：' + where))
+      /* 整句过一遍 sanitizeError：`e.message` 来自 fetch/undici，**不保证**里面没有地址
+       * （例如 `Failed to parse URL from <url>` 会把整个 URL 连同 query 抄进来）。
+       * 这里也走脱敏，密钥就不会从这条支路漏出去（W-B/§1.5）。 */
+      throw new ModelError('MODEL_UNREACHABLE', sanitizeError(
         '无法连接模型端点 ' + where + '：' + (e instanceof Error ? e.message : String(e)).slice(0, 160)
-        + '（请确认地址与端口可达、服务已启动）')
+        + '（请确认地址与端口可达、服务已启动）'))
     } finally {
       clearTimeout(timer)
     }

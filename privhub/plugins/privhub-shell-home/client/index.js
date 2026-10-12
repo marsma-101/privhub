@@ -33,6 +33,7 @@ const STATUS_TEXT = {
   timeout: '连接超时',
   'auth-error': '鉴权失败',
   'model-missing': '模型名不存在',
+  'embed-error': '向量调用失败',
 }
 const STATUS_DOT = {
   ok: 'ok',
@@ -41,6 +42,7 @@ const STATUS_DOT = {
   timeout: 'bad',
   'auth-error': 'bad',
   'model-missing': 'warn',
+  'embed-error': 'warn',
 }
 const WEEK = ['日', '一', '二', '三', '四', '五', '六']
 

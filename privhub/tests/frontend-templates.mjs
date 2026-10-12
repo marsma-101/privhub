@@ -301,10 +301,11 @@ ok(undef.length === 0, `模板插值变量均有定义${undef.length ? '（' + u
 for (const p of undef.slice(0, 15)) console.log('       ' + p)
 
 /* ---- 3b. 工作台：AI 连接状态与 svc-model 同源 ---- *
- * 工作台首页那张「AI 连接状态」卡把 svc-model 的六种自检结果翻译成中文与灯色。
+ * 工作台首页那张「AI 连接状态」卡把 svc-model 的自检结果翻译成中文与灯色。
  * 这里不重复抄一份期望值，而是【从 svc-model 的真源解析】状态枚举再比对：
- * 日后 svc-model 加第七种状态，忘了同步工作台就会在这里红，而不是在用户面前
- * 变成一个永远显示不出的死键（静默退化成「未知」）。 */
+ * 日后 svc-model 再加一种状态，忘了同步工作台就会在这里红，而不是在用户面前
+ * 变成一个永远显示不出的死键（静默退化成「未知」）。
+ * （计数 6→7：W-B/§1.5 新增 embed-error「端点通、向量调用失败」，工作台已同步。） */
 console.log('\n── 工作台：AI 连接状态与 svc-model 同源 ──')
 
 /* 读源码做正则可不能依赖行尾：本仓 autocrlf=true，工作区里 LF/CRLF 混着，
@@ -323,7 +324,7 @@ const textKeys = [...blockOf('STATUS_TEXT').matchAll(/'?([\w-]+)'?\s*:/g)].map((
 const dotKeys = [...blockOf('STATUS_DOT').matchAll(/'?([\w-]+)'?\s*:/g)].map((m) => m[1])
 const dotVals = [...blockOf('STATUS_DOT').matchAll(/:\s*'([\w-]+)'/g)].map((m) => m[1])
 
-ok(healthStatuses.length === 6, `从 svc-model 真源解析出 6 种模型状态（${healthStatuses.join(', ')}）`)
+ok(healthStatuses.length === 7, `从 svc-model 真源解析出 7 种模型状态（${healthStatuses.join(', ')}）`)
 const missText = healthStatuses.filter((s) => !textKeys.includes(s))
 ok(missText.length === 0, `工作台 STATUS_TEXT 覆盖全部模型状态${missText.length ? '，缺：' + missText.join(', ') : ''}`)
 const missDot = healthStatuses.filter((s) => !dotKeys.includes(s))
