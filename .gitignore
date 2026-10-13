@@ -72,3 +72,6 @@ privhub-work/privhub-app/data/
 # ===== privhub 底座自带内容（从 DSH 复制，非本项目自有代码，不纳入版本控制） =====
 # 底座已整体移入 privhub/engine/，旧路径 privhub/packages 等规则已失效
 privhub/engine/
+
+# ===== MCP 转接器配置（含管家钥匙明文，绝不进 git） =====
+privhub/mcp/privhub-mcp*.json

@@ -38,6 +38,7 @@ import { build as buildLinkId } from './link-id.mjs'
 import { build as buildCap } from './cap.mjs'
 import { build as buildModelProfiles } from './model-profiles.mjs'
 import { build as buildWebhook } from './webhook.mjs'
+import { build as buildButlerLane } from './butler-lane.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -129,6 +130,9 @@ async function main() {
     // Webhook 事件订阅：放最后 —— 它会在测试期挂上指向本进程 sink 的订阅，
     // 清理用例保证跑完不留订阅（残留会让后续每个写入都去重试三次）。
     buildWebhook(),
+    // 宿主机智能体管家车道（①地基）：管家钥匙类型/本机约束/总开关+分项开关/通道隔离。
+    // 它建临时用户与密钥并在收尾清掉；放最后，避免其开关改动影响前面的套件。
+    buildButlerLane(),
   ]
   const results = []
   for (const s of suites) results.push({ suite: s.name, results: await s.run() })
@@ -137,7 +141,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 标题碰撞')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'title-collision.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'title-collision.mjs', 'mcp-protocol.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }

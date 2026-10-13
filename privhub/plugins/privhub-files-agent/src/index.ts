@@ -60,6 +60,34 @@ const LIMITS = {
   listDefault: 200,
 }
 
+/* ============ 管家车道（宿主机智能体管家）常量 ============ */
+
+/**
+ * 管家钥匙的 IP 白名单：**固定为本机回环**，签发时由服务端强制写入（不接受调用方指定），
+ * 调用时再独立校验一次来源。这就是"只限宿主机本机"的落点（方案 §3.1 决定 6）。
+ */
+const BUTLER_LOCAL_CIDRS = ['127.0.0.0/8']
+/** 管家分项开关的 id（全部登记在功能权限表「管家」组）。 */
+const BUTLER_FEATURES = {
+  master: 'agent.butler',
+  files: 'agent.butler.files',
+  users: 'agent.butler.users',
+  projects: 'agent.butler.projects',
+  switches: 'agent.butler.switches',
+  keys: 'agent.butler.keys',
+  audit: 'agent.butler.audit',
+  model: 'agent.butler.model',
+  service: 'agent.butler.service',
+} as const
+/**
+ * 评估管家开关时用的**伪身份**：role≠admin。
+ *
+ * 为什么不是直接问管理员级别：`ctx.cap` 对 role=admin **恒**返回 write，那样这些开关就永远
+ * 关不掉了。用一个非管理员伪身份去问，走的才是【表里那一列】——把它们设成 none 即等于关闭，
+ * 这正是"简单切换的开关"。
+ */
+const BUTLER_ACTOR = { username: '__butler__', role: 'agent' }
+
 /* ============ HTTP 工具 ============ */
 
 interface Env { rid: string; req: IncomingMessage; res: ServerResponse }
@@ -125,6 +153,20 @@ function ipv4InCidr(ip: string | undefined, cidr: string): boolean {
   return (toInt(a) & mask) === (toInt(net) & mask)
 }
 
+/**
+ * 是否本机回环来源。
+ *
+ * 管家车道（type=butler）要求"只限宿主机本机"，判据就是这个。
+ * `127.0.0.0/8` 之外还要认 `::1`：Node 在 Windows 上以 `localhost` 连接时
+ * `remoteAddress` 可能是 IPv6 回环，只认 IPv4 会把本机请求误判成"非本机"。
+ */
+function isLoopback(ip: string | undefined): boolean {
+  const s = String(ip ?? '')
+  if (s === '::1' || s === '::ffff:127.0.0.1') return true
+  const m = ipv4Of(s)
+  return m !== null && /^127\./.test(m)
+}
+
 function sensitiveName(name: string): boolean {
   const lower = name.toLowerCase()
   return SENSITIVE_EXTS.some((e) => lower.endsWith(e))
@@ -145,7 +187,11 @@ export interface AgentKeyScope { kind: 'all' | 'project' | 'directory'; project:
 export interface AgentKey {
   id: string
   name: string
-  type: 'user' | 'admin'
+  /* 'butler' = 宿主机智能体【管家】专用钥匙（2026-10-13 新增，方案 §5 路 A）：
+   * 管理员等价、强制 scope=all、强制仅本机回环 IP、可单独吊销；只有它能进管家车道
+   * （/agent/v1/butler/*）。普通 'user' / 'admin' 钥匙一律 403 —— 车道与内容通道严格分开，
+   * 这样"管家这一条通道"才能被单独关掉、单独审计。 */
+  type: 'user' | 'admin' | 'butler'
   username: string
   scope: AgentKeyScope
   status: 'active' | 'suspended' | 'revoked' | 'expired'
@@ -235,7 +281,12 @@ async function authAgent(ctx: Context, req: IncomingMessage, env: Env): Promise<
   if (rec.status === 'suspended') return { errStatus: 401, errCode: 'AGENT-4013', errHint: '密钥已挂起（可疑活动），请联系管理员查证恢复' }
   if (rec.status !== 'active') return { errStatus: 401, errCode: 'AGENT-4010', errHint: '密钥状态异常' }
   const ip = String(req.socket.remoteAddress ?? '')
-  if (rec.ipWhitelist.length > 0 && !rec.ipWhitelist.some((c) => ipv4InCidr(ip, c))) {
+  /* 回环归一：把 IPv6 回环映射成 127.0.0.1 再比对白名单。
+   * 否则白名单写 127.0.0.0/8 时，经 `localhost`（解析到 ::1）来的【本机】请求会被
+   * 误判成"不在白名单"而 401 —— 管家钥匙强制本机回环，必须能在这条路径上通过。
+   * 语义不变：只对【回环】做归一，非回环地址照旧逐条比对，不会凭空放宽任何网段。 */
+  const ipForWhitelist = isLoopback(ip) ? '127.0.0.1' : ip
+  if (rec.ipWhitelist.length > 0 && !rec.ipWhitelist.some((c) => ipv4InCidr(ipForWhitelist, c))) {
     return { errStatus: 401, errCode: 'AGENT-4014', errHint: '来源 IP 不在密钥白名单内（来源：' + ip + '）' }
   }
   const user = ctx.privhub.users.get(rec.username)
@@ -260,6 +311,34 @@ function withAgent(handler: (ctx: Context, env: Env, a: AgentAuth, req: Incoming
     }
     await handler(ctx, env, a, req, res, extra)
   })
+}
+
+/* ============ 管家车道准入 ============ */
+
+/**
+ * 管家车道准入判定：**钥匙类型 + 本机来源 + 总开关 + 分项开关**，四关全过才放行。
+ *
+ * 四关为什么都要（任一缺失都留一个洞）：
+ *   · 钥匙类型 —— 内容通道的普通钥匙（user/admin）不得越界到管理能力（AGENT-4037）；
+ *   · 本机来源 —— 钥匙即便被复制到别的机器也调不动（AGENT-4038）；
+ *   · 总开关   —— 「我要关的时候能关上」的那一个闸（AGENT-4039）；
+ *   · 分项开关 —— 只关"删用户"这一项、别的照常（AGENT-4039）。
+ *
+ * `sub` 传 {@link BUTLER_FEATURES} 的**短名**（'files'/'users'…）；省略或传 'master' 时只校验总开关。
+ * 返回 false 时**已写好响应**，调用方直接 `return`。
+ */
+function requireButler(ctx: Context, env: Env, res: ServerResponse, a: AgentAuth, sub?: string, need: 'read' | 'write' = 'write'): boolean {
+  const deny = (code: string, hint: string): false => {
+    json(res, 403, { ok: false, code, error: hint, hint, requestId: env.rid }, { 'x-request-id': env.rid })
+    return false
+  }
+  if (a.key.type !== 'butler') return deny('AGENT-4037', '此端点仅限「管家」钥匙（type=butler）；内容通道钥匙不可用于管理')
+  if (!isLoopback(env.req.socket.remoteAddress)) return deny('AGENT-4038', '管家车道只限宿主机本机（来源：' + String(env.req.socket.remoteAddress ?? '') + '）')
+  if (!ctx.cap.can(BUTLER_ACTOR, BUTLER_FEATURES.master, 'write')) return deny('AGENT-4039', '管家车道总开关（agent.butler）已关闭')
+  if (sub && sub !== 'master' && !ctx.cap.can(BUTLER_ACTOR, (BUTLER_FEATURES as Record<string, string>)[sub], need)) {
+    return deny('AGENT-4039', '管家分项开关已关闭：agent.butler.' + sub)
+  }
+  return true
 }
 
 /* ============ 管理鉴权 ============ */
@@ -447,6 +526,12 @@ export function apply(ctx: Context, config?: M2Config): void {
         sensitiveExts: SENSITIVE_EXTS,
         channel: '仅 X-Agent-Key 通道；禁止使用网页会话',
       },
+      butler: {
+        lane: '/privhub/api/agent/v1/butler/*',
+        key: 'type=butler 专用钥匙；仅本机回环（127.0.0.0/8）；管理员等价；可单独吊销、月度过期',
+        switches: { master: 'agent.butler', items: ['files', 'users', 'projects', 'switches', 'keys', 'audit', 'model', 'service'] },
+        note: '管家车道与内容通道严格分开：普通 user/admin 钥匙调用 butler/* 一律 403（AGENT-4037）',
+      },
       tools: [
         { name: 'me', method: 'GET', path: '/privhub/api/agent/v1/me', params: {}, desc: '查询绑定用户身份、可见项目、专属空间路径、密钥到期日' },
         { name: 'projects', method: 'GET', path: '/privhub/api/agent/v1/projects', params: {}, desc: '列出当前密钥 scope 内可见项目（项目=只读）' },
@@ -460,11 +545,15 @@ export function apply(ctx: Context, config?: M2Config): void {
         { name: 'versions_restore', method: 'POST', path: '/privhub/api/agent/v1/versions/restore', body: '{ path, at }', desc: '恢复到指定版本（写回 + 生成新版本可反悔）' },
         { name: 'dashboard', method: 'GET', path: '/privhub/api/agent/v1/dashboard?project=', params: { project: '项目名' }, desc: '读项目看板（布局 + 实时 facts：文件数/成员/近7天变更…）。项目只读的例外之一' },
         { name: 'dashboard_set', method: 'POST', path: '/privhub/api/agent/v1/dashboard', body: '{ project, dashboard }', desc: '重写项目看板【布局文档】（纵向分区页；组件 markdown/stats/plan）。只改看板，不改任何项目文件；需该密钥 scope 命中该项目且 ACL 允许编辑' },
+        /* 管家车道（需 type=butler 专用钥匙；仅宿主机本机；管理员等价） */
+        { name: 'butler_key', method: 'GET|POST|DELETE', path: '/privhub/api/agent/v1/butler/key', body: '{ name?, username? } | { id }', desc: '【网页会话·管理员】签发 / 查看 / 吊销管家钥匙（type=butler）。服务端强制 scope=all 且 IP 白名单=本机回环(127.0.0.0/8)；绑定账号须为管理员' },
+        { name: 'butler_status', method: 'GET', path: '/privhub/api/agent/v1/butler/status', params: {}, desc: '【管家钥匙】自检：返回服务状态与各分项开关当前等级（none=已关闭）。仅本机可调' },
       ],
       errorCodes: [
         { code: 'AGENT-4001', desc: '参数缺失/非法/缺少幂等键' }, { code: 'AGENT-4010', desc: '无效/缺失密钥' }, { code: 'AGENT-4011', desc: '密钥过期' }, { code: 'AGENT-4012', desc: '密钥吊销' },
         { code: 'AGENT-4013', desc: '密钥挂起' }, { code: 'AGENT-4014', desc: 'IP 白名单拒绝' }, { code: 'AGENT-4031', desc: '超出 scope' },
         { code: 'AGENT-4032', desc: '项目只读，写入仅限专属空间' }, { code: 'AGENT-4033', desc: '敏感文件豁免' }, { code: 'AGENT-4034', desc: '绑定用户无权限' }, { code: 'AGENT-4035', desc: '仅管理员' },
+        { code: 'AGENT-4037', desc: '非管家钥匙（普通钥匙不得调用 butler/*）' }, { code: 'AGENT-4038', desc: '管家车道仅限本机（非回环来源拒绝）' }, { code: 'AGENT-4039', desc: '管家车道开关已关闭' },
         { code: 'AGENT-4041', desc: '文件/目录不存在' }, { code: 'AGENT-4091', desc: '并发版本冲突（ETag 不匹配）' }, { code: 'AGENT-4092', desc: '幂等键冲突/目标已存在' },
         { code: 'AGENT-4131', desc: '超出大小上限' }, { code: 'AGENT-4291', desc: '限流触发（附 Retry-After）' }, { code: 'AGENT-4292', desc: '配额超限（附用量/限额）' },
         { code: 'AGENT-4293', desc: '写队列已满' }, { code: 'AGENT-4294', desc: '排队超时（可携带相同幂等键重试）' }, { code: 'AGENT-5001', desc: '内部错误' },
@@ -1006,26 +1095,37 @@ export function apply(ctx: Context, config?: M2Config): void {
    * D6：只做校验与生成，**不碰文件**（落盘由调用方在 mutateKeys 锁内 push）。
    * 这样 rotate 等需要「先读库再签发」的路径可以整段放在一把锁里，而不会对自己重入取锁。
    */
-  async function buildKey(ctx: Context, createdBy: string, type: 'user' | 'admin', body: any): Promise<{ ok: true; rec: AgentKey; plain: string } | { ok: false; status: number; code: string; hint: string }> {
+  async function buildKey(ctx: Context, createdBy: string, type: 'user' | 'admin' | 'butler', body: any): Promise<{ ok: true; rec: AgentKey; plain: string } | { ok: false; status: number; code: string; hint: string }> {
     const name = String(body.name ?? '').slice(0, 64).trim() || 'agent-key-' + Date.now().toString(36)
-    const username = String(body.username ?? '')
+    /* 管家钥匙：绑定账号默认取【签发者本人】，且必须是管理员；scope 与 IP 白名单
+     * 不接受调用方指定，一律由服务端强制（见下）—— 免得"管家"被签成一把能出本机的全权钥匙。 */
+    const username = type === 'butler' ? String(body.username ?? createdBy) : String(body.username ?? '')
     const user = ctx.privhub.users.get(username)
     if (!user) return { ok: false, status: 400, code: 'AGENT-4001', hint: '绑定用户不存在' }
-    const scope = scopeOf(body)
-    if (!scope) return { ok: false, status: 400, code: 'AGENT-4001', hint: 'scope 非法（kind ∈ all|project|directory）' }
-    if (scope.kind !== 'all') {
-      if (!ctx.privhub.canAccess(user as never, scope.project)) return { ok: false, status: 400, code: 'AGENT-4034', hint: 'scope 项目超出绑定用户可见范围（' + username + ' 无权访问 ' + scope.project + '）' }
-      if (scope.kind === 'directory') {
-        const p = await ctx.privhub.resolveReal(scope.project, scope.path)
-        if (p === null) return { ok: false, status: 400, code: 'AGENT-4001', hint: 'directory scope 路径不存在' }
+    let scope: AgentKeyScope
+    let ipWhitelist: string[]
+    if (type === 'butler') {
+      if (user.role !== 'admin') return { ok: false, status: 400, code: 'AGENT-4035', hint: '管家钥匙只能绑定管理员账号（' + username + ' 不是管理员）' }
+      scope = { kind: 'all', project: '', path: '' }
+      ipWhitelist = [...BUTLER_LOCAL_CIDRS]
+    } else {
+      const s = scopeOf(body)
+      if (!s) return { ok: false, status: 400, code: 'AGENT-4001', hint: 'scope 非法（kind ∈ all|project|directory）' }
+      if (s.kind !== 'all') {
+        if (!ctx.privhub.canAccess(user as never, s.project)) return { ok: false, status: 400, code: 'AGENT-4034', hint: 'scope 项目超出绑定用户可见范围（' + username + ' 无权访问 ' + s.project + '）' }
+        if (s.kind === 'directory') {
+          const p = await ctx.privhub.resolveReal(s.project, s.path)
+          if (p === null) return { ok: false, status: 400, code: 'AGENT-4001', hint: 'directory scope 路径不存在' }
+        }
       }
+      scope = s.kind === 'all' ? { kind: 'all', project: '', path: '' } : { kind: s.kind, project: s.project, path: s.kind === 'directory' ? s.path : '' }
+      ipWhitelist = Array.isArray(body.ipWhitelist) ? body.ipWhitelist.map((s2: unknown) => String(s2).trim()).filter(Boolean) : []
     }
-    const ipWhitelist = Array.isArray(body.ipWhitelist) ? body.ipWhitelist.map((s: unknown) => String(s).trim()).filter(Boolean) : []
     const plain = KEY_PREFIX + randomBytes(KEY_BYTES).toString('hex')
     const rec: AgentKey = {
       id: 'k_' + randomBytes(8).toString('hex'),
       name, type, username,
-      scope: scope.kind === 'all' ? { kind: 'all', project: '', path: '' } : { kind: scope.kind, project: scope.project, path: scope.kind === 'directory' ? scope.path : '' },
+      scope,
       status: 'active',
       expiresAt: monthEnd(),
       ipWhitelist,
@@ -1257,5 +1357,78 @@ export function apply(ctx: Context, config?: M2Config): void {
     json(res, 200, { ok: true, dashboard: saved }, extra)
   }), 'agent-dashboard')
 
-  console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 沙箱=个人空间 / 配额限流 / 版本快照）')
+  /* ---------- 管家车道（宿主机智能体管家；方案 §5 路 A：专用钥匙） ----------
+   * 与内容通道（上面的 /list /read /write …）**严格分开**：
+   *   · 内容通道走普通钥匙，项目只读、写沙箱；
+   *   · 管家车道走 type=butler 专用钥匙，管理员等价、仅本机、可单独吊销、单独关闸。
+   * 本批（①地基）只落【钥匙签发 + 自检】两条路由；具体管理能力在 ②③④ 批陆续接上。 */
+
+  /** 管家钥匙的签发 / 查看 / 吊销（网页会话通道，复用「智能体密钥」管理开关）。 */
+  svc.route('/privhub/api/agent/v1/butler/key', wrap(async (ctx, env, req, res) => {
+    const admin = adminOnly('admin.agent.keys', env, req, res)
+    if (!admin) return
+    if (req.method === 'GET') {
+      const keys = await loadKeys(ctx)
+      json(res, 200, {
+        ok: true,
+        localOnly: BUTLER_LOCAL_CIDRS,
+        keys: keys.filter((k) => k.type === 'butler').map(keyView),
+      }, { 'x-request-id': env.rid })
+      return
+    }
+    if (req.method === 'POST') {
+      let body: any
+      try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', hint: '请求体不是合法 JSON', requestId: env.rid }, { 'x-request-id': env.rid }) }
+      // scope 与 IP 白名单由 buildKey 对 butler 类型强制，不接受调用方指定
+      const r = await buildKey(ctx, admin.username, 'butler', { name: body.name, username: body.username ?? admin.username })
+      if (!r.ok) return json(res, r.status, { ok: false, code: r.code, error: r.hint, hint: r.hint, requestId: env.rid }, { 'x-request-id': env.rid })
+      await mutateKeys(ctx, (keys) => { keys.push(r.rec) })
+      void audit(ctx, admin.username, 'agent-butler-key-create', 'key:' + r.rec.id, 'user=' + r.rec.username + ' name=' + r.rec.name + ' localOnly=' + BUTLER_LOCAL_CIDRS.join(','))
+      json(res, 200, {
+        ok: true, key: r.plain, id: r.rec.id, name: r.rec.name, username: r.rec.username,
+        scope: r.rec.scope, expiresAt: r.rec.expiresAt, ipWhitelist: r.rec.ipWhitelist,
+        note: '管家钥匙明文仅此一次返回；仅限宿主机本机回环调用，可随时吊销',
+      }, { 'x-request-id': env.rid })
+      return
+    }
+    if (req.method === 'DELETE') {
+      let body: any
+      try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
+      /* D6：与管理端签发/吊销共用一把锁，且在锁内按 id 重新定位，避免并发签发被整份写回抹掉。 */
+      const rec = await mutateKeys(ctx, (keys) => {
+        const hit = keys.find((k) => k.id === body.id && k.type === 'butler')
+        if (!hit) return null
+        hit.status = 'revoked'
+        return hit
+      })
+      if (!rec) return json(res, 404, { ok: false, code: 'AGENT-4041', error: '管家钥匙不存在', requestId: env.rid }, { 'x-request-id': env.rid })
+      void audit(ctx, admin.username, 'agent-butler-key-revoke', 'key:' + rec.id, 'user=' + rec.username)
+      json(res, 200, { ok: true }, { 'x-request-id': env.rid })
+      return
+    }
+    json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST/DELETE', requestId: env.rid }, { 'x-request-id': env.rid })
+  }), 'agent-butler-key')
+
+  /** 管家自检：一把能返回本响应，就说明钥匙 / 本机来源 / 总开关 / 通道全通。 */
+  svc.route('/privhub/api/agent/v1/butler/status', withAgent(async (ctx, env, a, req, res, extra) => {
+    if (req.method !== 'GET') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET', requestId: env.rid }, extra)
+    if (!requireButler(ctx, env, res, a, 'master', 'read')) return
+    /* 自检只要求【总开关】开着（分项可以全关着 —— 那正是它要如实回报的），
+     * 所以这里逐项读出"当前等级"，让调用方一眼看出哪一项被管理员关了。 */
+    const lv = (id: string): string => (ctx.cap.can(BUTLER_ACTOR, id, 'write') ? 'write' : (ctx.cap.can(BUTLER_ACTOR, id, 'read') ? 'read' : 'none'))
+    const capabilities: Record<string, string> = {}
+    for (const [k, id] of Object.entries(BUTLER_FEATURES)) capabilities[k] = lv(id)
+    void audit(ctx, 'ai:' + a.key.name, 'agent-butler-status', 'lane:butler', 'via=' + a.user.username)
+    json(res, 200, {
+      ok: true,
+      lane: 'butler',
+      key: { name: a.key.name, scope: a.key.scope, ipWhitelist: a.key.ipWhitelist, expiresAt: a.key.expiresAt },
+      user: { username: a.user.username, displayName: a.user.displayName, role: a.user.role },
+      server: { now: Date.now(), uptimeSeconds: Math.round(process.uptime()) },
+      capabilities,
+      note: '管家车道自检：能返回本响应即表示钥匙 / 本机来源 / 总开关 / 通道全部正常；capabilities 各项为当前等级（none=已关闭）',
+    }, extra)
+  }), 'agent-butler-status')
+
+  console.log('[assembly] privhub-files-agent 已挂载（M1+M2：' + KEY_PREFIX + ' 密钥 / 沙箱=个人空间 / 配额限流 / 版本快照 / 管家车道）')
 }

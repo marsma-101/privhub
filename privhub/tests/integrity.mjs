@@ -654,6 +654,34 @@ ok(/STORE_FILE = 'dup-index\.json'/.test(readFileSync(join(ROOT, 'plugins', 'pri
 ok(/'privhub-svc-dup'/.test(mainSrcCap), 'main.ts 的 CORE_PLUGINS 登记了 privhub-svc-dup')
 ok(/await mount\(svcDup/.test(mainSrcCap), 'main.ts 挂载 svcDup（L2 服务，早于 files 上传路由消费）')
 
+/* ── 宿主机智能体管家（①地基）契约 ──
+ * 方案 docs/PrivHub-宿主机智能体管家-MCP-方案-2026-10-13.md §3。
+ * 钉住三件事：开关在功能表里、车道的四关判定在网关里、MCP 与 /schema 两条腿指同一路径。 */
+const butlerFeatureIds = [
+  'agent.butler', 'agent.butler.files', 'agent.butler.users', 'agent.butler.projects',
+  'agent.butler.switches', 'agent.butler.keys', 'agent.butler.audit', 'agent.butler.model', 'agent.butler.service',
+]
+const missingButlerFeatures = butlerFeatureIds.filter((id) => !capFeatureIds.has(id))
+ok(missingButlerFeatures.length === 0,
+  `管家车道开关全部登记在功能权限表${missingButlerFeatures.length ? '，缺：' + missingButlerFeatures.join(', ') : ''}`)
+ok(/id: 'agent\.butler'[\s\S]{0,200}userDefault: 'write'/.test(capCoreSrc),
+  '管家总开关默认 write（车道的真正闸门是钥匙本身，开关是给"关"用的）')
+
+const agentButlerSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files-agent', 'src', 'index.ts'), 'utf8')
+ok(/BUTLER_LOCAL_CIDRS = \['127\.0\.0\.0\/8'\]/.test(agentButlerSrc),
+  '管家钥匙 IP 白名单固定为本机回环 127.0.0.0/8（签发时强制）')
+ok(/type === 'butler'/.test(agentButlerSrc), '管家车道按 type=butler 严格区分钥匙（普通钥匙 403 AGENT-4037）')
+ok(/\/privhub\/api\/agent\/v1\/butler\/key/.test(agentButlerSrc), '注册了管家钥匙管理端点 /agent/v1/butler/key')
+ok(/\/privhub\/api\/agent\/v1\/butler\/status/.test(agentButlerSrc), '注册了管家自检端点 /agent/v1/butler/status')
+
+const mcpShimSrc = readFileSync(join(ROOT, 'mcp', 'privhub-mcp.mjs'), 'utf8')
+ok(/\/privhub\/api\/agent\/v1\/butler\/status/.test(mcpShimSrc), 'MCP 转接器已接管家自检端点')
+const mcpToolNames = [...mcpShimSrc.matchAll(/name:\s*'(privhub_[a-z_]+)'/g)].map((m) => m[1])
+ok(mcpToolNames.length >= 3, `MCP 转接器暴露了工具清单（${mcpToolNames.length} 个）`)
+ok(mcpToolNames.every((n) => n.startsWith('privhub_')), 'MCP 工具名统一 privhub_ 前缀（避免与客户端自带工具重名）')
+ok(/privhub_butler_status/.test(mcpShimSrc) && /butler_status/.test(agentButlerSrc),
+  'MCP 与 /schema 两条腿都登记了管家自检（防两处漂移）')
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)
 if (!RELEASE_GATE && drift > 0) {

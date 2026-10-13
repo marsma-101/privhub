@@ -93,6 +93,24 @@ export const FEATURES: readonly FeatureSpec[] = [
   /* ---- 查重（Q6/Q7；新功能，用户侧默认按"能用"给、需要时关） ---- */
   { id: 'dup.prompt', group: '查重', title: '上传期重复提示', desc: '上传文件时，若与项目内已有文件内容相同/高度相似，提示"内容重复"（只提示，不阻止、不改写）', userDefault: 'read' },
   { id: 'dup.near.delete', group: '查重', title: '近似/版本族可勾选删除', desc: '在项目查重页，允许勾选「近似 / 版本族」里的文件参与删除（默认不勾、只作提示）', userDefault: 'none' },
+
+  /* ---- 管家（宿主机智能体管家车道；2026-10-13 新增，方案见
+   *      docs/PrivHub-宿主机智能体管家-MCP-方案-2026-10-13.md） ----
+   * 这一组【不是】给普通用户的功能，而是「管家车道」自己的开关：
+   * 由宿主机上的智能体持【专用钥匙】（type=butler、仅本机回环 IP、可单独吊销）调用。
+   * 车道内部用一个 role≠admin 的伪身份去问 ctx.cap，所以把这些值改成 'none'
+   * 就等于关掉那一项 —— 这正是「我要关的时候能关上」。
+   * 默认全 'write'：车道的真正闸门是【钥匙本身】（须管理员显式签发、仅本机、可吊销），
+   * 没有钥匙什么也做不了；开关是给"关"用的，不是给"开"用的。 */
+  { id: 'agent.butler', group: '管家', title: '管家车道总开关', desc: '宿主机智能体管家车道的总闸；关掉则整条车道 403（与普通用户无关）', userDefault: 'write' },
+  { id: 'agent.butler.files', group: '管家', title: '管家·内容整理', desc: '管家读写 / 移动 / 重命名 / 删除项目内文件', userDefault: 'write' },
+  { id: 'agent.butler.users', group: '管家', title: '管家·用户管理', desc: '管家新建 / 编辑 / 删除用户、重置密码', userDefault: 'write' },
+  { id: 'agent.butler.projects', group: '管家', title: '管家·项目管理', desc: '管家新建 / 删除项目', userDefault: 'write' },
+  { id: 'agent.butler.switches', group: '管家', title: '管家·开关管理', desc: '管家读写功能权限开关表（含管家自身各项）', userDefault: 'write' },
+  { id: 'agent.butler.keys', group: '管家', title: '管家·密钥管理', desc: '管家签发 / 吊销智能体密钥', userDefault: 'write' },
+  { id: 'agent.butler.audit', group: '管家', title: '管家·审计', desc: '管家查询 / 导出审计日志', userDefault: 'write' },
+  { id: 'agent.butler.model', group: '管家', title: '管家·模型检索', desc: '管家配置模型端点、触发向量化 / 重建索引', userDefault: 'write' },
+  { id: 'agent.butler.service', group: '管家', title: '管家·服务运维', desc: '管家看服务状态 / 日志、跑备份、重启服务', userDefault: 'write' },
 ]
 
 /** 功能 id → 规格。 */
