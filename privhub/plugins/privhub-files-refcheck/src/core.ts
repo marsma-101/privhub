@@ -35,6 +35,12 @@ import { basename, dirname, extname } from 'node:path'
 import { readdir, stat } from 'node:fs/promises'
 import { fmtSize } from '../../privhub-core/src/index'
 import { MARKDOWN_EXTS } from '../../privhub-core/src/file-exts'
+/**
+ * 双链语法与解析：**唯一实现在 `privhub-svc-links/linkparse`**（Q4 / §2.6）。
+ * 此前 kg 与本文件各抄一份正则 —— 两处口径漂移时会出现「图谱里有这条边、
+ * 引用检查却报断链」的自相矛盾，所以改为共用同一份实现。
+ */
+import { parseWikiLinks, ID_PREFIX } from '../../privhub-svc-links/src/linkparse'
 
 /** 规模闸门。口径同 W-C：只保护「别炸/别卡」，被丢掉的会在 truncated 上明说。 */
 export const LIMITS = {
@@ -136,10 +142,17 @@ export interface ScanDeps {
   isEncrypted: (absPath: string) => Promise<boolean>
   /** 绝对路径拼接 */
   join: (...parts: string[]) => string
+  /**
+   * 兜底解析（Q4 / §2.6，可选）：按**链接登记表**把目标（含改名前的老名字、`id:` 写法）
+   * 解成项目内路径；解不到返回 null。
+   *
+   * 调用方给的是"登记表怎么说"，**存在性由本模块自己校验**（`pathSet`）：
+   * 文件被删之后别名还留在登记表里，若照单全收就会把**真断链**说成"没断"。
+   * 没传这个回调 = 与改造前完全一致（不启用别名兜底）。
+   */
+  resolveAlias?: (target: string) => RelPath | null
 }
 
-/** 双链：与 privhub-files-kg 同一套语法，务必保持一致。 */
-const WIKI_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g
 /** Markdown 链接/图片：`[x](y)` / `![x](y)`，标题可选。 */
 const MDLINK_RE = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+["'][^"']*["'])?\s*\)/g
 /** 外链/绝对路径：`http:` `mailto:` `data:` `C:` … 一律不算项目内引用。 */
@@ -181,7 +194,15 @@ export function extractRefs(text: string): { target: string; line: number; kind:
     // 双链的 raw 是文件名（可能含路径），规范化的规则与 md 链接相同
     if (t !== '') out.push({ target: t, line: lineOf(text, index), kind })
   }
-  for (const m of text.matchAll(WIKI_RE)) push(m[1], m.index ?? 0, 'wiki')
+  for (const l of parseWikiLinks(text)) {
+    // `[[id:xxx]]`（稳定 ID 写法）不走 normTarget：那里的「带 scheme: 即外链」规则
+    // 会把 `id:` 前辍当成 URL scheme 直接丢弃。
+    if (l.id !== null) {
+      out.push({ target: ID_PREFIX + l.id, line: lineOf(text, l.index), kind: 'wiki' })
+      continue
+    }
+    push(l.target, l.index, 'wiki')
+  }
   for (const m of text.matchAll(MDLINK_RE)) push(m[1], m.index ?? 0, 'md')
   return out
 }
@@ -302,6 +323,11 @@ export async function scanProject(deps: ScanDeps): Promise<Report> {
     // 命中多个时取第一个：宁漏报断链，不误报 —— 误报会让用户去"修"一个其实存在的文件。
     const hits = byName.get(basename(target))
     if (hits && hits.length > 0) return hits[0]
+    /* Q4 / §2.6 兜底：目标可能是**改名之前的老名字**（登记表记着这个别名），
+     * 或者是 `[[id:xxxx]]` 这种稳定 ID 写法。**存在性仍然由本模块裁决** ——
+     * 登记表里留着的别名可能指向一个已被删除的文件，照单全收就会把真断链说成没断。 */
+    const viaAlias = deps.resolveAlias?.(target) ?? null
+    if (viaAlias !== null && (pathSet.has(viaAlias) || dirSet.has(viaAlias))) return viaAlias
     return null
   }
 

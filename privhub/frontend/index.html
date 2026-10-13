@@ -839,12 +839,36 @@
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */
     window.PrivHub.manifests = []
     window.PrivHub.barItems = reactive([])
+    /* 功能权限开关（服务端 /privhub/api/cap/me）：功能 → 当前用户级别。
+     * 管理员恒通过（与服务端 levelFor 一致）；普通用户按表判定。
+     * 未登录 / 未加载 / 网络失败一律按「不可用」处理（失败收敛到最保守）。 */
+    window.PrivHub.cap = reactive({ levels: {}, loaded: false })
+    const CAP_RANK = { none: 0, read: 1, write: 2 }
+    window.PrivHub.capCan = (feature, need) => {
+      if (AUTH.user && AUTH.user.role === 'admin') return true
+      const lv = (window.PrivHub.cap.levels || {})[feature] || 'none'
+      const nr = need === 'write' ? 2 : (need === 'none' ? 0 : 1)
+      return (CAP_RANK[lv] || 0) >= nr
+    }
+    window.PrivHub.loadCap = async () => {
+      if (!AUTH.user) { window.PrivHub.cap.levels = {}; window.PrivHub.cap.loaded = false; return }
+      try {
+        const r = await api('/privhub/api/cap/me')
+        window.PrivHub.cap.levels = (r && r.ok && r.levels) ? r.levels : {}
+        window.PrivHub.cap.loaded = !!(r && r.ok)
+      } catch { window.PrivHub.cap.levels = {}; window.PrivHub.cap.loaded = false }
+    }
+    /* 拉开关表 + 按开关重算图标栏（登录后/恢复登录后调用）。 */
+    window.PrivHub.refreshCaps = async () => { await window.PrivHub.loadCap(); window.PrivHub.loadBarItems() }
     window.PrivHub.loadBarItems = () => {
       const items = []
       const admin = AUTH.user && AUTH.user.role === 'admin'
       for (const m of window.PrivHub.manifests || []) {
         for (const bi of (m.barItems || [])) {
-          if (bi.adminOnly && !admin) continue
+          // 声明了 capFeature 的条目按功能开关判定（用户可被逐个放开）；
+          // 未声明的沿用 adminOnly 旧口径（仅管理员可见）。
+          if (bi.capFeature) { if (!window.PrivHub.capCan(bi.capFeature)) continue }
+          else if (bi.adminOnly && !admin) continue
           items.push(bi)
         }
       }
@@ -1031,13 +1055,15 @@
             // 角标初始值：登录后主动拉一次回收站（否则图标栏角标恒为 0，
             // 直到用户第一次打开回收站视图才更新）
             const afterLogin = () => { nav.loadProjects(); void nav.loadTrash(); bus.emit('auth:login') }
-            // 登录前拿到的是「登录所需的最小集合」，必须重拉完整清单；
-            // 若已是完整清单（刷新场景）则只需刷新图标栏
-            if (self.manifestsPartial) {
-              void self.loadManifests().then(afterLogin)
-            } else {
-              window.PrivHub.loadBarItems(); afterLogin()
-            }
+            // 先拉功能开关表再重算图标栏：登录前拿到的是「登录所需的最小集合」，
+            // 必须重拉完整清单；若已是完整清单（刷新场景）则只需刷新图标栏。
+            void window.PrivHub.loadCap().then(() => {
+              if (self.manifestsPartial) {
+                void self.loadManifests().then(afterLogin)
+              } else {
+                window.PrivHub.loadBarItems(); afterLogin()
+              }
+            })
             // D25：应用后端设置的默认视图（仅登录时生效，用户手动切换后不受影响）
             api('/privhub/api/settings').then((r) => {
               if (r.ok && (r.settings.defaultView === 'grid' || r.settings.defaultView === 'list')) nav.viewMode = r.settings.defaultView
@@ -1050,8 +1076,9 @@
         if (restored) {
           await nav.loadProjects()
           void nav.loadTrash()
-          // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）
-          window.PrivHub.loadBarItems()
+          // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）；
+          // 同时把功能开关表拉回来，否则声明了 capFeature 的条目会被误判为不可用
+          await window.PrivHub.refreshCaps()
         }
         /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用）
          *

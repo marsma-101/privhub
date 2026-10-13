@@ -6,6 +6,6 @@
   "slots": ["settings", "admin-settings"],
   "barItems": [
     { "icon": "⚙", "title": "设置", "slot": "app-iconbar", "view": "settings" },
-    { "icon": "⚙", "title": "系统设置", "slot": "admin-nav", "view": "settings", "adminOnly": true }
+    { "icon": "⚙", "title": "系统设置", "slot": "admin-nav", "view": "settings", "capFeature": "admin.settings" }
   ]
 }

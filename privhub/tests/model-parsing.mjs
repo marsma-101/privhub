@@ -321,6 +321,65 @@ const mockDeep = await svc.check(ctx, true, true)
 ok(mockDeep.embedding?.status === 'ok' && mockDeep.embedding?.dims > 0,
   `mock 端点深检也回维数（实测 ${mockDeep.embedding?.dims} 维）—— 没真模型也能验证全流程`)
 
+/* ================= 八、多 Profile（Q1 §1.2）与生成参数（Q2） ================= */
+
+console.log('\n── 8. 多 Profile 与生成参数 ──')
+
+/* 参数清洗是纯函数：越界夹界限、空值/未知键丢弃 */
+const sp = mod.sanitizeParams({ temperature: 5, topP: 0.3, maxTokens: 10.7, bogus: 1, seed: '' })
+ok(sp.temperature === 2, '温度越界夹到上限 2（而不是报错让整个问答失败）')
+ok(sp.topP === 0.3, 'top_p 合法值原样保留')
+ok(sp.maxTokens === 11, 'max_tokens 取整')
+ok(sp.bogus === undefined && sp.seed === undefined, '未知键与空值被丢弃')
+
+/* 旧扁平结构被当单 profile 迁移（旧文件无需手工转换即可用） */
+const norm = mod.normalizeConfig({ llm: { baseURL: 'http://x', model: 'm' }, embedding: { baseURL: 'http://y', model: 'e' }, maxRetries: 1 })
+ok(norm.profiles.length === 1 && norm.activeId === 'default', '旧 {llm,embedding} 结构迁成单 profile（id=default）')
+ok(norm.profiles[0]?.llm?.model === 'm' && norm.profiles[0]?.embedding?.model === 'e', '迁移后两端点内容都不丢')
+ok(mod.normalizeConfig({ profiles: [{ id: 'a', name: 'A' }], activeId: 'zzz' }).activeId === 'a',
+  'activeId 指向不存在的 profile 时回落第一个（不留悬空 activeId）')
+
+/* 真 svc-model：多 profile 增删改切 + 参数确实进上游请求体（用假上游抓包，不看实现） */
+await svc.loadConfig({ storage: { readText: async () => 'null' } })   // 合法的「未配置」态
+const fp = {
+  llm: { baseURL: `http://127.0.0.1:${PORT}`, model: 'test-model', timeoutMs: 5000 },
+  embedding: { baseURL: `http://127.0.0.1:${PORT}`, model: 'test-embed', timeoutMs: 5000 },
+}
+const up1 = await svc.upsertProfile(ctx, { name: '甲', llm: fp.llm, embedding: fp.embedding, params: { temperature: 0.25 }, activate: true })
+ok(up1.created === true && up1.activeId === up1.profiles[0].id, '新建第一套自动设为当前')
+const up2 = await svc.upsertProfile(ctx, { name: '乙', llm: { ...fp.llm, model: 'test-model-2' }, embedding: fp.embedding })
+ok(up2.profiles.length === 2 && up2.activeId === up2.profiles[0].id, '新建第二套不抢当前（未传 activate）')
+ok(svc.getConfig()?.llm?.model === 'test-model', '摊平视图 getConfig().llm = 当前生效那套')
+await svc.setActive(ctx, up2.profiles[1].id)
+ok(svc.getConfig()?.llm?.model === 'test-model-2', '切换后摊平视图随之变')
+
+mode = 'std'
+requested.length = 0
+await svc.chat({}, [{ role: 'user', content: '你好' }], { params: { temperature: 0.4, maxTokens: 128, topP: 0.8 } })
+const sentBody = JSON.parse(requested[requested.length - 1].body)
+ok(sentBody.temperature === 0.4 && sentBody.max_tokens === 128 && sentBody.top_p === 0.8,
+  '参数被映射进上游请求体（temperature / max_tokens / top_p）')
+ok(sentBody.model === 'test-model-2', '用的是当前生效 profile 的模型名')
+
+/* profile 默认参数自动带上，且本次覆盖优先 */
+await svc.setActive(ctx, up1.profiles[0].id)   // 甲：params.temperature=0.25
+requested.length = 0
+await svc.chat({}, [{ role: 'user', content: '带默认参' }])
+ok(JSON.parse(requested[requested.length - 1].body).temperature === 0.25, 'profile 默认参数自动带上（无需每轮传）')
+requested.length = 0
+await svc.chat({}, [{ role: 'user', content: '覆盖' }], { params: { temperature: 1.5 } })
+ok(JSON.parse(requested[requested.length - 1].body).temperature === 1.5, '本次覆盖优先于 profile 默认')
+
+/* 删除当前那套 → activeId 顺位 */
+const del = await svc.removeProfile(ctx, svc.activeProfileId())
+ok(del.profiles.length === 1 && del.activeId === del.profiles[0].id, '删除当前 profile 后 activeId 顺位到剩下那套')
+
+/* 未配置参数时不发任何参数字段（用上游默认） */
+requested.length = 0
+await svc.chat({}, [{ role: 'user', content: '无参' }])
+const noParamBody = JSON.parse(requested[requested.length - 1].body)
+ok(noParamBody.temperature === undefined && noParamBody.max_tokens === undefined, '未配置参数时不发送任何参数字段')
+
 /* ================= 收尾 ================= */
 
 upstream.close()

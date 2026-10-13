@@ -4,6 +4,9 @@
  * 项目内文档关联图：
  *   - 节点 = 项目内 .md 文档（含双链解析）+ 带标签的文件
  *   - 边   = 双链 [[文件名]]（F16 语法，双向）+ 标签共现（F19 元数据）
+ *   - **Q4 / §2.6：双链经「链接登记表」（ctx.links）解析** —— 被引用的文件改名后，
+ *     老名字作为别名留在登记表里，边与反链都**不断**；同名不同目录时不再"取第一个"
+ *     而是优先与引用方同目录。解析与语法见 `privhub-svc-links`
  *   - 标签来源 = sidecar（data/meta.json）∪ 文档 frontmatter `tags:`（W-A / §2.2，
  *     读侧合并；写侧同步与来源标记留待后续，详见 frontmatterTags 注释）
  *   - 社区 = 连通分量（union-find），前端按社区同色系着色
@@ -29,9 +32,12 @@ import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { json } from '../../privhub-core/src/index'
 import type { UserRecord } from '../../privhub-core/src/index'
+/* Q4 / §2.6：双链语法与"名→稳定 ID"解析的唯一实现，见该模块头部说明。 */
+import { parseWikiLinks, ID_PREFIX } from '../../privhub-svc-links/src/linkparse'
+import { buildLiveIndex, type LiveIndex } from '../../privhub-svc-links/src/core'
 
 export const name = 'privhub-files-kg'
-export const inject = ['privhub', 'storage', 'meta', 'eventBus', 'acl']
+export const inject = ['privhub', 'storage', 'meta', 'eventBus', 'acl', 'links']
 
 export interface KgNode { id: string; name: string; path: string; tags: string[] }
 export interface KgEdge { source: string; target: string; type: 'link' | 'tag' }
@@ -70,8 +76,11 @@ export interface KgGraph {
   truncated?: KgTruncated
 }
 
-/** 双链语法：[[文件名]] / [[文件名|别名]] */
-const LINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g
+/**
+ * 双链语法 / 解析：见 `privhub-svc-links` 的 `linkparse.ts`（全仓唯一权威定义）。
+ * 这里**不再自带正则** —— 此前 kg 与 refcheck 各写一份，口径漂移时会出现
+ * 「图谱有边、引用检查报断链」的自相矛盾（Q4 / §2.6）。
+ */
 
 /* ---------- 规模保护（W-C / §2.8）----------
  * 为什么需要：两张图都会爆 ——
@@ -113,6 +122,8 @@ export function apply(ctx: Context): void {
   const svc = ctx.privhub
   const meta = ctx.meta
   const acl = ctx.acl
+  /** Q4：链接登记表（文件 → 稳定 ID + 退役名）。解析靠它记着"改名前叫什么"。 */
+  const links = ctx.links
 
   /** 项目图缓存：project → { at, graph }（事件失效 + 60s TTL） */
   const cache = new Map<string, { at: number; graph: KgGraph }>()
@@ -206,13 +217,22 @@ export function apply(ctx: Context): void {
     return [...new Set([...sidecar, ...fromFm])]
   }
 
-  /** 双链解析：[[名称]] → 目标节点 id（同目录或全项目匹配）。 */
-  function resolveLinks(text: string, files: { path: string; name: string }[]): string[] {
+  /**
+   * 双链解析：`[[名称]]` → 目标节点路径（Q4 / §2.6 起走登记表）。
+   *
+   * 解析顺序：**登记表现名 ∪ 活文件现名 → 退役名（改名前的老名字）**；
+   * 同名多命中时**优先与引用方同目录**（改造前是"取第一个"，同名不同目录时结果不稳定）。
+   *
+   * `live` 只装 **.md**（与改造前一致：图谱的双链历来只连文档；非文档附件由
+   * 「引用检查」负责）。登记表里可能会有非 .md 的条目，但 `live` 的存在性校验会把它们挡在外面。
+   */
+  function resolveLinks(text: string, live: LiveIndex, project: string, sourcePath: string): string[] {
     const targets: string[] = []
-    for (const m of text.matchAll(LINK_RE)) {
-      const name = m[1].trim()
-      const hit = files.find((f) => f.name === name)
-      if (hit) targets.push(hit.path)
+    for (const link of parseWikiLinks(text)) {
+      const key = link.id !== null ? ID_PREFIX + link.id : link.target
+      if (key === '') continue
+      const hit = links.resolveTarget(project, key, { live, sourcePath })
+      if (hit !== null) targets.push(hit)
     }
     return [...new Set(targets)]
   }
@@ -331,23 +351,25 @@ export function apply(ctx: Context): void {
       return !d || d.allow
     }
     const nameOf = (p: string): string => graph.nodes.find((n) => n.path === p)?.name ?? p.slice(p.lastIndexOf('/') + 1)
-    /** 取引用方正文里含 [[目标名]] 的那一行当摘要（找不到就回空串，界面显示"（未取到摘要）"） */
-    const snippetOf = async (src: string, targetName: string): Promise<string> => {
+    /** 取引用方正文里含 [[目标名]] 的那一行当摘要（找不到就回空串，界面显示"（未取到摘要）"）。
+     *  目标名可能有好几个（Q4：改名之后正文里仍写着老名字）—— 任一命中即可。 */
+    const snippetOf = async (src: string, targetNames: string[]): Promise<string> => {
       const text = await readMd(project, src)
       for (const line of text.split('\n')) {
-        if (line.includes('[[') && line.includes(targetName)) return line.trim().slice(0, 160)
+        if (line.includes('[[') && targetNames.some((n) => n !== '' && line.includes(n))) return line.trim().slice(0, 160)
       }
       return ''
     }
-    const myName = nameOf(path)
+    /** 查一个路径的"用过的名字"（现名 + 退役别名）；登记表里没有就退回现名。 */
+    const namesOf = (p: string): string[] => links.namesOf(project, p)
     // 入链：在**引用方**的正文里找 `[[我的名字]]` 那一行；出链：在**我**的正文里找 `[[目标名]]`
     const incomingPaths = graph.edges.filter((e) => e.type === 'link' && e.target === path && allowed(e.source)).map((e) => e.source)
     const outgoingPaths = graph.edges.filter((e) => e.type === 'link' && e.source === path && allowed(e.target)).map((e) => e.target)
     const incoming = await mapLimit(incomingPaths, IO_CONCURRENCY, async (p) => ({
-      project, path: p, name: nameOf(p), snippet: await snippetOf(p, myName),
+      project, path: p, name: nameOf(p), snippet: await snippetOf(p, namesOf(path)),
     }))
     const outgoing = await mapLimit(outgoingPaths, IO_CONCURRENCY, async (p) => ({
-      project, path: p, name: nameOf(p), snippet: await snippetOf(path, nameOf(p)),
+      project, path: p, name: nameOf(p), snippet: await snippetOf(path, namesOf(p)),
     }))
     return { incoming, outgoing }
   }
@@ -360,6 +382,11 @@ export function apply(ctx: Context): void {
 
     const files = await collectFiles(project)
     const mdFiles = files.filter((f) => f.isMd)
+    /* Q4：登记表载入完成再解析（否则启动后首批请求看不到"改名前的名字"）。
+     * 活文件索引**整张图建一次**复用；登记表按 FIFO 惰性补登记（全量文件，供引用检查共用）。 */
+    await links.ready
+    const live = buildLiveIndex(mdFiles.map((f) => f.path))
+    links.ensureAll(project, files.map((f) => f.path))
     // 先读 .md 正文：既供双链解析，也供 frontmatter 标签合并（读一次，两处用）
     // §2.8②：有上限并发 —— 串行 await 是「大项目图谱慢」的主因
     const mdTextList = await mapLimit(mdFiles, IO_CONCURRENCY, (f) => readMd(project, f.path))
@@ -386,8 +413,8 @@ export function apply(ctx: Context): void {
       edges.push({ source: a, target: b, type })
     }
     for (const f of mdFiles) {
-      const links = resolveLinks(mdText.get(f.path) ?? '', mdFiles)
-      for (const t of links) addEdge(f.path, t, 'link')
+      const targets = resolveLinks(mdText.get(f.path) ?? '', live, project, f.path)
+      for (const t of targets) addEdge(f.path, t, 'link')
     }
     const tagIndex = new Map<string, string[]>()
     for (const n of nodes) {
@@ -469,4 +496,33 @@ export function apply(ctx: Context): void {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '反向链接查询失败' })
     }
   }, 'kg-backlinks')
+
+  /* ---- 双链目标解析（Q4 / §2.6）----
+   * 界面上的双链此前只能"在同目录里按名字找"，被引用的文件一改名就点不动了。
+   * 这条接口把**登记表的解析结果**（含改名前的老名字、`id:` 写法）交给界面。
+   *
+   * 权限：不在 admin-acl 的 GUARD_PATHS 表里（与 /kg、/kg/backlinks 同口径 ——
+   * 目标路径要先解析出来才知道，表驱动守卫无从下手），改为**在 handler 内逐条判**。
+   * 解析出来的路径若对本用户不可见，一律当作"没解析到"（返回 null 而不是 403：
+   * 403 本身就等于承认"这个名字指向一个你看不见的文件"，那是一次信息泄露）。
+   * 因此这里**不读文件正文**，只回路径。 */
+  svc.route('/privhub/api/kg/resolve', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    try {
+      const url = new URL(req.url ?? '/', 'http://x')
+      const project = url.searchParams.get('project') ?? ''
+      const target = url.searchParams.get('target') ?? ''
+      if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+      if (target === '') return json(res, 400, { ok: false, error: 'target 必填' })
+      await links.ready
+      const files = await collectFiles(project)
+      const live = buildLiveIndex(files.map((f) => f.path))
+      const hit = links.resolveTarget(project, target, { live })
+      const allowed = hit !== null && (() => { const d = acl.can(u, 'view', project, hit); return !d || d.allow })()
+      json(res, 200, { ok: true, project, target, path: allowed ? hit : null })
+    } catch (e) {
+      json(res, 400, { ok: false, error: e instanceof Error ? e.message : '双链解析失败' })
+    }
+  }, 'kg-resolve')
 }

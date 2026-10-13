@@ -18,7 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-template'
-export const inject = ['privhub', 'meta']
+export const inject = ['privhub', 'meta', 'cap']
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
@@ -32,7 +32,7 @@ export function apply(ctx: Context): void {
         json(res, 200, { ok: true, templates: await meta.listTemplates() })
         return
       }
-      if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可管理模板' })
+      if (!ctx.cap.can(u, 'admin.template', 'write')) return json(res, 403, { ok: false, error: '仅管理员可管理模板' })
       let body: any
       try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
       if (req.method === 'POST') {

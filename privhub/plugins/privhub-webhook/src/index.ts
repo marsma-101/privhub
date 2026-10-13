@@ -55,7 +55,7 @@ import {
 import type { DeliveryRecord, Hook, HookView } from './core'
 
 export const name = 'privhub-webhook'
-export const inject = ['privhub', 'storage', 'audit', 'eventBus']
+export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'cap']
 
 /** 监听的 7 个事件（与 core.ts 的 EVENTS 一一对应；改一边必须改另一边）。 */
 const LISTEN = [
@@ -311,7 +311,9 @@ export function apply(ctx: Context): void {
   function requireAdmin(req: unknown, res: unknown): { username: string } | null {
     const u = svc.requireUser(req as never, res as never)
     if (!u) return null
-    if (u.role !== 'admin') {
+    // 订阅/投递日志查询是 GET（read），增删改与重放是写（write）
+    const need = (req as { method?: string }).method === 'GET' ? 'read' : 'write'
+    if (!ctx.cap.can(u, 'admin.webhook', need)) {
       json(res as never, 403, { ok: false, error: '仅管理员' })
       return null
     }

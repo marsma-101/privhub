@@ -10,13 +10,15 @@
 import { writeFile, stat, rename, unlink } from 'node:fs/promises'
 import { join, resolve, extname, sep, basename } from 'node:path'
 import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
 import { isMediaExt } from '../../privhub-core/src/file-exts'
 import { parseSingleRange } from '../../privhub-core/src/http-range'
+import { NEAR_MAX_BYTES } from '../../privhub-svc-dup/src/core'
 
 export const name = 'privhub-files'
-export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock']
+export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock', 'cap', 'dup']
 
 /** Y 批：名字级操作（重命名/移动/删除）撞上他人编辑锁时的统一文案。 */
 function busyMsg(holder: string): string {
@@ -249,6 +251,14 @@ export function apply(ctx: Context): void {
       }
       // A11+S7：流式加密落盘（storage.createWriteStream 内部写密文头+加密流+末尾 tag），不整读进内存；超限中断清理
       const tmp = target + '.part'
+      /* Q6（§3.3）上传期重复提示：一边流式落盘、一边算内容指纹。
+       * 原始 sha256 全程流式累加（不占内存）；文本类小文件的规范化哈希与 MinHash 需要全文，
+       * 所以只对 ≤ NEAR_MAX_BYTES 的请求把明文留在内存里，更大的只算原始哈希。
+       * 这里是**旁路**：算指纹/查重出任何问题都不该让上传本身失败（见下方 try/catch）。 */
+      const hasher = createHash('sha256')
+      const chunks: Buffer[] = []
+      let buffered = 0
+      let tooBigForNear = false
       const size = await new Promise<number>((ok, fail) => {
         let written = 0
         let aborted = false
@@ -256,6 +266,11 @@ export function apply(ctx: Context): void {
           stream.on('error', (e) => { aborted = true; fail(e) })
           req.on('data', (c: Buffer) => {
             written += c.length
+            hasher.update(c)
+            if (!tooBigForNear) {
+              if (buffered + c.length > NEAR_MAX_BYTES) { tooBigForNear = true; chunks.length = 0; buffered = 0 }
+              else { chunks.push(c); buffered += c.length }
+            }
             if (written > MAX_UPLOAD_BYTES && !aborted) {
               aborted = true
               ;(stream as import('node:stream').Writable).destroy()
@@ -272,7 +287,20 @@ export function apply(ctx: Context): void {
         }).catch((e) => fail(e))
       }).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
       await rename(tmp, target)
-      json(res, 200, { ok: true, size })
+      /* Q6：算指纹 → 同项目内查重（只提示）→ 登记，供下次上传命中。
+       * 整段是旁路：失败只记日志，响应照旧 ok（上传已经成功落盘，不能因为提示失败而回错）。 */
+      let dup: { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null = null
+      try {
+        const rawHash = hasher.digest('hex')
+        const fp = tooBigForNear ? { h: rawHash, size } : ctx.dup.fingerprint(Buffer.concat(chunks), rawHash)
+        const relPath = (subPath ? subPath + '/' : '') + name
+        // 功能开关（dup.prompt）：关掉就不查、不回带（管理员恒可；普通用户默认开、可关）。
+        if (ctx.cap.can(u, 'dup.prompt', 'read')) dup = ctx.dup.check(project, relPath, fp)
+        ctx.dup.register(project, relPath, fp)
+      } catch (e) {
+        ctx.logger?.warn?.('[upload] 查重旁路失败（不影响上传）：' + (e instanceof Error ? e.message : String(e)))
+      }
+      json(res, 200, { ok: true, size, ...(dup ? { duplicates: dup.exact, near: dup.near } : {}) })
       void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + size)
       changed(project, (subPath ? subPath + '/' : '') + name, 'created')
     } catch (e) {

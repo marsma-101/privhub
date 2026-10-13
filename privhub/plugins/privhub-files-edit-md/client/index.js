@@ -82,9 +82,14 @@ function inline(s) {
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  // 双链 [[文件名]]
-  out = out.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, name, alias) => {
-    const label = esc(alias || name)
+  // 双链 [[文件名]] / [[文件名|别名]]。
+  // 正则与服务端权威定义（plugins/privhub-svc-links/src/linkparse.ts 的 WIKI_LINK_RE）
+  // **一字不差** —— tests/integrity.mjs 断言全仓只存在这一个字面量。别名从整个匹配里切
+  // （正则只把目标捕进组 1，`|别名` 在组外）。
+  out = out.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (m, name) => {
+    const inner = m.slice(2, -2)
+    const bar = inner.indexOf('|')
+    const label = esc(bar >= 0 ? inner.slice(bar + 1) : name)
     return '<a href="javascript:void 0" class="md-wikilink" data-name="' + esc(name) + '">🔗 ' + label + '</a>'
   })
   // 普通链接 [text](url)
@@ -765,8 +770,22 @@ const MdEditor = {
       const name = a.getAttribute('data-name')
       const r = await api('/privhub/api/list?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(this.dir || nav.path || ''))
       const hit = r.ok ? r.entries.find((e) => e.name === name) : null
-      if (hit) { nav.selectEntry(hit); this.status = '🔗 已定位：' + name }
-      else this.status = '当前目录未找到「' + name + '」（双链仅定位同目录文件）'
+      if (hit) { nav.selectEntry(hit); this.status = '🔗 已定位：' + name; return }
+      /* Q4 / §2.6：同目录没有 → 问服务端「这个名字现在指向哪个文件」。
+       * 被引用的文件改过名时，`[[老名字]]` 靠服务端的链接登记表解到新路径
+       * （界面不感知 ID，写的仍是名字）。登记表也解不到才退回下面的提示。 */
+      const q = '/privhub/api/kg/resolve?project=' + encodeURIComponent(this.project) + '&target=' + encodeURIComponent(name)
+      const rr = await api(q)
+      const resolved = rr && rr.ok ? rr.path : null
+      if (resolved) {
+        const slash = resolved.lastIndexOf('/')
+        const dir = slash < 0 ? '' : resolved.slice(0, slash)
+        const base = slash < 0 ? resolved : resolved.slice(slash + 1)
+        await nav.openDir(this.project, dir)
+        const e2 = (nav.entries || []).find((x) => x.name === base)
+        if (e2) { await nav.selectEntry(e2); this.status = '🔗 已按登记表定位：' + resolved; return }
+      }
+      this.status = '当前目录未找到「' + name + '」（双链仅定位同目录文件）'
     },
   },
   mounted() {

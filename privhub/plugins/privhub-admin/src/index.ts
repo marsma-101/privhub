@@ -12,7 +12,7 @@ import { basename } from 'node:path'
 import { json, readBody, hashPassword } from '../../privhub-core/src/index'
 
 export const name = 'privhub-admin'
-export const inject = ['privhub', 'audit', 'eventBus', 'storage']
+export const inject = ['privhub', 'audit', 'eventBus', 'storage', 'cap']
 
 export function apply(ctx: Context): void {
   /* E1 事件声明 */
@@ -30,7 +30,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/project-create', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可新建项目' })
+    if (!ctx.cap.can(u, 'admin.project.create', 'write')) return json(res, 403, { ok: false, error: '仅管理员可新建项目' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const ok = await svc.createProject(String(body.name ?? '').trim())
@@ -42,7 +42,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/project-delete', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可删除项目' })
+    if (!ctx.cap.can(u, 'admin.project.delete', 'write')) return json(res, 403, { ok: false, error: '仅管理员可删除项目' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const ok = await svc.moveProjectToTrash(String(body.name ?? ''), u.username)
@@ -54,7 +54,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/admin/users', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.users', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     // hasPersonalSpace 用于界面提示「改名会同步改个人空间文件夹」。
     // 只暴露「是否存在」，不暴露目录内容（目录名恒等于 displayName，无额外信息泄露）。
     const users = [...svc.users.values()].map((x) => ({
@@ -68,7 +68,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/admin/user-update', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.users', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const username = String(body.username ?? '')
@@ -107,7 +107,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/admin/user-delete', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.users', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const username = String(body.username ?? '')
@@ -123,7 +123,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/admin/user-reset-password', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.users', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const username = String(body.username ?? '')
@@ -154,7 +154,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/storage/plaintext', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.storage', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
     const files = await ctx.storage.scanPlaintextSystemFiles()
     /* 只回文件名与体积，不回绝对路径：管理员要判断的是「哪个文件、多大」，
@@ -171,7 +171,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/storage/migrate', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.storage', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     if (!ctx.storage.active) return json(res, 400, { ok: false, error: '加密未启用（storage.enabled=false），迁移无意义' })
     const files = (await ctx.storage.scanPlaintextSystemFiles()).map((f) => f.file)

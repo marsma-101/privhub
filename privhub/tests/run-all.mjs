@@ -28,10 +28,15 @@ import { build as buildTaskboard } from './taskboard.mjs'
 import { build as buildSelfService } from './selfservice.mjs'
 import { build as buildAclFileFilter } from './acl-file-filter.mjs'
 import { build as buildDupVerdict } from './dup-verdict.mjs'
+import { build as buildDupUploadHttp } from './dup-upload-http.mjs'
+import { build as buildDupNearDelete } from './dup-near-delete.mjs'
 import { build as buildEditLock } from './edit-lock.mjs'
 import { build as buildDashboard } from './dashboard.mjs'
 import { build as buildTaskCalendar } from './task-calendar.mjs'
 import { build as buildRefCheck } from './refcheck.mjs'
+import { build as buildLinkId } from './link-id.mjs'
+import { build as buildCap } from './cap.mjs'
+import { build as buildModelProfiles } from './model-profiles.mjs'
 import { build as buildWebhook } from './webhook.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -102,6 +107,11 @@ async function main() {
     buildAclFileFilter(),
     // W-D 新增：查重判定（verdict 分类 / canDelete 只读标记 / 近似族）。同样放最后。
     buildDupVerdict(),
+    // Q6 新增：上传期重复提示（同内容提到 duplicates / 近似提到 near / dup.prompt 开关）。
+    // 它上传的样本在收尾已清掉；放在查重类之后，避免样本影响前面的目录类断言。
+    buildDupUploadHttp(),
+    // Q7 新增：近似/版本族删除开关（allowNearDelete 单一事实来源；只读 + 改/复位开关）。
+    buildDupNearDelete(),
     buildEditLock(),
     // Z 批新增：项目看板（纵向分区页；含智能体 X-Agent-Key 写入车道）
     buildDashboard(),
@@ -109,6 +119,13 @@ async function main() {
     buildTaskCalendar(),
     // 附件引用检查：孤儿附件 / 断链引用只报告不删除；含「不可见文件不得泄露」断言
     buildRefCheck(),
+    // 双链 ID 化（Q4 / §2.6）：改名被引用文件 → 图谱边与反链不断（验收条）+ /kg/resolve
+    buildLinkId(),
+    // 功能权限开关：改开关 → 立刻生效 → 复位；收尾 reset 保证不留偏离默认的配置
+    buildCap(),
+    // 多 Profile 模型配置（§1.2）+ 生成参数（Q2）：增删改切 + 旧形状兼容 + 参数夹界限；
+    // 收尾清掉自建 profile 并把 maxRetries 复位，不留被改动的模型配置
+    buildModelProfiles(),
     // Webhook 事件订阅：放最后 —— 它会在测试期挂上指向本进程 sink 的订阅，
     // 清理用例保证跑完不留订阅（残留会让后续每个写入都去重试三次）。
     buildWebhook(),
@@ -120,7 +137,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 标题碰撞')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'title-collision.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'title-collision.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -140,6 +157,10 @@ function runChild(script) {
      *                            来驱动 `read()` 的契约断言。
      *   · model-parsing.mjs   —— 进程内 `import()` 真身 `plugins/privhub-svc-model/src/index.ts`
      *                            （纯函数 + 假上游端到端），必须走 tsx。
+     *   · link-parsing.mjs    —— 进程内 `import()` 真身 `plugins/privhub-svc-links/src/*.ts`
+     *                            （双链解析 + 改名不断链 + 登记表损坏守卫），必须走 tsx。
+     *   · dup-upload.mjs      —— 进程内 `import()` 真身 `plugins/privhub-svc-dup/src/*.ts`
+     *                            （三层指纹 + 上传查重服务 + 索引损坏守卫 + 开关默认值），必须走 tsx。
      *   · storage-migration.mjs —— 进程内挂真身 `plugins/privhub-svc-storage/src/index.ts`
      *                            （造一个各类文件齐全的 data/，验证迁移的守卫与保底），必须走 tsx。
      *   · json-corruption.mjs —— `import()` 真身 `plugins/privhub-core/src/json-store.ts`
@@ -149,7 +170,7 @@ function runChild(script) {
      *   · media-preview.mjs   —— 进程内 `import()` 真身 `plugins/privhub-core/src/http-range.ts`
      *                            （纯函数区间解析断言 + 另起隔离实例验 HTTP Range），必须走 tsx。
      * 其余静态脚本不需要，保持原样调用。 */
-    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|storage-migration|json-corruption|media-preview)\.mjs$/.test(script)
+    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|link-parsing|dup-upload|storage-migration|json-corruption|media-preview)\.mjs$/.test(script)
     const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))

@@ -22,6 +22,8 @@ function inline(s) {
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  // 双链正则与权威定义（plugins/privhub-svc-links/src/linkparse.ts 的 WIKI_LINK_RE）
+  // 一字不差：tests/integrity.mjs 断言全仓只存在这一个字面量（Q4 / §2.6）。
   out = out.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (m, name) => '<a href="javascript:void 0" class="wiki-link" data-name="' + esc(name) + '">🔗 ' + esc(name) + '</a>')
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, target) => {
     if (/^https?:\/\//.test(target)) return '<a href="' + esc(target) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
@@ -163,6 +165,18 @@ const WikiView = {
         // ⑤ 视图化：定位 = 跳回文件视图并选中，toast 提示（status 随视图切换不可见）
         window.PrivHub.toast('已定位：' + targetName)
       } else {
+        /* Q4 / §2.6：同目录没有 → 问服务端的链接登记表（改名后的**老名字**在这里命中）。
+         * 解到别的目录就跳过去定位；仍解不到才报"未找到"。 */
+        const rr = await api('/privhub/api/kg/resolve?project=' + encodeURIComponent(this.project) + '&target=' + encodeURIComponent(targetName))
+        const resolved = rr && rr.ok ? rr.path : null
+        if (resolved) {
+          const slash = resolved.lastIndexOf('/')
+          const dir = slash < 0 ? '' : resolved.slice(0, slash)
+          const base = slash < 0 ? resolved : resolved.slice(slash + 1)
+          await nav.openDir(this.project, dir)
+          const e2 = nav.entries.find((x) => x.name === base)
+          if (e2) { nav.selectEntry(e2); window.PrivHub.toast('已按登记表定位：' + resolved); return }
+        }
         window.PrivHub.toast('未找到「' + targetName + '」（双链目标需为同目录 .md 文件）', 'error')
       }
     },

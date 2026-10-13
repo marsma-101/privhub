@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { readJsonStore } from '../../privhub-core/src/json-store'
 
 export const name = 'privhub-files-office-ai'
-export const inject = ['privhub', 'office', 'storage', 'audit']
+export const inject = ['privhub', 'office', 'storage', 'audit', 'cap']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const KEYS_FILE = join(rootDir, 'data', 'office-api.json')
@@ -194,7 +194,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/ai/office/keys', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.office.ai', req.method === 'GET' ? 'read' : 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     if (req.method === 'GET') {
       const keys = await loadKeys(ctx)
       json(res, 200, { ok: true, keys: keys.map((k) => ({ label: k.label, at: k.at, key: k.key, projects: k.projects ?? [] })) })

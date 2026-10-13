@@ -20,6 +20,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { json } from '../../privhub-core/src/index'
+/* 双链正则与图谱/引用检查**共用同一份实现**（Q4 / §2.6）——
+ * 此前这里也抄了一份，三处口径不一致时导出体与图谱对不齐。 */
+import { WIKI_LINK_RE } from '../../privhub-svc-links/src/linkparse'
 
 const execFileP = promisify(execFile)
 
@@ -47,7 +50,7 @@ function inline(s: string): string {
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  out = out.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (m, name) => '<span class="wl">' + esc(name) + '</span>')
+  out = out.replace(WIKI_LINK_RE, (m, name) => '<span class="wl">' + esc(name) + '</span>')
   out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
   return out
 }

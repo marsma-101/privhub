@@ -1,0 +1,8 @@
+{
+  "name": "privhub-admin-cap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "功能权限开关的 HTTP 面：ctx.cap（privhub-svc-cap）的路由外壳 + 管理面板",
+  "main": "src/index.ts"
+}

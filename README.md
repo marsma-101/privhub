@@ -9,12 +9,12 @@
 
 #### 软件架构
 - **纯 Cordis 底座**：核心框架仅依赖 `@deepseek-ai/cordis` + `schemastery` + `tsx`，无重型 Web 框架，整个目录搬走即可运行。
-- **三层插件架构**（当前 **50 个插件目录**）：
+- **三层插件架构**（当前 **62 个插件目录**）：
   - L1 六枢纽：core / auth / files / trash / admin / shell
-  - L2 能力 Service（10 个）：storage / events / audit / acl / watermark / search / meta / collab / office / model
+  - L2 能力 Service（14 个）：storage / events / audit / acl / watermark / search / meta / collab / lock / office / model / **links** / **dup** / **cap**
   - L3 功能插件：`CORE_PLUGINS` 清单外自动发现装配（装卸 = 增删 `plugins/` 目录，无需改代码）
-  - 统计口径：43 个含 `src/index.ts`（其中 **31 个真正注册路由**）、32 个含前端、7 个纯前端
-- **自研 webServer**（node:http）：exact 路由 + 静态前端 + `/privhub-plugins/<名>/<文件>` 插件资源映射。当前注册 **112 条后端路由**，分布于 31 个插件。
+  - 统计口径：53 个含 `src/index.ts`（其中 **38 个真正注册路由**）、39 个含前端、9 个纯前端
+- **自研 webServer**（node:http）：exact 路由 + 静态前端 + `/privhub-plugins/<名>/<文件>` 插件资源映射。当前注册 **148 条后端路由**（统计口径：`src/` 与 `plugins/` 下 `.route(` 出现次数），分布于 39 个文件。
 - **前端**：Vue 单页骨架（`frontend/index.html` 单文件，无打包）+ manifest/slot 加载器，纯前端插件即建即用。骨架通过 `window.PrivHub`（骨架 26 个键 + 插件运行时追加）与插件通信。
 - **管理控制台**（v3.1.0）：进入管理相关视图渲染统一外壳（顶部栏 + 左侧管理导航 + 内容区），管理路由走 `#/admin/...` hash（刷新保持位置），侧栏按管理员职责分四组；既有 `openAdmin` / `openAcl` / `openAudit` / `openSettings` / `openTags` / `openTemplate` 入口全部保留。实现见 `privhub/plugins/privhub-admin-console/client/`。
 

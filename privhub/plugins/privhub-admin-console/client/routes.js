@@ -40,6 +40,8 @@ const ROUTES = [
   { key: 'access/users', label: '用户管理', short: '用户管理', section: 'access', icon: '👥', view: 'admin', slot: 'admin', entryOf: 'admin', implemented: true },
   { key: 'access/projects', label: '项目权限', short: '项目权限', section: 'access', icon: '📁', view: '', builtin: 'projects', adminOnly: true },
   { key: 'access/acl', label: 'ACL 规则', short: 'ACL 规则', section: 'access', icon: '🔒', view: 'acl', slot: 'acl', entryOf: 'acl', implemented: true },
+  /* 功能权限开关：视图与 slot 由 privhub-admin-cap 声明（本文件只认 slot 名）。 */
+  { key: 'access/features', label: '功能权限', short: '功能权限', section: 'access', icon: '🔐', view: 'admin-cap', slot: 'admin-cap', entryOf: 'admin-cap', implemented: true },
   { key: 'access/agents', label: '智能体密钥', short: '智能体密钥', section: 'access', icon: '🔌', view: 'agent', slot: 'agent-view', entryOf: 'agent', implemented: true },
 
   { key: 'content/tags', label: '标签管理', short: '标签管理', section: 'content', icon: '🏷️', view: 'tags', slot: 'admin-tags', entryOf: 'tags', implemented: true },

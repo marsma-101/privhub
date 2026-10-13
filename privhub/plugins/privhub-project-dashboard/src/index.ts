@@ -28,7 +28,7 @@ import {
 import { dashFile } from './core'
 
 export const name = 'privhub-project-dashboard'
-export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus']
+export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus', 'cap']
 
 function queryParam(req: unknown, key: string): string {
   const url = new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
@@ -98,6 +98,7 @@ export function apply(ctx: Context): void {
     }
 
     if (req.method !== 'PUT') return json(res, 405, { ok: false, error: 'method not allowed' })
+    if (!ctx.cap.can(u, 'dashboard.write', 'write')) return json(res, 403, { ok: false, error: '看板写入功能已关闭' })
 
     let body: Record<string, unknown>
     try { body = JSON.parse(await readBody(req)) as Record<string, unknown> } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
@@ -128,6 +129,7 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(req, res)
     if (!u) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    if (!ctx.cap.can(u, 'dashboard.write', 'write')) return json(res, 403, { ok: false, error: '看板写入功能已关闭' })
     let body: Record<string, unknown>
     try { body = JSON.parse(await readBody(req)) as Record<string, unknown> } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const project = String(body.project ?? '')

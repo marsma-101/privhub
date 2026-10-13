@@ -13,7 +13,7 @@ import z from '@deepseek-ai/schemastery'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-trash'
-export const inject = ['privhub', 'audit', 'acl', 'eventBus']
+export const inject = ['privhub', 'audit', 'acl', 'eventBus', 'cap']
 
 export interface Config {
   /** 回收站保留天数（到期自动物理清除），默认 30 */
@@ -112,7 +112,7 @@ export function apply(ctx: Context, config: Config): void {
   svc.route('/privhub/api/trash-clean', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员' })
+    if (!ctx.cap.can(u, 'admin.trash.clean', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     const n = await svc.purgeExpiredTrash(ttlDays * 24 * 3600 * 1000)
     json(res, 200, { ok: true, purged: n })
     void audit(u, 'clean', '', 'purged=' + n)

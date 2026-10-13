@@ -21,7 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-lock'
-export const inject = ['privhub', 'acl', 'lock']
+export const inject = ['privhub', 'acl', 'lock', 'cap']
 
 /** 冲突文案：对应用户诉求「有人正在修改，请稍后重试」。 */
 function busyMessage(holder: string): string {
@@ -58,8 +58,9 @@ export function apply(ctx: Context): void {
         return
       }
       // DELETE：释放（持有人，或 admin force 强解）
-      if (force && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可强制解锁' })
-      const released = ctx.lock.release(u.username, project, path, { force: force && u.role === 'admin' })
+      const canForce = ctx.cap.can(u, 'admin.lock', 'write')
+      if (force && !canForce) return json(res, 403, { ok: false, error: '仅管理员可强制解锁' })
+      const released = ctx.lock.release(u.username, project, path, { force: force && canForce })
       json(res, 200, { ok: true, released })
       return
     }
@@ -100,7 +101,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/lock/stats', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '无权限' })
+    if (!ctx.cap.can(u, 'admin.lock', 'read')) return json(res, 403, { ok: false, error: '无权限' })
     json(res, 200, { ok: true, ...ctx.lock.stats() })
   }, 'lock-stats')
 }

@@ -37,7 +37,7 @@ import { WriteGate, Idempotency, QuotaLedger, RateLimiter, PathLocks, versionSna
 import { computeFactsCached, dashFile, loadDashboard, sanitizeDashboard, writeDashboard } from '../../privhub-project-dashboard/src/core'
 
 export const name = 'privhub-files-agent'
-export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus']
+export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus', 'cap']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const KEYS_FILE = join(rootDir, 'data', 'agent-keys.json')
@@ -264,10 +264,10 @@ function withAgent(handler: (ctx: Context, env: Env, a: AgentAuth, req: Incoming
 
 /* ============ 管理鉴权 ============ */
 
-function requireAdmin(ctx: Context, req: IncomingMessage, res: ServerResponse, env: Env): { username: string; role: string } | null {
+function requireAdmin(ctx: Context, req: IncomingMessage, res: ServerResponse, env: Env, feature: string, need: 'read' | 'write' = 'write'): { username: string; role: string } | null {
   const u = ctx.privhub.requireUser(req, res)
   if (!u) return null
-  if (u.role !== 'admin') {
+  if (!ctx.cap.can(u, feature, need)) {
     json(res, 403, { ok: false, code: 'AGENT-4035', error: '仅管理员可执行此操作', hint: '管理端点需要 admin 登录态', requestId: env.rid }, { 'x-request-id': env.rid })
     return null
   }
@@ -967,6 +967,8 @@ export function apply(ctx: Context, config?: M2Config): void {
     if (!u) return
     const keys = await loadKeys(ctx)
     const sandbox = sandboxDirOfUser(ctx, u.username)
+    // 控制台是否展示「全部密钥」由功能开关 admin.agent.keys 决定（默认只有管理员能看）
+    const seesAllKeys = ctx.cap.can(u, 'admin.agent.keys', 'read')
     json(res, 200, {
       ok: true,
       keyPrefix: KEY_PREFIX,
@@ -979,13 +981,15 @@ export function apply(ctx: Context, config?: M2Config): void {
         ? '你的账号尚未开通个人空间。智能体沙箱即个人空间（由真实姓名创建），请联系管理员为你的账号设置真实姓名。'
         : null,
       myKeys: keys.filter((k) => k.username === u.username).map(keyView),
-      isAdmin: u.role === 'admin',
-      allKeys: u.role === 'admin' ? keys.map(keyView) : null,
+      isAdmin: seesAllKeys,
+      allKeys: seesAllKeys ? keys.map(keyView) : null,
     }, { 'x-request-id': env.rid })
   }), 'agent-console')
   /* ---------- 管理：key 生命周期（admin 登录态） ---------- */
 
-  const adminOnly = (env: Env, req: IncomingMessage, res: ServerResponse): { username: string; role: string } | null => requireAdmin(ctxRef, req, res, env)
+  // GET 只读 → read；其余（POST/DELETE 等）→ write
+  const adminOnly = (feature: string, env: Env, req: IncomingMessage, res: ServerResponse): { username: string; role: string } | null =>
+    requireAdmin(ctxRef, req, res, env, feature, req.method === 'GET' ? 'read' : 'write')
 
   function scopeOf(body: any): { kind: AgentKeyScope['kind']; project: string; path: string } | null {
     const kind = String(body?.scope?.kind ?? 'project')
@@ -1035,7 +1039,7 @@ export function apply(ctx: Context, config?: M2Config): void {
   }
 
   svc.route('/privhub/api/agent/v1/keys', wrap(async (ctx, env, req, res) => {
-    const admin = adminOnly(env, req, res)
+    const admin = adminOnly('admin.agent.keys', env, req, res)
     if (!admin) return
     if (req.method === 'GET') {
       const keys = await loadKeys(ctx)
@@ -1058,7 +1062,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST', requestId: env.rid }, { 'x-request-id': env.rid })
   }), 'agent-keys')
   svc.route('/privhub/api/agent/v1/keys/revoke', wrap(async (ctx, env, req, res) => {
-    const admin = adminOnly(env, req, res); if (!admin) return
+    const admin = adminOnly('admin.agent.keys', env, req, res); if (!admin) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 POST', requestId: env.rid }, { 'x-request-id': env.rid })
     let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
     /* D6：吊销与签发共用一把锁，且在锁内按 id 重新定位 —— 否则并发的签发会被这次整份写回抹掉。 */
@@ -1074,7 +1078,7 @@ export function apply(ctx: Context, config?: M2Config): void {
   }), 'agent-keys-revoke')
   for (const [action, status] of [['suspend', 'suspended'], ['resume', 'active']] as const) {
     svc.route('/privhub/api/agent/v1/keys/' + action, wrap(async (ctx, env, req, res) => {
-      const admin = adminOnly(env, req, res); if (!admin) return
+      const admin = adminOnly('admin.agent.keys', env, req, res); if (!admin) return
       if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', requestId: env.rid }, { 'x-request-id': env.rid })
       let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
       /* D6：挂起/恢复同为密钥库读-改-写；「已吊销不可操作」的判定也在锁内做，避免竞态。 */
@@ -1093,7 +1097,7 @@ export function apply(ctx: Context, config?: M2Config): void {
   }
 
   svc.route('/privhub/api/agent/v1/keys/rotate', wrap(async (ctx, env, req, res) => {
-    const admin = adminOnly(env, req, res); if (!admin) return
+    const admin = adminOnly('admin.agent.keys', env, req, res); if (!admin) return
     if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', requestId: env.rid }, { 'x-request-id': env.rid })
     let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
     /* D6：轮换 = 「读库定位旧 key → 追加新 key」的读-改-写，必须与签发/吊销共用一把锁；
@@ -1176,7 +1180,7 @@ export function apply(ctx: Context, config?: M2Config): void {
   }
 
   svc.route('/privhub/api/agent/v1/trash', wrap(async (ctx, env, req, res) => {
-    const admin = adminOnly(env, req, res); if (!admin) return
+    const admin = adminOnly('admin.agent.trash', env, req, res); if (!admin) return
     const url = new URL(req.url ?? '/', 'http://x')
     const user = url.searchParams.get('user') ?? ''
     const list = await ctx.privhub.loadTrash()
@@ -1190,7 +1194,7 @@ export function apply(ctx: Context, config?: M2Config): void {
   }), 'agent-trash')
   for (const [op, fn] of [['restore', 'restoreTrash'], ['purge', 'purgeTrash']] as const) {
     svc.route('/privhub/api/agent/v1/trash/' + op, wrap(async (ctx, env, req, res) => {
-      const admin = adminOnly(env, req, res); if (!admin) return
+      const admin = adminOnly('admin.agent.trash', env, req, res); if (!admin) return
       if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', requestId: env.rid }, { 'x-request-id': env.rid })
       let body: any; try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', requestId: env.rid }, { 'x-request-id': env.rid }) }
       const tId = String(body.id ?? '')

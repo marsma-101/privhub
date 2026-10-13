@@ -30,6 +30,7 @@ import * as svcStorage from '../plugins/privhub-svc-storage/src/index.ts'
 import * as svcEvents from '../plugins/privhub-svc-events/src/index.ts'
 import * as svcAudit from '../plugins/privhub-svc-audit/src/index.ts'
 import * as svcAcl from '../plugins/privhub-svc-acl/src/index.ts'
+import * as svcCap from '../plugins/privhub-svc-cap/src/index.ts'
 import * as svcWatermark from '../plugins/privhub-svc-watermark/src/index.ts'
 import * as svcSearch from '../plugins/privhub-svc-search/src/index.ts'
 import * as svcMeta from '../plugins/privhub-svc-meta/src/index.ts'
@@ -37,6 +38,8 @@ import * as svcCollab from '../plugins/privhub-svc-collab/src/index.ts'
 import * as svcLock from '../plugins/privhub-svc-lock/src/index.ts'
 import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
 import * as svcModel from '../plugins/privhub-svc-model/src/index.ts'
+import * as svcLinks from '../plugins/privhub-svc-links/src/index.ts'
+import * as svcDup from '../plugins/privhub-svc-dup/src/index.ts'
 /* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
 import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 
@@ -47,6 +50,12 @@ import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 const CORE_PLUGINS = new Set([
   'privhub-svc-storage', 'privhub-svc-events', 'privhub-svc-audit', 'privhub-svc-acl', 'privhub-svc-watermark',
   'privhub-svc-search', 'privhub-svc-meta', 'privhub-svc-collab', 'privhub-svc-lock', 'privhub-svc-office', 'privhub-svc-model',
+  /* 双链登记表（Q4 / §2.6）：文件 → 稳定 ID + 退役名，改名不断链。供 kg / refcheck 消费。 */
+  'privhub-svc-links',
+  /* 上传查重索引（Q6 / §3.3）：上传时按指纹提示"与 X 内容相同"（只提示、不落盘）。供 files 上传路由消费。 */
+  'privhub-svc-dup',
+  /* 功能权限开关（功能 × 普通用户级别的集中表；管理员恒为 write）。挂载早于所有消费方。 */
+  'privhub-svc-cap',
   'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
   'privhub-admin', 'privhub-shell',
 ])
@@ -190,6 +199,9 @@ async function main(): Promise<void> {
   await mount(svcEvents)
   await mount(svcAudit, { file: '', retentionDays: 60 })
   await mount(svcAcl, { file: '' })
+  /* 功能权限开关（ctx.cap）：功能 × 普通用户级别。管理员恒为 write；默认值 = 上线前行为。
+   * 必须在 L1/L3 之前挂载 —— 大量插件的路由要 inject 它来判权。 */
+  await mount(svcCap, { file: '' })
   await mount(svcWatermark, { enabled: true, text: '', opacity: 0.18 })
   await mount(svcSearch, { maxHits: 200, skipHidden: true })
   await mount(svcMeta, { file: '' })
@@ -199,6 +211,12 @@ async function main(): Promise<void> {
   await mount(svcOffice)
   /* M0 模型接入层（配置经 RAG 界面/API 动态写入 data/model.json，无需改代码） */
   await mount(svcModel)
+  /* Q4 双链登记表（ctx.links）：文件 → 稳定 ID + 退役名，跟随 file:changed 维护。
+   * 必须早于消费方（kg / refcheck 是 L3，自动发现挂载一定在它之后）。 */
+  await mount(svcLinks, { file: '' })
+  /* Q6 上传查重索引（ctx.dup）：上传时按指纹提示"与 X 内容相同"。
+   * 必须早于 L1 的 files（上传路由要 inject 它）。 */
+  await mount(svcDup, { file: '' })
 
   /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })

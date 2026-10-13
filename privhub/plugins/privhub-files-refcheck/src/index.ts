@@ -26,7 +26,7 @@ import { json, readJsonStore } from '../../privhub-core/src/index'
 import { LIMITS, mapLimit, mergeReports, reportToCsv, scanProject, type Report } from './core'
 
 export const name = 'privhub-files-refcheck'
-export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus']
+export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus', 'links']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const BOARDS_DIR = join(rootDir, 'data', 'taskboards')
@@ -121,6 +121,10 @@ export function apply(ctx: Context): void {
       return !(d && !d.allow)
     }
 
+    /* Q4 / §2.6：登记表就绪后再扫，否则「刚改过名」的第一扫会把老名字报成断链。
+     * 存在性由 core 用 pathSet 自行裁决（这里只管"登记表怎么说"）。 */
+    await ctx.links.ready
+
     const report = await scanProject({
       project,
       root,
@@ -129,6 +133,7 @@ export function apply(ctx: Context): void {
       readText: (abs) => ctx.storage.readText(abs),
       isEncrypted: (abs) => ctx.storage.isEncrypted(abs),
       join,
+      resolveAlias: (target) => ctx.links.lookup(project, target),
     })
 
     cache.set(key, { at: Date.now(), report })

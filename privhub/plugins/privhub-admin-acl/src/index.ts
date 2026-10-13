@@ -40,7 +40,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, tokenOf } from '../../privhub-core/src/index'
 
 export const name = 'privhub-admin-acl'
-export const inject = ['privhub', 'acl', 'webServer']
+export const inject = ['privhub', 'acl', 'webServer', 'cap']
 
 /** 单个 method 的守卫裁决配置。 */
 interface MethodGuard {
@@ -207,7 +207,9 @@ export function apply(ctx: Context): void {
   const adminOnly = (req: any, res: any): boolean => {
     const u = svc.requireUser(req, res)
     if (!u) return false
-    if (u.role !== 'admin') { json(res, 403, { ok: false, error: '仅管理员' }); return false }
+    // 读规则要 read，改规则要 write（同一功能两个级别）
+    const need = req.method === 'GET' ? 'read' : 'write'
+    if (!ctx.cap.can(u, 'admin.acl', need)) { json(res, 403, { ok: false, error: '仅管理员' }); return false }
     return true
   }
 

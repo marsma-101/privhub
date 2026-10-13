@@ -6,6 +6,6 @@
   "slots": ["template", "admin-template"],
   "barItems": [
     { "icon": "📝", "title": "新建文档", "slot": "panel", "view": "template" },
-    { "icon": "📝", "title": "模板管理", "slot": "admin-nav", "view": "template" }
+    { "icon": "📝", "title": "模板管理", "slot": "admin-nav", "view": "template", "capFeature": "admin.template" }
   ]
 }

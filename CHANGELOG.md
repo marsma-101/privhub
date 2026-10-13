@@ -22,7 +22,170 @@
 
 ---
 
-> 本文件当前有**多个 `[未发布]` 段**（均未随部署包同步、未升版本号）：**音视频预览**、**表格行上限 + `.doc` 正文直读**、**项目看板**、**引用检查 + 任务日历**、**Webhook 订阅**。各段互相独立，按需分别发布。
+> 本文件当前有**多个 `[未发布]` 段**（均未随部署包同步、未升版本号）：**音视频预览**、**表格行上限 + `.doc` 正文直读**、**项目看板**、**引用检查 + 任务日历**、**Webhook 订阅**、**功能权限开关**、**多 Profile 模型配置 + 生成参数**、**双链 ID 化**、**上传查重（重复提示 + 近似族删除开关）**。各段互相独立，按需分别发布。
+
+## [未发布] — 上传查重：重复/近似提示 + 近似族删除开关（新服务 `privhub-svc-dup`，Q6/Q7 / §3.3·§3.5）
+
+来源：改进方案 §3.3（Q6）与 §3.5（Q7）。完整取证见 `docs/PrivHub-上传查重-2026-10-13.md`。
+
+**一句话**：上传当下就告诉你"这份和已有的哪份一样/很像"；查重页的近似/版本族**可以勾着删，但默认只提示**。
+
+- 新增 L2 服务 `privhub-svc-dup`（`ctx.dup`，存 `data/dup-index.json`）：三层指纹
+  **原始 sha256（一字不差）/ 归一化 sha256（只差空白换行）/ MinHash-16 签名（高度相似）**，
+  倒排索引 `byFile/byRaw/byNorm/byBand`；随 `file:changed` 跟随改名/移动/删除；
+  **派生数据**，损坏即隔离存证 + 拒写（D4），但**绝不挡住任何上传**（查重整体旁路 try/catch）。
+- 挂进上传路由（`privhub-files` 的 `/privhub/api/upload`）：流式 sha256 + ≤2MB 缓冲明文，
+  落盘后在**同项目内**查一次，响应回带 `duplicates:[{path,size}]` / `near:[{path,score}]`。
+  前端上传完成后一条 **warn 色 toast** 提示（不打断、不阻止）——即 §3.3 验收
+  「同一文件传两次，第二次给出'内容重复'提示」。
+- **不做物理去重**（Q6 的答案）：不动加密存储、不动回收站、不加引用计数。
+  定位是"告诉你重复了"，不是"帮你只存一份"。
+- **近似/版本族删除开关**（Q7 / §3.5）：`/rag/dup` 结果新增 `allowNearDelete`（**单一事实来源**，
+  由 `ctx.cap.can(user,'dup.near.delete','write')` 算出）。管理员恒可；普通用户**默认关**
+  ⇒ 界面只提示、不渲染勾选框；打开后近似组出现"保留/删除"单选，**默认全不勾**，
+  且"一键套用策略"**跳过** near 组。
+- 新增功能开关两项（「查重」分组）：
+  `dup.prompt`（上传期重复提示，用户默认 `read`）、
+  `dup.near.delete`（近似/版本族可勾选删除，用户默认 `none`）。
+- 测试：新增 `tests/dup-upload.mjs`（进程内 40 断言）、`tests/dup-upload-http.mjs`（HTTP 6 断言，
+  含验收条）、`tests/dup-near-delete.mjs`（HTTP 5 断言），全部注册进 `tests/run-all.mjs`；
+  `tests/integrity.mjs` 新增 4 条契约断言（101 → 105）；未改任何既有断言。
+- **顺带修**：`svc-links` 的 `newId()` 原为「时间戳 + 4 位纯随机」——同一毫秒内连生成 500 个有 ~7%
+  概率撞上（生日问题），撞了会**静默串档**（两文件共用一个 ID ⇒ `[[旧名]]` 解析到别的文件，
+  正是双链 ID 化最不能出的错）。改为「进程内单调计数器 + 随机起点」，同毫秒内保证不重复。
+  `tests/link-parsing.mjs` 的既有断言一字未改，改后连跑 5 次均 77/0。
+
+## [未发布] — 双链 ID 化：改名不再断链（新服务 `privhub-svc-links`，Q4 / §2.6）
+
+来源：改进方案 §2.6。完整取证见 `docs/PrivHub-双链ID化-2026-10-13.md`。
+
+**一句话**：把被引用的文件**重命名**，图谱边与反链**不断**（这是验收条原文）。
+
+- 新增 L2 服务 `privhub-svc-links`（`ctx.links`，存 `data/links.json` 侧车登记表）：
+  文件 → 稳定 ID；改名后**旧名留作别名**，`[[旧名]]` 照样解析到它。
+- `[[…]]` 的正则从「5 个文件各写一份」收敛到**唯一权威定义** `svc-links/src/linkparse.ts`；
+  服务端 kg / refcheck / export 改为 `import`，两个浏览器端渲染器保留字面量并由
+  `tests/integrity.mjs` 断言**全仓只有一个不同的字面量**（漂移即失败）。
+- 解析新增三项安全改进：`#锚点` 剥离（kg 此前没剥）、同名多命中**优先同目录**（原为"取第一个"）、
+  改名后的**别名兜底**。刻意**不**新增"去扩展名命中"，以免凭空造出原本不存在的图边。
+- 新增 `GET /privhub/api/kg/resolve?project=&target=`：把登记表的解析结果交给界面
+  （老名字、`id:` 写法都能解）。目标对该用户不可见时回 `path:null`**而不是 403**
+  —— 403 等于承认"这个名字指向一个你看不见的文件"。
+- 反链摘要按「现名 + 退役别名」匹配，改名后摘要不再变空。
+- **不改写任何用户文档**：另一条路（改名时把别处的 `[[旧名]]` 改成新名）要逐字改用户正文，
+  不可逆且会触发版本历史 / 编辑锁 / 协同会话；本仓选侧车登记表，用户文档一个字节都不动。
+- 界面侧只接了一处用户可见能力：知识库 / Markdown 预览里点双链，**同目录找不到时**问 `/kg/resolve`。
+
+回归：HTTP **261 / 0**，静态 **1339 / 0**（其中新增 `tests/link-parsing.mjs` 77、
+`tests/link-id.mjs` 13、`tests/integrity.mjs` 6）。
+`node tests/run-all.mjs --spawn` 全绿。
+
+## [未发布] — 多 Profile 模型配置 + 生成参数（`privhub-svc-model` / `privhub-svc-rag`）
+
+来源：改进方案 §1.2（Q1）与 §1.10（Q2）。完整取证见 `docs/PrivHub-多Profile与模型参数-2026-10-13.md`。
+
+**接口无破坏性变更**：旧 `data/model.json`（扁平 `{llm,embedding,maxRetries}`）**无需手工迁移**即可用，
+老前端 POST 扁平结构、老调用方读 `getConfig().llm` 都照旧 —— 兼容在读侧完成、幂等，第一次保存才落新形状。
+
+### 一、多 Profile（Q1）
+
+- `data/model.json` 升级为 `{ profiles: [{ id, name, llm, embedding, params }], activeId, maxRetries }`，
+  多套并存、下拉切换、设「当前生效」、删除。
+- `svc-model` 新增 `upsertProfile` / `removeProfile` / `setActive` / `listProfiles` / `activeProfileId`；
+  `getConfig()` 回「当前 profile 摊平视图 + profiles + activeId」。
+- 路由：`GET/POST /api/model/config`（POST 兼容旧扁平形状）、`POST /api/model/profile`
+  （增改，新建第一套自动设为当前）、`POST /api/model/profile/delete`、`POST /api/model/activate`。
+
+### 二、生成参数（Q2）
+
+- 类型 `ModelParams`：temperature / top_p / max_tokens / presence_penalty / frequency_penalty / seed，
+  可存进 profile 默认值，也可每次问答临时覆盖。
+- **越界夹到界限**（不是报错）：「温度填了 3」不该让整个问答失败。
+- 请求体只发**已设置**的参数；未配置任何参数时行为与迁前逐字一致。
+- 谁可自调 = 功能开关 **`ai.params`**（沿用全局规则：管理员恒可，普通用户默认关）；
+  无权时**静默忽略**用户提交的参数而不报错。
+
+### 三、前端
+
+- 模型接入页新增配置条（profile 下拉 + 名称 + 保存/设为当前/新建/删除 + 全局重试数）、
+  「生成参数」三格；切 tab 保留未保存的编辑项。
+- 问答面板在 `ai.params` 允许时显示参数区，随问答请求发送。
+
+### 四、测试
+
+- 新回归 `tests/model-profiles.mjs`（16 例）。
+- `tests/model-parsing.mjs` +17 例（§8：参数清洗 / 旧结构迁移 / 多 profile / **抓包验证参数进请求体**）。
+- `tests/cap.mjs` 功能 id 列表加入 `ai.params`（新增一项）。
+- 回归合计：**HTTP 248 / 静态 1255 = 1503**（较上批 HTTP +16、静态 +17）。
+
+## [未发布] — 新插件：功能权限开关 `privhub-svc-cap` + `privhub-admin-cap`（管理员全开 / 普通用户单点开关）
+
+来源：用户定下的全局规则 ——「**系统内部的功能向管理员全部开放；对普通用户，功能要全做出来，
+但配一个可以简单切换的开关，需要关的时候能关上**」。此前「某功能给不给普通用户」被写成
+**34 处散落的 `u.role !== 'admin'`**，本批收成一张表。完整取证见
+`docs/PrivHub-功能权限开关-2026-10-13.md`。
+
+**接口无破坏性变更**：既有路由的鉴权语义**逐项复刻上线前的行为**（默认值 = 现状），
+故本批上线本身不改变任何可见行为。
+
+### 一、一张表
+
+```
+功能（19 项） × 普通用户级别（none / read / write）
+```
+
+- **管理员恒为 `write`**（`levelFor()` 里 `role === 'admin'` 直接返回 `'write'`），
+  表里只存普通用户那一列 —— 要调就调这一列，单点、可逆。
+- 默认值口径：每项 `userDefault` **等于本功能上线前的实际行为**；开关表上线不改变行为，
+  之后每次翻转才是用户显式决定。界面标「已改」即为偏离默认。
+- 19 项：`admin.console/users/project.create/project.delete/invite/template/trash.clean/lock/settings`、
+  `admin.audit/acl/storage`、`admin.webhook/rag/agent.keys/agent.trash/office.ai`、
+  `task.write`、`dashboard.write`（后两项普通用户默认 `write`）。
+
+### 二、服务与界面
+
+- `privhub-svc-cap`（L2 服务 `ctx.cap`）：纯逻辑在 `src/core.ts`，存储 `data/capabilities.json`
+  （**密文落盘**）。读走 `readJsonStore`（损坏 → 隔离存证 + 记 `corrupt`），
+  写走 `assertStoreWritable(!corrupt)` —— **读坏过就拒绝写，绝不覆盖可能可恢复的配置**。
+  形态与既有 `privhub-svc-acl` 一致：本服务不注册任何路由。
+- `privhub-admin-cap`：HTTP 面 4 条路由（`/cap/me` 任意登录用户；`/cap/list|save|reset` 管理）
+  + 管理面板（挂 `admin-cap` slot）。管理门槛 = `ctx.cap.can(u, 'admin.console', 'write')`（自洽）。
+- 管理控制台新增路由条目 `access/features`「功能权限」。
+
+### 三、迁移
+
+34 处 `u.role !== 'admin'` 里，**23 处系统功能级门**改为 `ctx.cap.can(u, '<feature>', need)`
+（涉及 14 个插件，均补 `'cap'` 到 `inject`）；**「作者本人或管理员」的文件级判定保持原样**
+（评论/发布/锁释放/回收站恢复等——依据用户事实：文件级权限现实中人人相同，差异只在系统功能级）。
+纯查看端点（审计面板、锁统计、各管理 GET）需要 `read`，写端点需要 `write`。
+
+### 四、前端
+
+`frontend/index.html` 增 `window.PrivHub.capCan(feature, need)` / `loadCap()` / `refreshCaps()`；
+`loadBarItems` 对声明了 `capFeature` 的条目按开关过滤（未声明的沿用 `adminOnly` 旧口径）。
+管理类 manifest 的 `admin-nav` 条目补 `capFeature`。
+
+### 五、测试
+
+- 新回归 `tests/cap.mjs`（18 例）：鉴权 / 默认值 / 单点开关即刻生效 / 未知功能 400 /
+  非法级别 400 / 批量保存 / 复位 / 协作功能默认放行 / 关掉即挡 / 密文落盘。
+- `tests/integrity.mjs` +12 静态契约：`ctx.cap.` 引用者必须 `inject 'cap'`；
+  manifest `capFeature` 必须是已登记 id；前端确实接了开关；控制台路由/slot/装配齐备。
+- 回归合计：**HTTP 232 / 静态 1238 = 1470**（较上批 HTTP +18、静态 +12）。
+
+### 六、既有断言改动（须记账）
+
+- `tests/admin-console.mjs:380`：路由数 `14 → 15`（新增 `access/features`）。
+- `tests/admin-console.mjs:693`、`tests/integrity.mjs:376` 断言 `adminOnly` 的两处**未改**：
+  改为在对应 manifest 上同时保留 `adminOnly`（`capFeature` 在过滤时优先）。
+
+### 七、诚实说明
+
+- 未加开关的既有管理面（标签管理、回收站 `admin-nav`）无对应功能、行为未变，故未纳入本表；
+  日后要收往 `FEATURES` 加一行即可。
+- 纯界面视觉（下拉切开关 → 入口随之显隐）未在真实浏览器逐项点过。
+
+**未提交**（本地改动，未同步部署包、未升版本号）。
 
 ## [未发布] — 新插件：Webhook 订阅 `privhub-webhook`（全事件出网 + HMAC 签名 + 重试 + 管理面板）
 

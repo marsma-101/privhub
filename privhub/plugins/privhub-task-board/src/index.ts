@@ -30,7 +30,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-task-board'
-export const inject = ['storage', 'privhub', 'audit', 'eventBus']
+export const inject = ['storage', 'privhub', 'audit', 'eventBus', 'cap']
 
 type Priority = 'low' | 'normal' | 'high' | 'urgent'
 
@@ -187,6 +187,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/taskboard', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
+    if (!ctx.cap.can(u, 'task.write', 'read')) return json(res, 403, { ok: false, error: '任务看板功能已关闭' })
     const project = queryParam(req, 'project')
     if (!svc.isValidProjectName(project)) return json(res, 400, { ok: false, error: '项目名无效' })
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
@@ -199,6 +200,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/taskboard/cards', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
+    if (!ctx.cap.can(u, 'task.write', 'write')) return json(res, 403, { ok: false, error: '任务写入功能已关闭' })
 
     if (req.method === 'DELETE') {
       const project = queryParam(req, 'project')
@@ -310,6 +312,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/taskboard/cards/move', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
+    if (!ctx.cap.can(u, 'task.write', 'write')) return json(res, 403, { ok: false, error: '任务写入功能已关闭' })
     let body: Record<string, unknown>
     try { body = JSON.parse(await readBody(req)) as Record<string, unknown> } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     const project = str(body.project, 200)
@@ -354,6 +357,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/taskboard/columns', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
+    if (!ctx.cap.can(u, 'task.write', 'write')) return json(res, 403, { ok: false, error: '任务写入功能已关闭' })
 
     if (req.method === 'DELETE') {
       const project = queryParam(req, 'project')

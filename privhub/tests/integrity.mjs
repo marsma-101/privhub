@@ -410,6 +410,65 @@ ok(homeApis.length > 0 &&
 ok(!existsSync(join(ROOT, 'plugins', 'privhub-shell-home', 'src', 'index.ts')),
   '工作台是 client-only 插件（无 src/index.ts，不参与服务端挂载）')
 
+/* ══════════ 功能权限开关（privhub-svc-cap + privhub-admin-cap） ══════════
+ * 开关表把「某个功能给不给普通用户」从散落的 `role !== 'admin'` 收成一张表。
+ * 静态契约兜住三类只能靠人眼发现的漂移：
+ *   · 调用了 ctx.cap 却没在 inject 里声明 'cap' —— 运行期直接报缺服务（启动即挂）；
+ *   · manifest 写了 capFeature 但功能 id 拼错 —— 那个入口会永远被当成「不可用」；
+ *   · 前端忘了接开关（capCan/loadBarItems）—— 开关对界面完全不生效。 */
+console.log('\n── 功能权限开关 ──')
+
+const capCoreSrc = readFileSync(join(ROOT, 'plugins', 'privhub-svc-cap', 'src', 'core.ts'), 'utf8')
+ok(existsSync(join(ROOT, 'plugins', 'privhub-svc-cap', 'src', 'index.ts')), 'svc-cap 服务端入口存在（L3 发现靠它）')
+ok(existsSync(join(ROOT, 'plugins', 'privhub-admin-cap', 'src', 'index.ts')), 'admin-cap 服务端入口存在（L3 发现靠它）')
+const capFeatureIds = new Set([...capCoreSrc.matchAll(/id:\s*'([a-z][\w.]*)'/g)].map((m) => m[1]))
+ok(capFeatureIds.size >= 19, `功能表登记了全部功能（${capFeatureIds.size} 项）`)
+ok(/userDefault:\s*'(none|read|write)'/.test(capCoreSrc), '每一项都声明了 userDefault（保持现状的默认值）')
+
+// 契约①：任何引用 ctx.cap. 的插件，其 src/index.ts 的 inject 必须含 'cap'
+const capInjectOffenders = []
+for (const dir of readdirSync(join(ROOT, 'plugins'))) {
+  const pluginDir = join(ROOT, 'plugins', dir)
+  if (!statSync(pluginDir).isDirectory() || dir.startsWith('_')) continue
+  if (dir === 'privhub-svc-cap') continue   // 服务本体只在注释里提到 ctx.cap，不需要 inject 自己
+  const entry = join(pluginDir, 'src', 'index.ts')
+  if (!existsSync(entry)) continue
+  const usesCap = walkTs(join(pluginDir, 'src')).some((f) => /ctx\.cap\./.test(readFileSync(f, 'utf8')))
+  if (!usesCap) continue
+  const entrySrc = readFileSync(entry, 'utf8')
+  const injectMatch = entrySrc.match(/export const inject[^=]*=\s*\[([^\]]*)\]/)
+  if (!injectMatch || !/'cap'/.test(injectMatch[1])) capInjectOffenders.push(dir)
+}
+ok(capInjectOffenders.length === 0,
+  `引用 ctx.cap 的插件都在 inject 里声明了 'cap'${capInjectOffenders.length ? '，缺：' + capInjectOffenders.join(', ') : ''}`)
+
+// 契约②：manifest 里的 capFeature 必须是功能表里登记过的 id
+const badCapFeatures = []
+for (const dir of readdirSync(join(ROOT, 'plugins'))) {
+  const mf = join(ROOT, 'plugins', dir, 'client', 'manifest.json')
+  if (!existsSync(mf)) continue
+  for (const m of readFileSync(mf, 'utf8').matchAll(/"capFeature":\s*"([^"]+)"/g)) {
+    if (!capFeatureIds.has(m[1])) badCapFeatures.push(dir + ' → ' + m[1])
+  }
+}
+ok(badCapFeatures.length === 0,
+  `manifest 的 capFeature 都是已登记功能${badCapFeatures.length ? '，非法：' + badCapFeatures.join(', ') : ''}`)
+
+// 契约③：前端接了开关（capCan 判定 + loadBarItems 按 capFeature 过滤 + 登录后拉表）
+const feSrcCap = readFileSync(join(ROOT, 'frontend', 'index.html'), 'utf8')
+ok(/window\.PrivHub\.capCan\s*=/.test(feSrcCap), '骨架暴露 window.PrivHub.capCan（插件按开关显隐）')
+ok(/bi\.capFeature/.test(feSrcCap), '图标栏按 capFeature 过滤（开关对入口生效）')
+ok(/loadCap\s*=\s*async/.test(feSrcCap) && /refreshCaps/.test(feSrcCap), '登录后主动拉取开关表')
+
+// 契约④：控制台路由表登记了「功能权限」页（slot 由 admin-cap 承载）
+ok(/entryOf:\s*'admin-cap'/.test(acRoutesSrc), '管理控制台路由表含「功能权限」条目')
+ok(/"slots":\s*\[[^\]]*"admin-cap"/.test(readFileSync(join(ROOT, 'plugins', 'privhub-admin-cap', 'client', 'manifest.json'), 'utf8')),
+  'admin-cap 声明 admin-cap slot')
+
+const mainSrcCap = readFileSync(join(ROOT, 'src', 'main.ts'), 'utf8')
+ok(/privhub-svc-cap/.test(mainSrcCap), 'main.ts 装配 svc-cap（L2 服务需在 L1/L3 之前挂载）')
+
+
 /* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
  * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现
  * 拆成若干职责单一的文件，且【全部留在该插件目录内】——卸载插件时它的前端
@@ -496,6 +555,104 @@ for (const d of readdirSync(join(ROOT, 'plugins'), { withFileTypes: true })) {
   }
 }
 ok(pageHtml.length === 0, `插件目录内无自建整页 HTML（骨架是唯一主界面）${pageHtml.length ? '：' + pageHtml.join(', ') : ''}`)
+
+/* ══════════ Q4 双链 ID 化契约（§2.6） ══════════
+ * `[[…]]` 的口径过去在 5 个文件里各写一份，只要有人改一处忘改另一处，
+ * 就会「图谱里有这条边、引用检查里却报断链」。改造后服务端三处共用 svc-links，
+ * 浏览器端两处（不能 import 服务端 .ts）保留字面量 —— 本段把「只有这一个字面量」
+ * 变成机器可查的契约：任何新写的第二份 `\[\[` 正则都会让本段失败。 */
+console.log('\n── Q4 双链 ID 化契约 ──')
+
+/** 扫描同时含 .ts/.js/.mjs 的源码树（walkTs 只收 .ts/.mjs，漏掉 client/*.js）。 */
+function walkSrcAll(dir, out = []) {
+  if (!existsSync(dir)) return out
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name.startsWith('_') || e.name === 'data') continue
+    const full = join(dir, e.name)
+    if (e.isDirectory()) walkSrcAll(full, out)
+    else if (/\.(ts|js|mjs)$/.test(e.name)) out.push(full)
+  }
+  return out
+}
+
+const CANON = String.raw`/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g`
+/** 唯一的字面量允许清单：权威定义 + 两个浏览器端渲染器。 */
+const CANON_OWNERS = [
+  'plugins/privhub-svc-links/src/linkparse.ts',
+  'plugins/privhub-files-edit-md/client/index.js',
+  'plugins/privhub-files-wiki/client/index.js',
+].sort()
+const WIKI_RE_DECL = /\\\[\\\[/
+
+const declaredOwners = []
+for (const f of [...walkSrcAll(join(ROOT, 'plugins')), ...walkSrcAll(join(ROOT, 'src'))]) {
+  const t = readFileSync(f, 'utf8')
+  if (WIKI_RE_DECL.test(t)) declaredOwners.push(f.slice(ROOT.length + 1).replace(/\\/g, '/'))
+}
+declaredOwners.sort()
+ok(JSON.stringify(declaredOwners) === JSON.stringify(CANON_OWNERS),
+  `全仓只有权威定义 + 两个前端渲染器声明 [[…]] 正则（实测：${declaredOwners.join(', ')}）`)
+
+const mismatch = CANON_OWNERS.filter((p) => !readFileSync(join(ROOT, p), 'utf8').includes(CANON))
+ok(mismatch.length === 0,
+  `三处 [[…]] 字面量与权威定义一字不差${mismatch.length ? '，漂移：' + mismatch.join(', ') : ''}`)
+
+// 服务端消费方必须 import 权威定义（而不是又抄一份 —— 抄的那份上面会被判漂移）
+const svcLinksConsumers = ['privhub-files-kg', 'privhub-files-refcheck', 'privhub-files-export']
+const notImporting = svcLinksConsumers.filter((d) => {
+  const files = walkSrcAll(join(ROOT, 'plugins', d, 'src'))
+  return !files.some((f) => /from\s+'\.\.\/\.\.\/privhub-svc-links\/src\/linkparse'/.test(readFileSync(f, 'utf8')))
+})
+ok(notImporting.length === 0,
+  `图谱 / 引用检查 / 导出都从 svc-links 引入双链解析${notImporting.length ? '，未引入：' + notImporting.join(', ') : ''}`)
+
+// main.ts 装配 svc-links，且登记进 CORE_PLUGINS（L2 服务必须早于消费方挂载）
+ok(/'privhub-svc-links'/.test(mainSrcCap), 'main.ts 的 CORE_PLUGINS 登记了 privhub-svc-links')
+ok(/await mount\(svcLinks/.test(mainSrcCap), 'main.ts 挂载 svcLinks（L2 服务，早于 kg/refcheck 消费方）')
+
+// 引用 ctx.links 的插件都要在 inject 里声明 'links'（否则 cordis 装配期抛错）
+// 先剥注释：文档里写「暴露 ctx.links」不算消费（否则提供方自己会被误判）
+const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+const linksInjectMissing = []
+for (const d of readdirSync(join(ROOT, 'plugins'))) {
+  const srcDir = join(ROOT, 'plugins', d, 'src')
+  if (!existsSync(srcDir)) continue
+  if (!walkSrcAll(srcDir).some((f) => /ctx\.links\b/.test(stripComments(readFileSync(f, 'utf8'))))) continue
+  const idx = join(srcDir, 'index.ts')
+  const idxSrc = existsSync(idx) ? readFileSync(idx, 'utf8') : ''
+  const im = idxSrc.match(/export const inject\s*=\s*\[([^\]]*)\]/)
+  if (!im || !/'links'/.test(im[1])) linksInjectMissing.push(d)
+}
+ok(linksInjectMissing.length === 0,
+  `引用 ctx.links 的插件都在 inject 里声明了 'links'${linksInjectMissing.length ? '，缺：' + linksInjectMissing.join(', ') : ''}`)
+
+// 登记表落盘文件名固定（改名不断链的持久层）
+ok(/STORE_FILE = 'links\.json'/.test(readFileSync(join(ROOT, 'plugins', 'privhub-svc-links', 'src', 'core.ts'), 'utf8')),
+  '侧车登记表落在 data/links.json（跨重启保留别名）')
+
+/* ── Q6/Q7 上传查重契约 ──
+ * 与 cap/links 同一类契约：引用了服务却漏在 inject 里声明 ⇒ 运行期直接报缺服务（启动即挂）。
+ * 先剥注释，避免「提供方在文档里提到 ctx.dup」被自己误判。 */
+const dupInjectMissing = []
+for (const d of readdirSync(join(ROOT, 'plugins'))) {
+  const srcDir = join(ROOT, 'plugins', d, 'src')
+  if (!existsSync(srcDir)) continue
+  if (d === 'privhub-svc-dup') continue // 服务本体不需要 inject 自己
+  if (!walkSrcAll(srcDir).some((f) => /ctx\.dup\b/.test(stripComments(readFileSync(f, 'utf8'))))) continue
+  const idxSrc = existsSync(join(srcDir, 'index.ts')) ? readFileSync(join(srcDir, 'index.ts'), 'utf8') : ''
+  const im = idxSrc.match(/export const inject\s*=\s*\[([^\]]*)\]/)
+  if (!im || !/'dup'/.test(im[1])) dupInjectMissing.push(d)
+}
+ok(dupInjectMissing.length === 0,
+  `引用 ctx.dup 的插件都在 inject 里声明了 'dup'${dupInjectMissing.length ? '，缺：' + dupInjectMissing.join(', ') : ''}`)
+
+// 上传查重索引落盘文件名固定（派生数据，可重建；损坏走隔离存证而非覆盖）
+ok(/STORE_FILE = 'dup-index\.json'/.test(readFileSync(join(ROOT, 'plugins', 'privhub-svc-dup', 'src', 'core.ts'), 'utf8')),
+  '上传查重索引落在 data/dup-index.json（派生数据，损坏即隔离存证）')
+
+// main.ts 装配 svc-dup，且登记进 CORE_PLUGINS（L2 服务必须早于消费方 files 挂载）
+ok(/'privhub-svc-dup'/.test(mainSrcCap), 'main.ts 的 CORE_PLUGINS 登记了 privhub-svc-dup')
+ok(/await mount\(svcDup/.test(mainSrcCap), 'main.ts 挂载 svcDup（L2 服务，早于 files 上传路由消费）')
 
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)

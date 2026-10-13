@@ -6,6 +6,6 @@
   "slots": ["agent-view"],
   "barItems": [
     { "icon": "🔌", "title": "智能体接入", "slot": "app-iconbar", "view": "agent" },
-    { "icon": "🔌", "title": "智能体密钥", "slot": "admin-nav", "view": "agent", "adminOnly": true }
+    { "icon": "🔌", "title": "智能体密钥", "slot": "admin-nav", "view": "agent", "capFeature": "admin.agent.keys" }
   ]
 }

@@ -14,7 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell-settings'
-export const inject = ['privhub', 'storage']
+export const inject = ['privhub', 'storage', 'cap']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
@@ -74,7 +74,7 @@ export function apply(ctx: Context): void {
       return
     }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可修改设置' })
+    if (!ctx.cap.can(u, 'admin.settings', 'write')) return json(res, 403, { ok: false, error: '仅管理员可修改设置' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     /* D6：设置是「读全量 → 合并 → 写全量」。不串行的话，两个管理员（或同一人两个标签页）

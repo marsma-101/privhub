@@ -29,10 +29,11 @@ import { networkInterfaces } from 'node:os'
 import { VectorStore, docKeyOf } from './vec'
 // 错误文案脱敏：本插件的 catch 把 e.message 原样回给前端（toast / SSE error 帧），
 // 是密钥可能外泄的最后一道边界，与 svc-model 内部同一套规则（W-B/§1.5）。
-import { sanitizeError } from '../../privhub-svc-model/src/index'
+import { sanitizeError, sanitizeParams } from '../../privhub-svc-model/src/index'
+import type { ModelParams } from '../../privhub-svc-model/src/index'
 
 export const name = 'privhub-svc-rag'
-export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'model', 'office', 'search', 'acl']
+export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'model', 'office', 'search', 'acl', 'cap']
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 const CORPUS_DIR = join(rootDir, 'data', 'rag-corpus')
@@ -739,6 +740,8 @@ async function dupCheckProject(ctx: Context, project: string, user: UserRecord):
   nearGroups: Array<{ kind: 'near' | 'version'; label?: string; score?: number; reason: string; docs: Array<{ path: string; size: number; updated: number; canDelete: boolean }> }>
   nearGroupsTotal: number
   caps: { nearGroups: number }
+  /** §3.5/Q7：当前用户能否把「近似 / 版本族」也勾进删除流程（功能开关 dup.near.delete）。 */
+  allowNearDelete: boolean
 }> {
   // ① 文件层：同名同大小（先按文件级 ACL 摘除无权查看的文件）
   const files = (await walkProjectFiles(ctx, project)).filter((f) => aclAllows(ctx, user, project, f.path))
@@ -835,7 +838,12 @@ async function dupCheckProject(ctx: Context, project: string, user: UserRecord):
     .filter((g) => g.docs.length >= 2)
   const nearGroups = nearAll.slice(0, NEAR_GROUP_CAP)
 
-  return { project, fileGroups, contentGroups, nearGroups, nearGroupsTotal: nearAll.length, caps: { nearGroups: NEAR_GROUP_CAP } }
+  /* Q7（§3.5）：近似/版本族默认**只提示**。能不能勾选删除由功能开关 `dup.near.delete` 决定
+   * —— 管理员恒可，普通用户默认关。这里判一次、随结果回带，界面据此决定要不要渲染勾选框
+   * （真正的裁决仍在 /api/delete 的 ACL 守卫上；本开关控制的是"能不能勾"，不是"能不能删"）。 */
+  const allowNearDelete = ctx.cap.can(user, 'dup.near.delete', 'write')
+
+  return { project, fileGroups, contentGroups, nearGroups, nearGroupsTotal: nearAll.length, caps: { nearGroups: NEAR_GROUP_CAP }, allowNearDelete }
 }
 
 /* ============ 策展动作 ============ */
@@ -1229,10 +1237,10 @@ async function ragPrepare(ctx: Context, user: UserRecord, question: string, coll
 }
 
 /** 组装问答上下文并调用 LLM（mock 可测）。非流式的一次性答复。 */
-async function ragAsk(ctx: Context, user: UserRecord, question: string, collection: string, history: AskMessage[] = []): Promise<{ answer: string; sources: RagSource[]; mode: RetrievalMode; modeReason: string }> {
+async function ragAsk(ctx: Context, user: UserRecord, question: string, collection: string, history: AskMessage[] = [], params?: ModelParams): Promise<{ answer: string; sources: RagSource[]; mode: RetrievalMode; modeReason: string }> {
   const prep = await ragPrepare(ctx, user, question, collection, history)
   if (prep.messages === null) return { answer: prep.answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason }
-  const answer = await ctx.model.chat(ctx, prep.messages)
+  const answer = await ctx.model.chat(ctx, prep.messages, params ? { params } : {})
   return { answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason }
 }
 
@@ -1467,7 +1475,9 @@ export function apply(ctx: Context): void {
   const adminOf = (req: IncomingMessage, res: ServerResponse): { username: string; role: string } | null => {
     const u = svc.requireUser(req, res)
     if (!u) return null
-    if (u.role !== 'admin') { json(res, 403, { ok: false, error: '仅管理员' }); return null }
+    // 状态/清单类端点只读（GET → read），摄取/策展/向量化等写端点要 write
+    const need = req.method === 'GET' ? 'read' : 'write'
+    if (!ctx.cap.can(u, 'admin.rag', need)) { json(res, 403, { ok: false, error: '仅管理员' }); return null }
     return u
   }
 
@@ -1504,27 +1514,88 @@ export function apply(ctx: Context): void {
 
   /* ---------- API ---------- */
 
-  /* 模型配置（admin）：运维在此填 baseURL+模型名即生效 */
+  /* 模型配置（admin）：运维在此填 baseURL+模型名即生效。
+   * Q1 §1.2 起支持**多 Profile**：GET 回 profiles 列表 + activeId（并把当前 profile 摊平成
+   * config，兼容老前端读 config.llm）；POST 兼容旧的扁平形状（写进当前 profile）。 */
+  const maskKey = (v: string | undefined): string | undefined => (v ? v.slice(0, 4) + '…' + v.slice(-4) : undefined)
+  const profileView = (p: { id: string; name: string; llm: any; embedding: any; params?: unknown }): unknown => ({
+    id: p.id,
+    name: p.name,
+    llm: { ...p.llm, apiKey: maskKey(p.llm?.apiKey) },
+    embedding: { ...p.embedding, apiKey: maskKey(p.embedding?.apiKey) },
+    params: p.params ?? {},
+  })
+  const configView = (): unknown => {
+    const cfg = ctx.model.getConfig()
+    return {
+      ok: true,
+      configured: cfg !== null,
+      activeId: ctx.model.activeProfileId(),
+      maxRetries: cfg?.maxRetries ?? 2,
+      config: cfg ? { llm: { ...cfg.llm, apiKey: maskKey(cfg.llm.apiKey) }, embedding: { ...cfg.embedding, apiKey: maskKey(cfg.embedding.apiKey) }, params: cfg.params, maxRetries: cfg.maxRetries } : null,
+      profiles: ctx.model.listProfiles().map(profileView),
+      corrupt: ctx.model.isCorrupt(),
+    }
+  }
   svc.route('/privhub/api/model/config', async (req, res) => {
     const admin = adminOf(req, res)
     if (!admin) return
-    if (req.method === 'GET') {
-      const cfg = ctx.model.getConfig()
-      const mask = (v: string | undefined): string | undefined => (v ? v.slice(0, 4) + '…' + v.slice(-4) : undefined)
-      json(res, 200, { ok: true, configured: cfg !== null, config: cfg ? { llm: { ...cfg.llm, apiKey: mask(cfg.llm.apiKey) }, embedding: { ...cfg.embedding, apiKey: mask(cfg.embedding.apiKey) }, maxRetries: cfg.maxRetries } : null })
-      return
-    }
+    if (req.method === 'GET') { json(res, 200, configView()); return }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     let body: any
     try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
     try {
       await ctx.model.saveConfig(ctx, body)
       void audit(ctx, admin.username, 'model-config', 'model.json', 'llm=' + (body.llm?.baseURL ?? '') + ' emb=' + (body.embedding?.baseURL ?? ''))
-      json(res, 200, { ok: true })
+      json(res, 200, { ok: true, ...configView() as object })
     } catch (e) {
       json(res, 400, { ok: false, error: e instanceof Error ? e.message : '配置失败' })
     }
   }, 'model-config')
+
+  /* Profile 增删改切（admin）：多套模型配置的日常操作。
+   * body: 新增/更新 { id?, name, llm, embedding, params?, activate? }；删除 { id }；切换 { id } */
+  const profileBody = async (req: IncomingMessage, res: ServerResponse): Promise<any | undefined> => {
+    try { return JSON.parse(await readBody(req)) } catch { json(res, 400, { ok: false, error: 'invalid json' }); return undefined }
+  }
+  svc.route('/privhub/api/model/profile', async (req, res) => {
+    const admin = adminOf(req, res)
+    if (!admin) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const body = await profileBody(req, res)
+    if (body === undefined) return
+    try {
+      const r = await ctx.model.upsertProfile(ctx, body)
+      void audit(ctx, admin.username, 'model-profile-save', 'model.json', 'id=' + (body.id ?? '(new)') + ' name=' + (body.name ?? '') + ' created=' + r.created)
+      json(res, 200, { ok: true, ...configView() as object })
+    } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '保存失败' }) }
+  }, 'model-profile-save')
+
+  svc.route('/privhub/api/model/profile/delete', async (req, res) => {
+    const admin = adminOf(req, res)
+    if (!admin) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const body = await profileBody(req, res)
+    if (body === undefined) return
+    try {
+      await ctx.model.removeProfile(ctx, String(body.id ?? ''))
+      void audit(ctx, admin.username, 'model-profile-delete', 'model.json', 'id=' + (body.id ?? ''))
+      json(res, 200, { ok: true, ...configView() as object })
+    } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '删除失败' }) }
+  }, 'model-profile-delete')
+
+  svc.route('/privhub/api/model/activate', async (req, res) => {
+    const admin = adminOf(req, res)
+    if (!admin) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const body = await profileBody(req, res)
+    if (body === undefined) return
+    try {
+      await ctx.model.setActive(ctx, String(body.id ?? ''))
+      void audit(ctx, admin.username, 'model-activate', 'model.json', 'id=' + (body.id ?? ''))
+      json(res, 200, { ok: true, ...configView() as object })
+    } catch (e) { json(res, 400, { ok: false, error: e instanceof Error ? e.message : '切换失败' }) }
+  }, 'model-activate')
 
   /* 模型自检（admin）
    *   ?force=1 → 不吃 60s 缓存
@@ -1675,6 +1746,10 @@ export function apply(ctx: Context): void {
     // 多轮上下文（§1.6）：形状不可信就当作没有历史，绝不因为一段脏历史而让问答失败。
     // 下面 SSE 与 JSON 两条分支共用这一份（同一路由、同一鉴权，只是送出方式不同）。
     const history = sanitizeHistory(body.history)
+    /* 模型参数覆盖（Q2）：knobs 全做出来，但**普通用户默认不可**改（功能开关 `ai.params`，
+     * 管理员恒可）。开关关掉时**静默忽略**用户提交的参数（用管理员配置），不报错 —— 免得
+     * 旧前端带了个参数就整个问答失败。清洗（夹界限）在 svc-model 内统一做。 */
+    const params = ctx.cap.can(u, 'ai.params', 'write') ? (sanitizeParams(body.params) as ModelParams) : undefined
 
     /* 流式分支：**同一个路由、同一段鉴权与权限范围**，只是一个 query/body 开关。
      * 这样不新增权限面（requireUser + ragPrepare 内的 ACL 过滤原样生效），
@@ -1709,7 +1784,7 @@ export function apply(ctx: Context): void {
           answer = prep.answer          // 语料为空：如实说明，不请求模型
           send('delta', { text: answer })
         } else {
-          answer = await ctx.model.chat(ctx, prep.messages, { stream: true, onChunk: (d) => send('delta', { text: d }) })
+          answer = await ctx.model.chat(ctx, prep.messages, { stream: true, onChunk: (d) => send('delta', { text: d }), ...(params ? { params } : {}) })
         }
         send('done', { answer, sources: prep.sources, mode: prep.mode, modeReason: prep.modeReason })
         void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + prep.sources.length + ' mode=' + prep.mode + ' stream=1')
@@ -1723,7 +1798,7 @@ export function apply(ctx: Context): void {
     }
 
     try {
-      const r = await ragAsk(ctx, u, question, collection, history)
+      const r = await ragAsk(ctx, u, question, collection, history, params)
       void audit(ctx, u.username, 'rag-ask', '', 'q=' + question.slice(0, 40) + ' sources=' + r.sources.length + ' mode=' + r.mode)
       json(res, 200, { ok: true, answer: r.answer, sources: r.sources, mode: r.mode, modeReason: r.modeReason })
     } catch (e) {

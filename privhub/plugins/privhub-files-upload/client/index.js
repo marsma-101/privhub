@@ -10,6 +10,9 @@
  * 目标目录 = payload.path（文件夹 ⋯ 菜单指定的目录）或当前导航位置（nav.project / nav.path），
  * 同名文件由服务端返回 409 拒绝（不静默覆盖）。
  *
+ * Q6（§3.3）：服务端会按内容指纹回带「与已有文件内容相同 / 高度相似」的提示（duplicates/near），
+ * 这里在全部上传完成后汇总成一条 toast —— 只提示，不阻止、不改名、不自动删。
+ *
  * @module privhub-files-upload/client
  */
 
@@ -96,6 +99,10 @@ const UploadController = {
       const base = baseArg !== undefined && baseArg !== null ? String(baseArg) : nav.path || ''
       let okCount = 0
       const fails = []
+      /* Q6（§3.3）上传期重复提示：服务端在同项目内查到与本次上传内容相同 / 高度相似的
+       * 已有文件时，会在响应里回带 duplicates / near（功能开关 dup.prompt 关掉就不回带）。
+       * 这里只**汇总提示**，不阻止上传、不自动改名 —— 两份文件各自独立存在，由用户决定留哪份。 */
+      const dupHits = []
       // 预收集需要创建的目录（相对项目根，含目标目录前缀；按深度排序去重）
       const dirSet = new Set()
       for (const f of files) {
@@ -127,6 +134,12 @@ const UploadController = {
           const j = await r.json().catch(() => ({}))
           if (j.ok) {
             okCount++
+            const nDup = (j.duplicates || []).length
+            const nNear = (j.near || []).length
+            if (nDup || nNear) {
+              const hit = (j.duplicates || [])[0] || (j.near || [])[0]
+              dupHits.push({ name, rel, match: hit ? hit.path : '', exact: nDup > 0, near: nNear > 0 })
+            }
             bus.emit('upload:progress', { name, sub, status: 'ok', index: nav.uploadDone, total: files.length })
             // file:uploaded：触发下游（防病毒 F27 / 审计 F13 等，当前无监听者，安全）
             bus.emit('file:uploaded', { project: nav.project, path: (nav.path ? nav.path + '/' : '') + rel, name })
@@ -144,6 +157,14 @@ const UploadController = {
       if (fails.length === 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个文件')
       else if (okCount > 0) window.PrivHub.toast('已上传 ' + okCount + '/' + files.length + ' 个，失败 ' + fails.length + ' 个', 'warn')
       else window.PrivHub.toast('上传失败 ' + fails.length + ' 个文件', 'error')
+      /* Q6：重复内容提示（上传已完成，这里只是一条提醒；用 warn 色，不打断）。 */
+      if (dupHits.length) {
+        const d = dupHits[0]
+        const tail = dupHits.length > 1 ? '（等 ' + dupHits.length + ' 个文件）' : ''
+        window.PrivHub.toast(
+          (d.exact ? '内容重复：' : '内容高度相似：') + d.name + ' 与已有 ' + (d.match || '文件')
+          + (d.exact ? ' 内容相同' : ' 相似') + tail + '，两份都保留了，可自行删除其一', 'warn')
+      }
       // 上传完成后导航到目标目录（看到结果）；同目录时等价于刷新
       await nav.openDir(nav.project, base)
       this._dirTarget = null

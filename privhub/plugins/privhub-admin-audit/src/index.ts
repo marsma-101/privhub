@@ -20,7 +20,7 @@ import { json } from '../../privhub-core/src/index'
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
 
 export const name = 'privhub-admin-audit'
-export const inject = ['privhub', 'audit', 'eventBus']
+export const inject = ['privhub', 'audit', 'eventBus', 'cap']
 
 /** 环形缓冲上限（F15 实时刷新窗口）。 */
 const RING_MAX = 50
@@ -42,11 +42,11 @@ export function apply(ctx: Context): void {
     return () => off()
   })
 
-  /* 管理员校验辅助 */
+  /* 管理员校验辅助（审计面板是只读界面 → 需要 admin.audit 的 read 即可） */
   const adminOnly = (req: any, res: any): boolean => {
     const u = svc.requireUser(req, res)
     if (!u) return false
-    if (u.role !== 'admin') { json(res, 403, { ok: false, error: '仅管理员' }); return false }
+    if (!ctx.cap.can(u, 'admin.audit', 'read')) { json(res, 403, { ok: false, error: '仅管理员' }); return false }
     return true
   }
 

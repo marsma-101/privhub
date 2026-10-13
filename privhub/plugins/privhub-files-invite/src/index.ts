@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-invite'
-export const inject = ['storage', 'privhub']
+export const inject = ['storage', 'privhub', 'cap']
 
 interface Invite {
   code: string
@@ -86,7 +86,7 @@ export function apply(ctx: Context): void {
   const adminOnly = (req: IncomingMessage, res: ServerResponse): { username: string } | null => {
     const u = svc.requireUser(req, res)
     if (!u) return null
-    if (u.role !== 'admin') { json(res, 403, { ok: false, error: '仅管理员' }); return null }
+    if (!ctx.cap.can(u, 'admin.invite', 'write')) { json(res, 403, { ok: false, error: '仅管理员' }); return null }
     return u
   }
 

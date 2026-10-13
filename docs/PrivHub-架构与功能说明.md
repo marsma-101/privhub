@@ -30,12 +30,12 @@
 
 | 装配方式 | 数量 | 说明 |
 |---|---|---|
-| 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 17 项） | 17 | L2 能力 Service 10 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
-| L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 26 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2） |
-| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 7 | `admin-audit-panel` / `admin-console`※ / `files-upload` / `files-upload-queue` / `files-wiki` / `shell-agent-console` / `trash-ui` |
+| 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 21 项） | 21 | L2 能力 Service 14 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
+| L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 33 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2） |
+| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 9 | `admin-audit-panel` / `admin-console`※ / `files-upload` / `files-upload-queue` / `files-wiki` / `shell`※ / `shell-home` / `task-calendar` / `trash-ui` |
 
-→ **43 个含 `src/index.ts` + 7 个纯前端 = 50**。其中 **32 个插件带 `client/manifest.json`**（前端可挂载）；
-43 个有 `src/` 的插件里，**31 个真正注册 HTTP 路由**，其余仅提供注入能力或纯前端。
+→ **53 个含 `src/index.ts` + 9 个纯前端 = 62**。其中 **39 个插件带 `client/manifest.json`**（前端可挂载）；
+53 个有 `src/` 的插件里，**38 个注册 HTTP 路由**，其余仅提供注入能力或纯前端。
 
 > ※ `admin-console`（v3.1.0 新增）是**纯前端插件**：无 `src/` 故不参与服务端装配，只提供
 > 管理控制台外壳与 `admin-nav` / `admin-*` slot 契约。
@@ -47,25 +47,25 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  L3 功能插件（32 个 = 26 自动发现 + 5 纯前端 + admin-acl 守卫） │
-│  admin-acl(细粒度ACL) admin-audit(审计数据)                   │
-│  admin-audit-panel(审计UI) auth-watermark(水印)               │
-│  files-agent(智能体API) files-comments(批注)                  │
-│  files-dataview(数据看板) files-edit-md(MD编辑)               │
-│  files-explorer-v3(V3布局：树+标签页+详情) files-export        │
-│  files-fulltext(全文) files-invite(邀请链接) files-kg(图谱)    │
-│  files-mdpage(md→HTML) files-office(读取) files-office-ai      │
-│  files-office-ui(人工编辑) files-office2(原生观感+独占锁)      │
-│  files-publish(内网发布) files-search files-tags files-template│
-│  files-upload files-upload-queue files-versions(版本历史)      │
-│  files-wiki git-backup(自动备份) shell-favorites              │
-│  shell-recent shell-settings trash-ui svc-rag(RAG 总台)        │
+│  L3 功能插件（33 个，自动发现装配）                          │
+│  admin-audit admin-cap auth-watermark                        │
+│  files-agent files-comments files-dataview                   │
+│  files-edit-md files-explorer-v3 files-export                │
+│  files-fulltext files-invite files-kg                        │
+│  files-lock files-mdpage files-office                        │
+│  files-office-ai files-office-ui files-office2               │
+│  files-publish files-refcheck files-search                   │
+│  files-tags files-template files-versions                    │
+│  git-backup project-dashboard shell-agent-console            │
+│  shell-favorites shell-recent shell-settings                 │
+│  svc-rag task-board webhook                                  │
 ├─────────────────────────────────────────────────────────────┤
-│  L2 能力 Service（10 个，手动挂载）                           │
+│  L2 能力 Service（14 个，手动挂载）                           │
 │  svc-storage(S7加密) svc-events(事件注册表) svc-audit(S1审计)  │
 │  svc-acl(S2 ACL) svc-watermark(S3) svc-search(S4 搜索)       │
-│  svc-meta(S5 元数据) svc-collab(S6 协同骨架) svc-office       │
-│  svc-model(模型接入层)                                       │
+│  svc-meta(S5 元数据) svc-collab(S6 协同骨架) svc-lock(编辑锁)  │
+│  svc-office svc-model(模型接入层) svc-links(链接登记表 Q4)      │
+│  svc-dup(上传查重索引 Q6) svc-cap(功能权限开关)                │
 ├─────────────────────────────────────────────────────────────┤
 │  L1 六枢纽 + 底座（6 个，手动挂载）                            │
 │  core(用户/会话/文件核心) auth files trash admin shell(骨架)    │
@@ -160,14 +160,14 @@
 | 多标签页 | VS Code 式文件级标签栏（explorer-v3 自带），刷新恢复，**按用户名隔离**（防跨用户串项目），软上限 30 |
 | 内嵌编辑 | txt/md/json 等文本文件打开即编辑（Trae 式），Ctrl+S 保存；md/Office 编辑入口统一在「✏️ 编辑」 |
 | 状态栏 | 「共 N 项 · 已选 M 项 · 合计大小」 |
-| 增强能力 | 行内重命名、复制副本、移动选择器、图片 lightbox、新建向导（格式→命名→目录）、查重（M2.6 起并入 AI 工具「🔁 查重」，文件页顶栏直达）、邀请链接、版本历史（20 版）、md→HTML 页面、内网发布、md 批注评论、数据看板 |
+| 增强能力 | 行内重命名、复制副本、移动选择器、图片 lightbox、新建向导（格式→命名→目录）、上传期内容查重（Q6：同内容/高度相似即时 toast 提示，只提示不落盘）、查重（M2.6 起并入 AI 工具「🔁 查重」，文件页顶栏直达）、邀请链接、版本历史（20 版）、md→HTML 页面、内网发布、md 批注评论、数据看板 |
 
 ### 3.2 知识库主线
 | 功能 | 说明 |
 |---|---|
 | MD 在线编辑（F16） | frontmatter + 双链 + 版本历史（20 版）+ 冲突检测；txt 等纯文本也支持内嵌编辑 |
 | 全文搜索（F17） | BM25 + CJK bigram，snippet 高亮，**项目内检索**；搜文件名的普通搜索走 files-search |
-| 知识图谱（F18） | 双链+标签关联图，社区发现，点击节点定位文件 |
+| 知识图谱（F18） | 双链+标签关联图，社区发现，点击节点定位文件；**双链走 `svc-links` 登记表解析（Q4）：被引用的文件改名后，图谱边与反链不断**，`GET /api/kg/resolve` 供界面按老名字定位 |
 | 标签（F19）/ 模板（F20） | 打标筛选；会议记录/需求等模板 + 管理 |
 | 导出（F21） | MD → HTML/PDF/Word |
 | 知识库视图（F22） | README.md 渲染为 Wiki 页，双链可点击定位 |

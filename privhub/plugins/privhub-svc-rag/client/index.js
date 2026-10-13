@@ -385,9 +385,12 @@ const RagDupPanel = {
   computed: {
     fileGroups() { return (this.res && this.res.fileGroups) || [] },
     contentGroups() { return (this.res && this.res.contentGroups) || [] },
-    /* 近似 / 版本族（§3.2-A3）：与治理页同一段算法，只作提示，不参与"每组保留1个"的删除流程 */
+    /* 近似 / 版本族（§3.2-A3）：与治理页同一段算法。默认**只提示**；
+     * Q7 开关 dup.near.delete 打开后（管理员恒可）才允许勾选删除。 */
     nearGroups() { return (this.res && this.res.nearGroups) || [] },
     nearGroupsTotal() { return (this.res && this.res.nearGroupsTotal) || 0 },
+    /** §3.5/Q7：能否勾选「近似 / 版本族」参与删除（服务端已按功能开关判好，随结果回带）。 */
+    canNearDelete() { return !!(this.res && this.res.allowNearDelete) },
     /* 只有证明内容一致的组才敢叫"重复"：旧的 groupCount 把所有同名同大小都算进去，
      * 于是"名字一样但内容不同"的两份也被报成重复 —— 这正是本批要修的误报。 */
     sameGroups() { return this.fileGroups.filter((g) => g.verdict === 'same') },
@@ -444,6 +447,8 @@ const RagDupPanel = {
           const keep = {}
           for (let g = 0; g < (r.fileGroups || []).length; g++) keep['f' + g] = 0
           for (let g = 0; g < (r.contentGroups || []).length; g++) keep['c' + g] = 0
+          // 近似/版本族默认保留第一份（勾选删除默认全空 ⇒ 只提示、不动手）
+          for (let g = 0; g < (r.nearGroups || []).length; g++) keep['n' + g] = 0
           this.keep = keep
           this.del = {}
           this.showImpact = false
@@ -467,7 +472,7 @@ const RagDupPanel = {
         del.push(fi)
         // 若删的是当前保留项 → 保留自动切到组内第一个未删的
         if (this.keep[k] === fi) {
-          const files = (section === 'f' ? this.fileGroups : this.contentGroups)[gi].files
+          const files = this.filesOf(section, gi)
           for (let j = 0; j < files.length; j++) {
             if (j !== fi && del.indexOf(j) < 0) { this.keep[k] = j; break }
           }
@@ -486,12 +491,20 @@ const RagDupPanel = {
       if (this.isDel(section, gi, fi)) return base + 'background:rgba(248,81,73,.07);opacity:.6;'
       return base
     },
-    /** 由 keep/del 的键（'f3' / 'c2'）取回所属组对象 —— 删除前校验与影响预览都要用 */
+    /** 由 keep/del 的键（'f3' / 'c2' / 'n1'）取回所属组对象 —— 删除前校验与影响预览都要用。
+     *  近似/版本族用 `docs` 承载成员，这里统一成 `files` 别名，后面的删除流程就与精确类共用一套。 */
     groupOf(k) {
       const section = k[0]
       const gi = Number(k.slice(1))
-      const groups = section === 'f' ? this.fileGroups : section === 'c' ? this.contentGroups : []
-      return groups[gi] || null
+      const groups = section === 'f' ? this.fileGroups : section === 'c' ? this.contentGroups : section === 'n' ? this.nearGroups : []
+      const g = groups[gi]
+      if (!g) return null
+      return section === 'n' ? { ...g, files: g.docs || [], name: g.label || '近似 / 版本族' } : g
+    },
+    /** 某一组的成员数组（精确/内容/近似通用）。 */
+    filesOf(section, gi) {
+      const g = this.groupOf(section + gi)
+      return g ? (g.files || []) : []
     },
     /** §3.5 一键保留策略：对全部"内容一致"的组批量选保留项（仍可手动改），默认保留最新。 */
     applyStrategy() {
@@ -530,11 +543,15 @@ const RagDupPanel = {
       }
       build('f', this.fileGroups)
       build('c', this.contentGroups)
-      this.keep = keep
+      /* Q7：近似/版本族**不参与**"一键套用"（默认不勾、只提示）——
+       * 但用户若已手动勾了，保留那些勾选，不因套用策略而被清掉。 */
+      for (const [k, v] of Object.entries(this.del)) if (k[0] === 'n') del[k] = v
+      this.keep = { ...this.keep, ...keep }
       this.del = del
       // 组内混有"无权删除"的文件时，如实告知：它们会被跳过，不会被静默提交
       const blocked = this.fileGroups.concat(this.contentGroups).flatMap((g) => (g.files || []).filter((f) => f.canDelete === false))
-      const n = Object.values(this.del).reduce((s, a) => s + a.length, 0)
+      // 计数只算本次策略标记的精确类（近似类被保留、不算进"策略标记了 N 项"）
+      const n = Object.keys(keep).reduce((s, k) => s + ((del[k] || []).length), 0)
       window.PrivHub.toast(
         n === 0
           ? '已按策略标记保留项，但可删除项为空（可能都无权删除或每组只剩一份）'
@@ -711,10 +728,12 @@ const RagDupPanel = {
           </div>
         </div>
 
-        <!-- 近似 / 版本族（§3.2-A3）：与治理页同一段算法，仅作提示，不参与"每组保留1个" -->
+        <!-- 近似 / 版本族（§3.2-A3）：与治理页同一段算法。Q7：默认**只提示**（不勾选）；
+             dup.near.delete 打开（管理员恒可）后，才渲染"保留/删除"控件。 -->
         <div v-if="nearGroups.length" :style="S.section">
           <div :style="S.secTitle">🧩 近似 / 版本族（{{ nearGroups.length }} 组）
-            <span style="font-weight:400;color:var(--muted);font-size:12px;">内容高度相似或同一份文件的不同版本 —— **仅供人工核对**，不作删除建议</span>
+            <span v-if="canNearDelete" style="font-weight:400;color:var(--muted);font-size:12px;">内容高度相似或同一份文件的不同版本 —— 默认不勾选，请核对后再决定</span>
+            <span v-else style="font-weight:400;color:var(--muted);font-size:12px;">内容高度相似或同一份文件的不同版本 —— 本页只作提示，不提供删除</span>
           </div>
           <div v-for="(g, ni) in nearGroups" :key="'n' + ni" class="rag-dup-card" :style="[S.card,{marginBottom:'12px',padding:'10px 12px'}]">
             <div style="display:flex;align-items:center;gap:10px;padding:2px 4px 8px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);flex-wrap:wrap;">
@@ -722,10 +741,19 @@ const RagDupPanel = {
               <span v-else>🕓 版本族「{{ g.label }}」</span>
               <span v-if="g.score != null" :style="S.badgeWarn">相似度 {{ Math.round(g.score * 100) }}%</span>
               <span style="color:var(--muted);font-weight:400;">{{ g.docs.length }} 份</span>
+              <span v-if="!canNearDelete" :style="S.badgeMuted">只提示</span>
               <span style="flex:1"></span>
               <span style="color:var(--muted);font-weight:400;font-size:11.5px;">{{ g.reason }}</span>
             </div>
-            <div v-for="(f, fi) in g.docs" :key="'n' + ni + '-' + fi" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line);font-size:12.5px;">
+            <div v-for="(f, fi) in g.docs" :key="'n' + ni + '-' + fi" :style="canNearDelete ? rowStyle('n', ni, fi) : 'display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line);font-size:12.5px;'">
+              <label v-if="canNearDelete" style="display:flex;align-items:center;gap:4px;color:var(--accent);font-size:12px;cursor:pointer;flex-shrink:0;">
+                <input type="radio" :name="'dup-keep-n-' + ni" :checked="keep['n'+ni]===fi" @click="keepFile('n',ni,fi)" /> 保留
+              </label>
+              <label v-if="canNearDelete"
+                     :style="{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',flexShrink:0,color:'#f85149',cursor: f.canDelete === false ? 'not-allowed' : 'pointer', opacity: f.canDelete === false ? .45 : 1}"
+                     :title="f.canDelete === false ? '你没有该文件的删除权限' : ''">
+                <input type="checkbox" :checked="isDel('n',ni,fi)" :disabled="f.canDelete === false" @click="toggleDel('n',ni,fi)" /> 删除
+              </label>
               <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);">{{ f.path }}</span>
               <span v-if="f.canDelete === false" style="color:#d29922;font-size:11px;flex-shrink:0;">🔒 只读</span>
               <span style="color:var(--muted);font-size:11.5px;flex-shrink:0;">{{ fmtDate(f.updated) }}</span>
@@ -783,7 +811,7 @@ function makeAdminView() {
   return {
     name: 'rag-admin-view',
     components: { HelpTip, RagCorpusPanel, RagKeysPanel },
-    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, mForm: { llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, qaTurns: [], qaStream: true, qaErr: '', discHosts: '', discBusy: false, discResult: null, discSel: {} } },
+    data() { return { S, HELP, HELP_Q, HINT_BAR, badge, fmtDate, helpKey: '', tab: 'overview', status: null, pending: null, users: [], allProjects: [], projects: [], keys: [], trash: [], modelCfg: null, profiles: [], activeId: null, mForm: { id: '', name: '', llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 }, embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 }, params: { temperature: '', topP: '', maxTokens: '' }, maxRetries: 2 }, keyForm: { name: '', username: '', project: '', all: false }, trashUser: '', building: false, saving: false, sel: {}, mergeSel: {}, vecStatus: null, vecBusy: false, vecTimer: null, qaQuestion: '', qaCollection: 'all', qaBusy: false, qaResult: null, qaTurns: [], qaStream: true, qaErr: '', qaParams: { temperature: '', topP: '', maxTokens: '' }, discHosts: '', discBusy: false, discResult: null, discSel: {} } },
     computed: {
       healthTxt() {
         const h = (x) => (x?.status === 'ok' ? '✅ ok' : x?.status === 'unconfigured' ? '⚪ 未配置' : x?.status === 'unreachable' ? '❌ 不可达' : x?.status === 'timeout' ? '⏱ 超时' : x?.status === 'auth-error' ? '🔐 鉴权失败' : x?.status === 'model-missing' ? '⚠️ 模型名不在服务清单' : x?.status === 'embed-error' ? '⚠️ 向量调用失败（端点通）' : '❓ ' + (x?.status || '未知'))
@@ -796,6 +824,8 @@ function makeAdminView() {
       },
       /** 会话轮数（§1.6）：只数用户提问，界面上「N 轮对话」才说得通 */
       qaRounds() { return this.qaTurns.filter((t) => t.role === 'user').length },
+      /** 能否自调生成参数（Q2）：功能开关 `ai.params`，管理员恒可、普通用户默认关。 */
+      canParams() { return !!(window.PrivHub.capCan && window.PrivHub.capCan('ai.params', 'write')) },
       keyUsers() {
         // 生成表单：用户及其可见项目
         return this.users.map((u) => ({ username: u.username, projects: u.projects || [] }))
@@ -846,6 +876,17 @@ function makeAdminView() {
       qaHistoryPayload() {
         return this.qaTurns.filter((t) => t.content).map((t) => ({ role: t.role, content: t.content }))
       },
+      /** 本次问答的生成参数覆盖（Q2）：仅在 `ai.params` 允许时收集；空字段不送。
+       * 服务端会再夹一次界限，且无权限时静默忽略 —— 这里只负责少送没填的项。 */
+      qaParamsPayload() {
+        if (!this.canParams) return undefined
+        const out = {}
+        for (const k of ['temperature', 'topP', 'maxTokens']) {
+          const v = this.qaParams[k]
+          if (v !== '' && v !== null && v !== undefined) out[k] = v
+        }
+        return Object.keys(out).length ? out : undefined
+      },
       newChat() {
         this.qaTurns = []
         this.qaResult = null
@@ -863,7 +904,7 @@ function makeAdminView() {
         this.qaQuestion = ''
         try {
           if (!this.qaStream) {
-            const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection, history }) })
+            const r = await api('/privhub/api/rag/ask', { method: 'POST', body: JSON.stringify({ question: q, collection: this.qaCollection, history, params: this.qaParamsPayload() }) })
             if (r.ok) {
               this.qaTurns.push({ role: 'assistant', content: r.answer, sources: r.sources || [], mode: r.mode || '', modeReason: r.modeReason || '' })
               window.PrivHub.toast((r.sources || []).length + ' 处引用', 'success')
@@ -893,7 +934,7 @@ function makeAdminView() {
         let res
         try {
           res = await fetch('/privhub/api/rag/ask', {
-            method: 'POST', headers, body: JSON.stringify({ question: q, collection: this.qaCollection, stream: true, history: history || [] }),
+            method: 'POST', headers, body: JSON.stringify({ question: q, collection: this.qaCollection, stream: true, history: history || [], params: this.qaParamsPayload() }),
           })
         } catch (e) {
           this.qaErr = '网络错误：' + ((e && e.message) || '无法连接服务器')
@@ -1014,20 +1055,81 @@ function makeAdminView() {
         if (r.ok) { window.PrivHub.toast('已生效', 'success'); await this.refresh() }
         else window.PrivHub.toast(r.error || '操作失败', 'error')
       },
+      /**
+       * 读取模型配置（Q1 §1.2 多 Profile）。
+       * 载入 profile 列表 + 当前生效 id，并把「正在编辑的那套」填进表单：优先保留正在编辑的项
+       * （切 tab 回来不丢未保存改动），否则选当前生效项，再否则第一项。
+       */
       async loadModel() {
         const c = await api('/privhub/api/model/config')
-        if (c.ok && c.config) {
-          this.mForm.llm = { ...c.config.llm }; this.mForm.embedding = { ...c.config.embedding }; this.mForm.maxRetries = c.config.maxRetries
+        if (!c.ok) return
+        this.profiles = c.profiles || []
+        this.activeId = c.activeId || null
+        const editId = this.mForm.id && this.profiles.some((p) => p.id === this.mForm.id) ? this.mForm.id : ''
+        const pick = editId || this.activeId || (this.profiles[0] && this.profiles[0].id) || ''
+        if (pick) { this.selectProfile(pick); return }
+        const cfg = c.config
+        this.mForm = {
+          id: '', name: '',
+          llm: cfg ? { ...cfg.llm } : { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 },
+          embedding: cfg ? { ...cfg.embedding } : { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 },
+          params: { temperature: '', topP: '', maxTokens: '', ...(cfg && cfg.params ? cfg.params : {}) },
+          maxRetries: c.maxRetries ?? 2,
         }
       },
+      /** 把某个 profile 填进编辑表单（maxRetries 是全局项，原样保留）。 */
+      selectProfile(id) {
+        const p = this.profiles.find((x) => x.id === id); if (!p) return
+        this.mForm = {
+          id: p.id, name: p.name,
+          llm: { ...p.llm }, embedding: { ...p.embedding },
+          params: { temperature: '', topP: '', maxTokens: '', ...(p.params || {}) },
+          maxRetries: this.mForm.maxRetries,
+        }
+      },
+      /** 清空表单，进入「新建一套」。 */
+      newProfile() {
+        this.mForm = {
+          id: '', name: '',
+          llm: { baseURL: '', apiKey: '', model: '', timeoutMs: 60000 },
+          embedding: { baseURL: '', apiKey: '', model: '', timeoutMs: 30000 },
+          params: { temperature: '', topP: '', maxTokens: '' },
+          maxRetries: this.mForm.maxRetries,
+        }
+      },
+      /** 保存正在编辑的那套（新增或更新）；新建时自动设为当前。 */
       async saveModel() {
+        if (!String(this.mForm.name || '').trim()) { window.PrivHub.toast('请给这套配置起个名字', 'error'); return false }
         this.saving = true
         try {
-          const r = await api('/privhub/api/model/config', { method: 'POST', body: JSON.stringify(this.mForm) })
-          if (r.ok) { window.PrivHub.toast('模型配置已保存', 'success'); await this.refresh(); return true }
-          window.PrivHub.toast(r.error || '保存失败', 'error')
-          return false
+          const body = { id: this.mForm.id || undefined, name: this.mForm.name, llm: this.mForm.llm, embedding: this.mForm.embedding, params: this.mForm.params, maxRetries: this.mForm.maxRetries, activate: !this.mForm.id }
+          const r = await api('/privhub/api/model/profile', { method: 'POST', body: JSON.stringify(body) })
+          if (r.ok) {
+            this.profiles = r.profiles || []; this.activeId = r.activeId || null
+            const nid = this.mForm.id || this.activeId || ''
+            if (nid) { this.mForm.id = nid; this.selectProfile(nid) }
+            window.PrivHub.toast('模型配置已保存', 'success'); await this.refresh(); return true
+          }
+          window.PrivHub.toast(r.error || '保存失败', 'error'); return false
         } finally { this.saving = false }
+      },
+      /** 把正在编辑的那套设为当前生效。 */
+      async activateProfile() {
+        if (!this.mForm.id) { window.PrivHub.toast('先保存后再设为当前', 'error'); return }
+        const r = await api('/privhub/api/model/activate', { method: 'POST', body: JSON.stringify({ id: this.mForm.id }) })
+        if (r.ok) { this.activeId = r.activeId; window.PrivHub.toast('已切换当前模型配置', 'success'); await this.refresh() }
+        else window.PrivHub.toast(r.error || '切换失败', 'error')
+      },
+      /** 删除正在编辑的那套。 */
+      async deleteProfile() {
+        if (!this.mForm.id) return
+        if (!window.confirm('删除配置「' + (this.mForm.name || this.mForm.id) + '」？')) return
+        const r = await api('/privhub/api/model/profile/delete', { method: 'POST', body: JSON.stringify({ id: this.mForm.id }) })
+        if (!r.ok) { window.PrivHub.toast(r.error || '删除失败', 'error'); return }
+        this.profiles = r.profiles || []; this.activeId = r.activeId || null
+        this.newProfile()
+        if (this.profiles.length) this.selectProfile(this.activeId || this.profiles[0].id)
+        window.PrivHub.toast('已删除', 'success'); await this.refresh()
       },
       /**
        * 自检（W-B/§1.4）。
@@ -1156,6 +1258,22 @@ function makeAdminView() {
       <div v-else-if="tab==='model'">
         <div :style="HINT_BAR">💡 填「模型服务地址 + 模型名」即可驱动 RAG：LLM 负责回答、embedding 负责向量化。不会填？<span :style="HELP_Q" @click="openHelp('model')">?</span> 一步步教；没有真实模型可先填 <b style="color:var(--accent);">mock</b> 体验全流程。</div>
         <div :style="S.section"><div :style="S.secTitle">模型端点（OpenAI 兼容：Ollama / vLLM / LM Studio / DSH 网关）<span :style="HELP_Q" @click="openHelp('model')">?</span></div>
+          <!-- 多 Profile（Q1 §1.2）：一套 = 一份 LLM+embedding+参数。下拉选「正在编辑」的那套，切换/新建/删除在此。 -->
+          <div :style="S.card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:12px;color:var(--muted);">配置：</span>
+            <select :value="mForm.id" :style="S.select" @change="selectProfile($event.target.value)">
+              <option v-if="!profiles.length" value="">（尚未配置）</option>
+              <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}{{ p.id===activeId ? ' · 当前生效' : '' }}</option>
+            </select>
+            <input v-model="mForm.name" placeholder="配置名称（如：本地 Ollama）" :style="[S.input,{width:220}]" />
+            <button class="rag-btn" :style="S.btn" :disabled="saving" @click="saveModel">保存这套</button>
+            <button class="rag-btn" :style="S.btn" :disabled="!mForm.id || mForm.id===activeId" @click="activateProfile">设为当前生效</button>
+            <button class="rag-btn" :style="S.btn" @click="newProfile">新建一套</button>
+            <button v-if="mForm.id" class="rag-btn" :style="S.btn" @click="deleteProfile">删除</button>
+            <span v-if="mForm.id && mForm.id===activeId" style="font-size:12px;color:#3fb950;">✔ 当前生效</span>
+            <span style="flex:1"></span>
+            <span style="font-size:12px;color:var(--muted);">失败重试 <input v-model.number="mForm.maxRetries" type="number" min="0" max="5" :style="[S.input,{width:64}]" /> 次</span>
+          </div>
           <div :style="S.card" style="max-width:760px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--accent);">问答 LLM（chat/completions）</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
@@ -1163,6 +1281,12 @@ function makeAdminView() {
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">模型名</div><input v-model="mForm.llm.model" placeholder="qwen3:8b" :style="S.input" list="rag-llm-models" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">apiKey（可选）</div><input v-model="mForm.llm.apiKey" placeholder="无鉴权可留空" :style="S.input" /></div>
               <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">超时 ms</div><input v-model.number="mForm.llm.timeoutMs" :style="S.input" /></div>
+            </div>
+            <div style="font-size:13px;font-weight:600;margin:14px 0 8px;color:#d29922;">生成参数（留空 = 用上游默认；越界会自动夹到合法区间）</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">temperature（0–2）</div><input v-model="mForm.params.temperature" placeholder="如 0.7" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">top_p（0–1）</div><input v-model="mForm.params.topP" placeholder="如 0.9" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">max_tokens</div><input v-model="mForm.params.maxTokens" placeholder="如 2048" :style="S.input" /></div>
             </div>
             <div style="font-size:13px;font-weight:600;margin:14px 0 8px;color:#3fb950;">向量 embedding（embeddings）</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
@@ -1349,6 +1473,15 @@ function makeAdminView() {
             <input type="checkbox" v-model="qaStream" />
             流式输出（回答边生成边显示，长回答不必干等；关掉则一次性出结果）
           </label>
+          <!-- 生成参数（Q2）：仅当功能开关 ai.params 允许时出现；留空 = 用管理员配置的默认值。 -->
+          <div v-if="canParams" style="margin-top:10px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">⚙ 生成参数（本次问答生效；留空则用管理员配置的默认值）</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;max-width:520px;">
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">temperature（0–2）</div><input v-model="qaParams.temperature" placeholder="默认" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">top_p（0–1）</div><input v-model="qaParams.topP" placeholder="默认" :style="S.input" /></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">max_tokens</div><input v-model="qaParams.maxTokens" placeholder="默认" :style="S.input" /></div>
+            </div>
+          </div>
           <div v-if="qaErr" style="margin-top:10px;font-size:12px;color:var(--danger, #c0392b);background:var(--danger-soft, #fbeaea);border:1px solid var(--line);border-radius:8px;padding:8px 12px;">⚠ {{ qaErr }}</div>
 
           <!-- 会话气泡（§1.6）：历史留在界面上，第二轮问「那保修呢」时用户自己也看得见上下文 -->
