@@ -287,6 +287,15 @@ async function authAgent(ctx: Context, req: IncomingMessage, env: Env): Promise<
    * 语义不变：只对【回环】做归一，非回环地址照旧逐条比对，不会凭空放宽任何网段。 */
   const ipForWhitelist = isLoopback(ip) ? '127.0.0.1' : ip
   if (rec.ipWhitelist.length > 0 && !rec.ipWhitelist.some((c) => ipv4InCidr(ipForWhitelist, c))) {
+    /* 管家钥匙（type=butler）的白名单**恒为本机回环**（签发时强制），所以"来源不合白名单"
+     * 对它而言就等于"不在这台机器上"——回车道专属码 AGENT-4038，与车道契约
+     * （requireButler）和方案文档一致；否则调用方按 4038 分支处理会漏判。
+     * 这里的白名单是【承重】的：它同时护住内容通道（防泄露的管家钥匙被远程拿去读全部项目），
+     * 因此不改成"空白名单 + 车道兜底"，只在错误码上分型。
+     * 其它钥匙沿用通用白名单语义 AGENT-4014。 */
+    if (rec.type === 'butler') {
+      return { errStatus: 403, errCode: 'AGENT-4038', errHint: '管家钥匙仅限宿主机本机使用（来源：' + ip + '）' }
+    }
     return { errStatus: 401, errCode: 'AGENT-4014', errHint: '来源 IP 不在密钥白名单内（来源：' + ip + '）' }
   }
   const user = ctx.privhub.users.get(rec.username)

@@ -673,6 +673,11 @@ ok(/BUTLER_LOCAL_CIDRS = \['127\.0\.0\.0\/8'\]/.test(agentButlerSrc),
 ok(/type === 'butler'/.test(agentButlerSrc), '管家车道按 type=butler 严格区分钥匙（普通钥匙 403 AGENT-4037）')
 ok(/\/privhub\/api\/agent\/v1\/butler\/key/.test(agentButlerSrc), '注册了管家钥匙管理端点 /agent/v1/butler/key')
 ok(/\/privhub\/api\/agent\/v1\/butler\/status/.test(agentButlerSrc), '注册了管家自检端点 /agent/v1/butler/status')
+/* 实测（乙道 L3/L4）发现：非本机请求原本先被 authAgent 的通用白名单挡下回 401 AGENT-4014，
+ * 使车道的 AGENT-4038 分支不可达。修法是在白名单分支里对 type=butler 分型回 403 AGENT-4038。
+ * 钉住它，防止有人"顺手"把这段合回单返回。 */
+ok(/rec\.type === 'butler'[\s\S]{0,160}errCode: 'AGENT-4038'/.test(agentButlerSrc),
+  '管家钥匙来源不合白名单时回车道专属码 AGENT-4038（非通用 401 AGENT-4014）')
 
 const mcpShimSrc = readFileSync(join(ROOT, 'mcp', 'privhub-mcp.mjs'), 'utf8')
 ok(/\/privhub\/api\/agent\/v1\/butler\/status/.test(mcpShimSrc), 'MCP 转接器已接管家自检端点')

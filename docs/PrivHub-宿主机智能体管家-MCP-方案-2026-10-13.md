@@ -295,7 +295,7 @@
 |---|---|
 | `privhub/mcp/privhub-mcp.mjs` | MCP stdio 转接器（零第三方依赖）。实现 `initialize`/`ping`/`tools/list`/`tools/call`；工具：`privhub_health` / `privhub_butler_status` / `privhub_me`。配置读 env 或同目录 `privhub-mcp.json`。 |
 | `privhub/mcp/butler-setup.mjs` | 一步接入：登录 → 签发管家钥匙 → 写 `privhub-mcp.json` + 打印各客户端接线片段。密码只在进程内换 token，不落盘。 |
-| `privhub/tests/butler-lane.mjs` | 管家车道 HTTP 回归（12 例）。 |
+| `privhub/tests/butler-lane.mjs` | 管家车道 HTTP 回归（13 例，含实测补入的 J 例）。 |
 | `privhub/tests/mcp-protocol.mjs` | MCP 协议回归（7 例，自带假后端、监听 3197，可独立跑）。 |
 
 **改动（`file:line` 为改动后）**
@@ -304,22 +304,22 @@
 |---|---|---|
 | `privhub-svc-cap/src/core.ts` | 105-113 | 新增「管家」分组 9 项功能（`agent.butler` + 8 分项），默认全 `write` |
 | `privhub-files-agent/src/index.ts` | 194 | `AgentKey.type` 联合类型加 `'butler'` |
-| 同上 | 65-89 | 新增常量 `BUTLER_LOCAL_CIDRS` / `BUTLER_FEATURES` / `BUTLER_ACTOR` |
-| 同上 | 288-289 | `authAgent` 白名单比对前做**回环归一**（`::1` → `127.0.0.1`），使本机 IPv6 连接不被误拒 |
-| 同上 | 330-355 | 新增 `requireButler`（钥匙类型 / 本机来源 / 总开关 / 分项开关 四关） |
-| 同上 | 1098-1148 | `buildKey` 支持 `butler`：强制 `scope=all`、强制本机回环白名单、绑定须为管理员 |
-| 同上 | 1367-1411 | 新增 `GET|POST|DELETE /agent/v1/butler/key`（网页会话·`admin.agent.keys`） |
-| 同上 | 1413-1432 | 新增 `GET /agent/v1/butler/status`（管家自检，回带各分项等级） |
-| 同上 | 529-533, 549-550, 465-467 | `/schema` 登记管家工具、边界、错误码 `AGENT-4037/4038/4039` |
+| 同上 | 69-89 | 新增常量 `BUTLER_LOCAL_CIDRS` / `BUTLER_FEATURES` / `BUTLER_ACTOR`（`isLoopback` 在 :163） |
+| 同上 | 288-297 | `authAgent` 白名单比对前做**回环归一**（`::1` → `127.0.0.1`）；**实测后补**：白名单失败按 `type` 分型，管家钥匙回 `403 AGENT-4038`、其它回 `401 AGENT-4014` |
+| 同上 | 339-355 | 新增 `requireButler`（钥匙类型 / 本机来源 / 总开关 / 分项开关 四关） |
+| 同上 | 1107-1157 | `buildKey` 支持 `butler`：强制 `scope=all`、强制本机回环白名单、绑定须为管理员 |
+| 同上 | 1376-1419 | 新增 `GET|POST|DELETE /agent/v1/butler/key`（网页会话·`admin.agent.keys`） |
+| 同上 | 1422-1440 | 新增 `GET /agent/v1/butler/status`（管家自检，回带各分项等级） |
+| 同上 | 558-559 | `/schema` 登记管家工具 `butler_key` / `butler_status` |
 | `tests/run-all.mjs` | 40, 133, 141+ | 注册 `butler-lane`（HTTP）与 `mcp-protocol`（静态批） |
-| `tests/integrity.mjs` | 657-682 | 新增 10 条交付契约（只增不改） |
+| `tests/integrity.mjs` | 657-687 | 新增 11 条交付契约（只增不改；含实测补入的分型契约 1 条） |
 
 **新错误码**
 
 | 码 | 含义 |
 |---|---|
 | `AGENT-4037` | 非管家钥匙调用 `butler/*`（内容通道钥匙不得越界） |
-| `AGENT-4038` | 管家车道仅限本机（非回环来源拒绝） |
+| `AGENT-4038` | 管家钥匙仅限宿主机本机（非回环来源拒绝）。**两处都回这个码**：车道来源检查（`requireButler`）+ `authAgent` 的管家分型（实测后补，否则非本机永远是通用 `401 AGENT-4014`） |
 | `AGENT-4039` | 管家总开关或分项开关已关闭 |
 
 **验收（对齐方案 §9①「在宿主机上接上管家，能查服务状态」）**
@@ -340,5 +340,23 @@ node mcp/butler-setup.mjs --password <管理员密码>     # 签发钥匙 + 写�
   本轮的 `capabilities` 是**如实预告**（哪些项已开），不代表该能力已实现。
 - **回环归一**改了 `authAgent` 的白名单比对：白名单含 `127.0.0.0/8` 的钥匙，现在也接受 IPv6 回环
   `::1`。这是**语义更正**（两者都是本机回环），且只对回环生效，不会放宽任何非回环网段。
-- **未在真实宿主机上端到端跑过**：全部验证在隔离实例（3190）+ 假后端（3197）完成；
-  "在真实的 AI 客户端里接上"这一步需你在宿主机实机试一次。
+- **未在真实宿主机上端到端跑过** → **已补：2026-10-13 实测完成（见下）**。
+
+### ①地基实测（2026-10-13）—— 三道路并行，真服务端 / 真 stdio / 真 Claude CLI
+
+需求与判据：`docs/PrivHub-宿主机智能体管家-①地基-实测需求-2026-10-13.md`；
+原始证据：`reports/butler-live-2026-10-13/{jia,yi,bing}/`。
+
+- **真 Claude Code CLI 接得上**：`claude mcp list` → `privhub … ✔ Connected`；
+  `claude -p` 调 `privhub_butler_status` 成功、原样回出 `capabilities`（9 键全 `write`）。
+- **回环归一真生效**：`[::1]` → 200；且 LAN IPv6 / 链路本地 / IPv4-mapped **全部被拒** ⇒ 未扩大放行面。
+- **越界矩阵 9 格全中**：内容钥匙进管家车道 4037、管家钥匙写项目 4032、管家钥匙打 `admin/*` 401、
+  管家钥匙自我提权 401；伪造 `X-Forwarded-For` 无效（用 `socket.remoteAddress`）。
+- **开关 / 审计 / 并发**：关闸立刻 4039、审计落 `ai:<名>`、并发 12 签发零丢失（D6）。
+
+**实测查出的真缺陷（已修）**：`AGENT-4038`（"非本机"）分支**不可达** ——
+`authAgent` 的通用 IP 白名单检查（`401 AGENT-4014`）排在车道来源检查之前，而管家钥匙白名单恒为
+`127.0.0.0/8`，非本机请求永远先被白名单挡下。**安全效果无损**（确实拒了、也伪造不了来源），
+坏的是**契约**：客户端按 4038 分支处理会漏判。
+修法：白名单失败时按 `type` 分型（管家钥匙 → `403 AGENT-4038`，其它 → `401 AGENT-4014`），
+**保留白名单本身**（它同时护住内容通道）。新增回归 `butler-lane` J 例 + integrity 契约 1 条。

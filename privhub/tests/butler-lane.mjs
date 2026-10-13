@@ -198,6 +198,29 @@ export function build() {
     rmSync(out, { force: true })
   })
 
+  s.test('J 非本机来源：管家钥匙回车道专属码 AGENT-4038（不是通用白名单码 4014）', async () => {
+    /* 回归：非本机请求原本被 authAgent 的通用白名单先挡下、回 401 AGENT-4014，
+     * 使车道的 AGENT-4038 分支不可达 —— 与方案文档/车道契约不符。
+     * 本机若无非回环 IPv4、或防火墙挡住 LAN，则**可见跳过**（打印说明），不静默、不判红。 */
+    const { networkInterfaces } = await import('node:os')
+    const lan = Object.values(networkInterfaces()).flat().find((n) => n && n.family === 'IPv4' && !n.internal)
+    if (!lan) { console.log('    ⏭ 本机无非回环 IPv4 —— 跳过 J（可见跳过）'); return }
+    const url = `http://${lan.address}:${new URL(BASE).port}/privhub/api/agent/v1/butler/status`
+    let r
+    try {
+      r = await fetch(url, { headers: { 'x-agent-key': butlerKey } })
+    } catch (e) {
+      console.log('    ⏭ 无法经 LAN(' + lan.address + ')访问（防火墙/路由）：' + (e && e.message) + ' —— 跳过 J（可见跳过）')
+      return
+    }
+    eq(r.status, 403, `非本机来源应 403（实际 ${r.status}）`)
+    const j = await r.json().catch(() => ({}))
+    eq(j.code, 'AGENT-4038', '非本机应回车道专属码 AGENT-4038（而非通用 401 AGENT-4014）')
+    // 反证：同一把钥匙经回环仍可用
+    const loop = await agent(butlerKey).GET('/privhub/api/agent/v1/butler/status')
+    ok(loop.json && loop.json.ok, '同一把钥匙经 127.0.0.1 仍应可用')
+  })
+
   s.test('清理测试产物', async () => {
     if (butlerId) await DEL('/privhub/api/agent/v1/butler/key', { token: admin, body: { id: butlerId } }).catch(() => null)
     if (contentId) await POST('/privhub/api/agent/v1/keys/revoke', { token: admin, body: { id: contentId } }).catch(() => null)
