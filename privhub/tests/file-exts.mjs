@@ -363,6 +363,11 @@ const NON_EXT_TOKENS = new Set([
   'open', 'close', 'key', 'value', 'body', 'head', 'list', 'item', 'node', 'edge', 'from', 'to', 'min', 'max',
   // 其它频繁出现的技术词
   'keys', 'values', 'entries', 'crumb', 'back', 'refresh', 'utf8', 'gbk', 'json5', 'true', 'false', 'null',
+  // 左栏导航的**视图 id**（枚举值，不是扩展名）——2026-10-14 左栏重排后集中在
+  //   privhub-shell/client/index.js 的 SECTION_DEFS[].order 里；`wiki/kg/tags/template` 这几个
+  //   恰好像扩展名，不排掉就会误报（files/search/trash/admin 等早在本表里，故只有知识段被命中）。
+  'wiki', 'kg', 'tags', 'template', 'refcheck', 'taskboard', 'dashboard', 'calendar', 'rag', 'home', 'agent',
+  'favorites', 'settings', 'panel',
 ])
 
 /**

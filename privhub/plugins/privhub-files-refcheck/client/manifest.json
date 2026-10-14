@@ -5,6 +5,6 @@
   "description": "扫出没人引用的孤儿附件与指向空处的断链引用；只报告、可导出清单，不会删除任何文件",
   "slots": ["refcheck-view"],
   "barItems": [
-    { "icon": "🔗", "title": "引用检查", "slot": "app-iconbar", "view": "refcheck" }
+    { "icon": "🔗", "title": "引用检查", "slot": "app-iconbar", "view": "refcheck", "group": "knowledge", "capFeature": "nav.refcheck" }
   ]
 }

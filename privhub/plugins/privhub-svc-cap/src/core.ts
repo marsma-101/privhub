@@ -94,6 +94,23 @@ export const FEATURES: readonly FeatureSpec[] = [
   { id: 'dup.prompt', group: '查重', title: '上传期重复提示', desc: '上传文件时，若与项目内已有文件内容相同/高度相似，提示"内容重复"（只提示，不阻止、不改写）', userDefault: 'read' },
   { id: 'dup.near.delete', group: '查重', title: '近似/版本族可勾选删除', desc: '在项目查重页，允许勾选「近似 / 版本族」里的文件参与删除（默认不勾、只作提示）', userDefault: 'none' },
 
+  /* ---- 导航（左栏入口的用户侧开关；2026-10-14 新增，配合左栏「项目 / 项目内功能」两级重排） ----
+   * 这一组管的是「左栏那个入口给不给普通用户看到」，不是功能本身能不能读写
+   * （读写限制仍在各自域里，例如任务写入看 task.write）。默认全 'read'，
+   * 等于保持这些入口上线前「所有登录用户都看得到」的现状 —— 开关是给「关」用的。
+   * 关掉 = 把入口从图标栏摘掉；用户仍可通过其它路径（如搜索结果）到达部分视图。 */
+  { id: 'nav.home', group: '导航', title: '工作台入口', desc: '左栏「工作台」（跨项目的最近打开 / 收藏 / AI 状态）', userDefault: 'read' },
+  { id: 'nav.search', group: '导航', title: '搜索入口', desc: '左栏「搜索」入口', userDefault: 'read' },
+  { id: 'nav.favorites', group: '导航', title: '收藏入口', desc: '左栏「收藏」入口', userDefault: 'read' },
+  { id: 'nav.trash', group: '导航', title: '回收站入口', desc: '左栏「回收站」入口（清空权限另由 admin.trash.clean 管）', userDefault: 'read' },
+  { id: 'nav.wiki', group: '导航', title: '知识库入口', desc: '左栏「知识库」入口', userDefault: 'read' },
+  { id: 'nav.kg', group: '导航', title: '知识图谱入口', desc: '左栏「知识图谱」入口', userDefault: 'read' },
+  { id: 'nav.tags', group: '导航', title: '标签入口', desc: '左栏「标签」入口（为文件打标签 / 按标签筛选）', userDefault: 'read' },
+  { id: 'nav.template', group: '导航', title: '新建文档入口', desc: '左栏「新建文档」入口（用模板建文档；管理模板另由 admin.template 管）', userDefault: 'read' },
+  { id: 'nav.refcheck', group: '导航', title: '引用检查入口', desc: '左栏「引用检查」入口（只报告，不改文件）', userDefault: 'read' },
+  { id: 'nav.rag', group: '导航', title: 'AI 工具入口', desc: '左栏「AI 工具」入口（对当前项目提问 / 检索）', userDefault: 'read' },
+  { id: 'nav.agent', group: '导航', title: '智能体接入入口', desc: '左栏「智能体接入」入口（查看接入信息；签发密钥仍为管理员专属）', userDefault: 'read' },
+
   /* ---- 管家（宿主机智能体管家车道；2026-10-13 新增，方案见
    *      docs/PrivHub-宿主机智能体管家-MCP-方案-2026-10-13.md） ----
    * 这一组【不是】给普通用户的功能，而是「管家车道」自己的开关：

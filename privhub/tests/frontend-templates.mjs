@@ -408,6 +408,63 @@ ok(iHelp > iAction && iAction > 0, '删除操作栏位于面板底部、HelpTip 
 ok(/groupCount > 0/.test(ragSrc.slice(Math.max(0, iAction - 800), iAction)),
   '操作栏只要扫描出重复就常驻（不依赖是否已勾选）')
 
+/* ---- 4c. 限宽居中的页面根：必须自带滚动容器 ----
+ * 骨架 .main 是 `flex:1; overflow:hidden`。直接挂在它下面的视图，根元素自己不滚就等于
+ * 内容被静默裁掉 —— 用户看到的是「这个页面没有滚动条」，控制台一条错都不报。
+ * 已知实例（2026-10-13 修）：项目看板 .db-wrap / 任务日历 .cal-wrap / 引用检查 .rc-wrap /
+ * 工作台 .home-wrap —— 四个「限宽居中长页面」根，都只写了 max-width + margin:auto + padding。
+ *
+ * 注意：只补 overflow-y:auto 是不够的。flex 项默认不肯缩到内容高度以下
+ * （min-height:auto），必须同时给 flex:1（或 height:100%）+ min-height:0，
+ * 三者缺一条，内容照样溢出、照样没有滚动条 —— 所以三条一起断言。
+ * 判定只认「模板根元素 + 它自己的类规则」，不扫全表：像 .ad-search（max-width:420px;
+ * margin:0 auto; height:32px）这种居中的小控件不是页面根，不该被要求滚动。 */
+console.log('\n── 限宽居中的页面根：滚动容器 ──')
+
+const pluginCss = new Map()
+for (const f of files) {
+  const m = /^plugins\/([^/]+)\/client\//.exec(f.name)
+  if (!m) continue
+  // 去注释：注释里会引用旧写法，留着会把解释文字当代码（这个坑踩过一次）
+  pluginCss.set(m[1], (pluginCss.get(m[1]) || '') + '\n' + asLF(f.name).replace(/\/\*[\s\S]*?\*\//g, ''))
+}
+
+const centeredRoots = []
+for (const f of files) {
+  const pm = /^plugins\/([^/]+)\/client\//.exec(f.name)
+  if (!pm) continue
+  const css = pluginCss.get(pm[1]) || ''
+  for (const t of extractTemplates(asLF(f.name))) {
+    const rm = /^\s*<([a-zA-Z][\w-]*)([^>]*)>/.exec(t.html)
+    if (!rm) continue
+    const cls = (/class="([^"]*)"/.exec(rm[2]) || [, ''])[1].trim().split(/\s+/)[0]
+    if (!cls) continue
+    const rule = new RegExp('\\.' + cls + '\\s*\\{([^}]*)\\}').exec(css)
+    if (!rule) continue
+    const body = rule[1]
+    if (!/max-width:\s*\d/.test(body) || !/margin:[^;}]*\bauto\b/.test(body)) continue
+    if (/height:\s*[\d.]+(px|rem)/.test(body)) continue   // 定高小控件，不是长页面
+    const scrolls = /overflow-y:\s*(auto|scroll)/.test(body) || /overflow:\s*[^;}]*\b(auto|scroll)\b/.test(body)
+    const shrinks = /min-height:\s*0/.test(body)
+    const fills = /flex:\s*1/.test(body) || /height:\s*100%/.test(body)
+    if (!(scrolls && shrinks && fills)) {
+      const miss = [!scrolls && 'overflow-y:auto', !shrinks && 'min-height:0', !fills && 'flex:1（或 height:100%）'].filter(Boolean)
+      centeredRoots.push(`${f.name}  .${cls}  缺 ${miss.join(' + ')}`)
+    }
+  }
+}
+ok(centeredRoots.length === 0,
+  `限宽居中的页面根都能滚动（缺滚动条时内容会被 .main 静默裁掉）${centeredRoots.length ? '，问题 ' + centeredRoots.length + ' 处' : ''}`)
+for (const p of centeredRoots.slice(0, 10)) console.log('       ' + p)
+
+/* 用 `view-page > view-inner` 外壳的面板，靠骨架 .view-inner 自己滚（它们没有内层滚动容器）。
+ * 它写成 overflow:hidden 时，「功能权限开关 / Webhook 订阅」这类「标题 + 一长串表单」
+ * 的面板整页没有滚动条；而多数面板的 .modal-body 是 flex:1/min-height:0，自己吃掉
+ * 剩余高度并内部滚动，外层因此不会溢出 —— 所以放开 .view-inner 不会造成双滚动条。 */
+const viRule = /\.view-inner\s*\{[\s\S]*?\}/.exec(skCss)
+ok(viRule && /overflow-y:\s*(auto|scroll)/.test(viRule[0]),
+  '骨架 .view-inner 可纵向滚动（h2+内容型面板靠它拿到滚动条，不必人人自己套 .modal-body）')
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  前端模板回归：${pass} 通过 / ${fail} 失败`)
 console.log('='.repeat(56))

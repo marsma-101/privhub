@@ -10,6 +10,15 @@
 > 代码位置：`privhub/`（纯 Cordis 插件架构，零 DSH 依赖）· 开发环境 3180 · 生产环境 3181（`deploy/privhub-deploy/`）
 > 历史文档归档：`docs/v2/`（V2 时代全部方案/计划/报告）· `docs/v1/`（最早归档）
 
+> ⚠️ **2026-10-13 复核（数字已漂移，正文待逐节同步）**：v3.1.1 → 3.1.3 期间新增了 **12 个插件目录**
+> （`svc-links` / `svc-dup` / `svc-cap` / `svc-lock` / `admin-cap` / `project-dashboard` / `task-board` /
+> `task-calendar` / `webhook` / `files-refcheck` / `files-lock` / `shell-home`）与 **38 条路由**。
+> 实测口径：插件目录 **62**（非 `_` 开头）、含 `src/index.ts` **53**、带前端 `manifest.json` **39**、
+> 注册 HTTP 路由 **39 个插件 / 150 条**（README 已同步）。**下列正文中的「50 插件 / 112 路由 / 31 插件」
+> 等数字均为 2026-09-21 快照口径，落后于现状**，逐节更新前请以
+> [`docs/PrivHub-开发状态与路线图.md`](PrivHub-开发状态与路线图.md) 与实测扫描为准。
+> 结构描述（分层、装配顺序、鉴权、存储、slot 机制）仍然有效。
+
 ---
 
 ## 一、项目定位

@@ -12,7 +12,8 @@
 
 const CSS = `
 /* ============ 工作台（首页）============ */
-.home-wrap { max-width: 1080px; margin: 0 auto; padding: var(--sp-5) var(--sp-5) var(--sp-6); }
+/* 竖版长页面，直接挂在骨架 .main（overflow:hidden）下：必须自带滚动条（同 project-dashboard 的 .db-wrap）。 */
+.home-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1080px; margin: 0 auto; padding: var(--sp-5) var(--sp-5) var(--sp-6); }
 
 .home-hello { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .home-hello .big { font-size: var(--fs-xl); font-weight: 600; }

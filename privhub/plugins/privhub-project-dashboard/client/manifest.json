@@ -5,6 +5,6 @@
   "description": "每个项目一块看板（纵向分区页）：项目状态 / 文件统计 / 计划里程碑，布局由 AI 智能体维护",
   "slots": ["dashboard-view"],
   "barItems": [
-    { "icon": "📈", "title": "项目看板", "slot": "app-iconbar", "view": "dashboard" }
+    { "icon": "📈", "title": "项目看板", "slot": "app-iconbar", "view": "dashboard", "group": "collab", "capFeature": "dashboard.write" }
   ]
 }

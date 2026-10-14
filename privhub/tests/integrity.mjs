@@ -468,6 +468,160 @@ ok(/"slots":\s*\[[^\]]*"admin-cap"/.test(readFileSync(join(ROOT, 'plugins', 'pri
 const mainSrcCap = readFileSync(join(ROOT, 'src', 'main.ts'), 'utf8')
 ok(/privhub-svc-cap/.test(mainSrcCap), 'main.ts 装配 svc-cap（L2 服务需在 L1/L3 之前挂载）')
 
+/* ══════════ 图标栏两级信息架构（左栏重排 2026-10-14） ══════════
+ * 口径：本项目按【开发项目】分 —— 项目是一级；其余功能都是「选定项目后对项目内文件的操作」，
+ * 是二级。所以左栏平时只显示一级（项目 + 类别标签），点类别才展开二级条目；未选项目时二级整段不出现。
+ * 静态契约兜住三类只能靠人眼发现的漂移：
+ *   · 新增插件忘了给 barItem 写 group —— 条目会被 AppIconbar 归入兜底组，位置莫名其妙；
+ *   · group 写错（不在骨架认识的集合里）—— 同上去处不明；
+ *   · 把「未选项目隐藏二级」这条去掉 —— 个人网盘味的平铺图标栏会悄悄回来。 */
+console.log('\n── 图标栏两级（项目 / 项目内功能） ──')
+
+const RAIL_GROUPS = new Set(['files', 'knowledge', 'collab', 'ai', 'global', 'system'])
+const ixShellSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'index.js'), 'utf8')
+const ixSkelSrc = readFileSync(join(ROOT, 'frontend', 'index.html'), 'utf8')
+
+// 契约①：每个「上栏」条目都声明了合法 group（admin-nav 条目只在控制台侧栏用，不进图标栏，豁免）
+const badRailGroups = []
+for (const dir of readdirSync(join(ROOT, 'plugins'))) {
+  if (dir.startsWith('_')) continue
+  const mf = join(ROOT, 'plugins', dir, 'client', 'manifest.json')
+  if (!existsSync(mf)) continue
+  let m
+  try { m = JSON.parse(readFileSync(mf, 'utf8')) }
+  catch { badRailGroups.push(dir + ' → manifest 不是合法 JSON'); continue }
+  for (const bi of (m.barItems || [])) {
+    if (bi.slot === 'admin-nav') continue
+    if (!RAIL_GROUPS.has(bi.group)) badRailGroups.push(dir + ' → ' + (bi.view || bi.slot) + ' (group=' + bi.group + ')')
+  }
+}
+ok(badRailGroups.length === 0,
+  `图标栏条目都声明了合法 group${badRailGroups.length ? '，非法：' + badRailGroups.join(', ') : ''}`)
+
+// 契约②：骨架认识这些 group（否则条目会被静默归入兜底组 / 消失）
+for (const g of ['files', 'knowledge', 'collab', 'ai']) {
+  ok(new RegExp("id:\\s*'" + g + "'").test(ixShellSrc), `骨架 AppIconbar 声明了类别 ${g}`)
+}
+ok(/bi\.group === 'global'/.test(ixShellSrc) && /bi\.group === 'system'/.test(ixShellSrc),
+  '骨架把 global / system 两组独立于类别渲染')
+
+// 契约③：二级只在选了项目后出现 —— 项目是一级，没选项目就不该有项目内功能
+ok(/nav\.project === null\)\s*return \[\]/.test(ixShellSrc),
+  '未选项目时二级分组整段隐藏（没有「个人网盘」味的平铺）')
+
+// 契约④：类别按手风琴开合 + 折叠有动画 + 栏内只显示图标
+ok(/this\.open = this\.open === id \? null : id/.test(ixShellSrc), '类别按手风琴开合（开一个关其它）')
+ok(/\.abar-sub\s*\{[^}]*max-height:\s*0[^}]*transition:\s*max-height/.test(ixSkelSrc),
+  '二级条目容器有折叠动画（max-height 过渡）')
+/* 只显示图标（2026-10-14 三版）：一级（类别）/ 二级（条目）都只渲染一个图标位，
+ * 名称不再占版面，改走原生悬停提示（title）+ 无障碍名（aria-label）——窄栏也更简洁。 */
+ok(/class="abar-ico"/.test(ixShellSrc), '图标栏只显示图标：一级 / 二级都用图标位渲染')
+ok(!/abar-item-label|abar-head-label/.test(ixShellSrc) && !/abar-item-label|abar-head-label/.test(ixSkelSrc),
+  '图标栏不再渲染文字标签（含骨架上残留的旧样式）')
+ok(!/abar-proj/.test(ixShellSrc) && !/abar-proj/.test(ixSkelSrc),
+  '项目选择已移出图标栏（改由顶栏「欢迎 + 项目下拉」承担）')
+{
+  /* 逐个数：图标栏模板里每个 role="button" 的可点图标，必须各带恰好一条 title
+   * 与一条 aria-label —— 否则「只看图标」时人家无从知道这是啥（弱断言放行过）。 */
+  const tpl = (ixShellSrc.match(/name: 'shell-app-iconbar'[\s\S]*?\/\* =+ 项目选择栏/) || [''])[0]
+  const btn = (tpl.match(/role="button"/g) || []).length
+  const tip = (tpl.match(/:title="/g) || []).length
+  const a11y = (tpl.match(/:aria-label="/g) || []).length
+  ok(btn >= 3 && tip === btn && a11y === btn,
+    `图标栏每个可点图标各带一条悬停提示与无障碍名（${btn} 个按钮 / ${tip} 条 title / ${a11y} 条 aria-label）`)
+}
+
+// 契约⑤：栏宽必须大于图标 —— 否则展开动画 / 选中发光 / 指示条会被裁切或互相遮挡
+{
+  const pick = (src, sel) => {
+    const m = new RegExp('^\\s*\\' + sel + '\\s*\\{[^}]*?width:\\s*(\\d+)px', 'm').exec(src)
+    return m ? Number(m[1]) : NaN
+  }
+  const barW = pick(ixSkelSrc, '.appbar')
+  const icoW = pick(ixSkelSrc, '.abar-item')
+  ok(barW > icoW && icoW > 0, `图标栏宽（${barW}px）大于图标（${icoW}px），展开动画 / 发光不被裁切`)
+}
+
+/* 契约⑥：抽屉式分组 —— 展开的那一组共用一块**凹陷**底板。用户痛点：展开后分不清
+ * 哪些标签属于上面那个功能、哪些是下一组的。解法 = 同组共用一块比栏面暗的底板，
+ * 且把手的开口上缘有内投影（真凹进去），把手与底板同宽拼成一口抽屉。 */
+ok(/class="abar-drawer"/.test(ixShellSrc), '二级条目收进同一块抽屉底板（同组共用背景，不会与下一组串味）')
+ok(/\.abar-drawer\s*\{[^}]*background:\s*var\(--abar-well-bg\)/.test(ixSkelSrc),
+  '抽屉底板自带底色（同一组共用它的底）')
+ok(/\.abar-head\.on\s*\{[^}]*box-shadow:\s*var\(--abar-well-lip\)/.test(ixSkelSrc),
+  '展开的把手沿开口上缘陷入（内投影），与底板合成一口抽屉')
+{
+  const pick2 = (sel) => {
+    const m = new RegExp('^\\s*\\' + sel + '\\s*\\{[^}]*?width:\\s*(\\d+)px', 'm').exec(ixSkelSrc)
+    return m ? Number(m[1]) : NaN
+  }
+  const headW = pick2('.abar-head')
+  const drawW = pick2('.abar-drawer')
+  ok(headW > 0 && headW === drawW, `类别把手与抽屉同宽（${headW}px），拼成一口完整抽屉`)
+}
+
+/* 契约⑦：选中态用「投影」表达，不用外框发光线条（2026-10-14 五版，用户指定）——
+ * 常态 = 突起的外部投影，按下 / 选中 = 陷入的 inset 投影；两者必须真的不同。 */
+ok(/\.abar-item\s*\{[^}]*box-shadow:\s*var\(--abar-raise\)/.test(ixSkelSrc),
+  '常态按钮是「突起」的浮雕投影')
+/* 回收站角标是绝对定位：.abar-item 少了 position 就会飞到栏目右上角（本轮真踩过）。 */
+ok(/\.abar-item\s*\{[^}]*position:\s*relative/.test(ixSkelSrc),
+  '.abar-item 自身是定位锚（角标 absolute 以它为准，否则会飞到栏外）')
+ok(/\.abar-item\.on\s*\{[^}]*box-shadow:\s*var\(--abar-press\)/.test(ixSkelSrc),
+  '选中按钮是「按下」的浮雕投影（状态只靠投影区分）')
+ok(!/--abar-glow/.test(ixSkelSrc) && !/\.abar-item::before/.test(ixSkelSrc),
+  '不再有外框发光线条 / 左侧发光指示条（选中只改投影）')
+{
+  const rd = (k) => (ixSkelSrc.match(new RegExp('--' + k + ':\\s*([^;]+);')) || [])[1] || ''
+  const raise = rd('abar-raise')
+  const press = rd('abar-press')
+  ok(raise && press && raise !== press && !/inset/.test(raise) && /inset/.test(press),
+    '突起 = 外部投影、按下 = 内投影，两者不同（不可能混用同一个值）')
+}
+
+/* 契约⑧：按钮几何要「自然」—— 各级按钮近似方形，图标与盒子成比例（2026-10-14 六版，用户指定）。
+ * 为什么值得锁：这是「改一个数就悄悄毁掉」的那类改动 —— 只把 width 调大、忘了 height，
+ * 按钮就重新变成瘦长的椭圆（截图里一眼丑，但没有任何测试会红）。ratio 区间是宽口径的
+ * [0.8, 1.25]：它不审美、只防「明显不成比例」。 */
+{
+  const box = (sel) => {
+    const m = new RegExp('^\\s*\\' + sel + '\\s*\\{([^}]*)\\}', 'm').exec(ixSkelSrc)
+    if (!m) return null
+    const w = (m[1].match(/width:\s*(\d+)px/) || [])[1]
+    const h = (m[1].match(/height:\s*(\d+)px/) || [])[1]
+    const f = (m[1].match(/font-size:\s*(\d+)px/) || [])[1]
+    return w && h ? { w: Number(w), h: Number(h), f: f ? Number(f) : NaN } : null
+  }
+  for (const sel of ['.abar-head', '.abar-item', '.abar-drawer .abar-item']) {
+    const b = box(sel)
+    const r = b ? b.w / b.h : NaN
+    ok(b && r >= 0.8 && r <= 1.25,
+      `${sel} 近似方形（${b ? b.w + '×' + b.h + '，宽高比 ' + r.toFixed(2) : '未解析到'}）`)
+  }
+  for (const sel of ['.abar-head', '.abar-item', '.abar-drawer .abar-item']) {
+    const b = box(sel)
+    const r = b && b.f ? b.f / b.h : NaN
+    ok(r >= 0.40 && r <= 0.62,
+      `${sel} 图标与容器成比例（${b && b.f ? b.f + 'px / ' + b.h + 'px = ' + Math.round(r * 100) + '%' : '未解析到'}）`)
+  }
+}
+
+/* 契约⑨：顶栏「欢迎」按钮与图标栏是同一个按钮家族（用户：也做一下相同的改变）——
+ * 状态同样只用投影表达（常态突起 / 选中按下），且图标有独立置位，不被正文压小。 */
+ok(/class="ptab-ico"/.test(ixShellSrc), '欢迎按钮的图标有独立置位（不跟正文一起缩到 13px）')
+ok(/\.ptab\s*\{[^}]*box-shadow:\s*var\(--abar-raise\)/.test(ixSkelSrc),
+  '欢迎按钮常态 = 图标栏同款「突起」投影（两处按钮同一家族）')
+ok(/\.ptab\.on\s*\{[^}]*box-shadow:\s*var\(--abar-press\)/.test(ixSkelSrc),
+  '欢迎按钮选中 = 图标栏同款「按下」投影（不再用底色 + 描边）')
+ok(!/\.ptab\.on\s*\{[^}]*background/.test(ixSkelSrc),
+  '欢迎按钮选中态不再靠填充底色区分（与图标栏口径一致）')
+{
+  const ico = Number(((ixSkelSrc.match(/^\s*\.ptab-ico\s*\{([^}]*)\}/m) || [])[1] || '')
+    .match(/font-size:\s*(\d+)px/)?.[1])
+  ok(ico > 13, `欢迎按钮图标（${ico || '—'}px）大于正文（13px），emoji 不再被正文压小`)
+}
+
+
 
 /* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
  * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现

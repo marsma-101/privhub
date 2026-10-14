@@ -11,7 +11,10 @@
 
 const CSS = `
 /* ============ 项目看板 ============ */
-.db-wrap { max-width: 1080px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
+/* 本页是「竖版长页面」：直接挂在骨架 .main（overflow:hidden）下。
+ * flex:1 撑满主区，min-height:0 才允许它比内容矮（否则 flex 项不肯收缩、内容被裁），
+ * overflow-y:auto 才是那根滚动条 —— 缺了前两条，只加 overflow 也不会有滚动条。 */
+.db-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1080px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
 
 .db-bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: 4px 0 var(--sp-4); border-bottom: 1px solid var(--line); margin-bottom: var(--sp-4); }
 .db-title { display: flex; align-items: center; gap: 8px; font-size: var(--fs-lg); font-weight: 600; }

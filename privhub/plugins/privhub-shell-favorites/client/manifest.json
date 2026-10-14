@@ -5,6 +5,6 @@
   "description": "文件/文件夹收藏（星标）：收藏列表，一键跳转原路径",
   "slots": ["fav-view"],
   "barItems": [
-    { "icon": "⭐", "title": "收藏", "slot": "app-iconbar", "view": "favorites" }
+    { "icon": "⭐", "title": "收藏", "slot": "app-iconbar", "view": "favorites", "group": "files", "capFeature": "nav.favorites" }
   ]
 }

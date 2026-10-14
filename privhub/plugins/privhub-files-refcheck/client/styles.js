@@ -10,7 +10,8 @@
 
 const CSS = `
 /* ============ 引用检查 ============ */
-.rc-wrap { max-width: 1280px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
+/* 竖版长页面，直接挂在骨架 .main（overflow:hidden）下：必须自带滚动条（同 project-dashboard 的 .db-wrap）。 */
+.rc-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1280px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
 
 .rc-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; padding: 4px 0 var(--sp-3); border-bottom: 1px solid var(--line); margin-bottom: var(--sp-3); }
 .rc-title { font-size: var(--fs-lg); font-weight: 600; margin-right: 4px; }

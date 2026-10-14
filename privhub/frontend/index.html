@@ -42,6 +42,18 @@
       --accent-soft: #e7edf9;    /* 选中底：与 --accent 文字对比 4.82:1 */
       --accent-soft-2: #d3dff4;  /* 悬停/边框档 */
       --accent-select: rgba(58,99,190,.25);   /* 文本选区：文字底下那层，与元素底色分开 */
+      /* 左栏皮肤（2026-10-14 六版）：**浮雕式（neumorphic）** —— 按钮不描外框、不发外光，
+       * 状态只用「投影」表达：常态 = 突起（右下暗 + 左上亮），按下 / 选中 = 陷入（内投影）。
+       * 顶栏「欢迎」按钮（.ptab）也用这同一对令牌 —— 两处按钮同属一个家族。
+       * 深浅各一套，值都取本主题既有色系，切主题不出现「一冷一暖」的错相。 */
+      --abar-top: #fbfcfe; --abar-bot: #e8eef7; --abar-line: #d5dfeb;
+      --abar-edge: rgba(58,99,190,.55);
+      --abar-chip: rgba(58,99,190,.07);                    /* 悬停时垫的一层很淡的底 */
+      --abar-raise: 2px 2px 4px rgba(30,58,110,.22), -2px -2px 5px rgba(255,255,255,.95);
+      --abar-press: inset 2px 2px 4px rgba(30,58,110,.28), inset -2px -2px 4px rgba(255,255,255,.95);
+      --abar-well-bg: rgba(30,58,110,.11);                 /* 抽屉底板：同一组共用它的底色 */
+      --abar-well-line: rgba(58,99,190,.22);
+      --abar-well-lip: inset 0 3px 7px rgba(30,58,110,.22); /* 抽屉开口上缘的内投影（凹进去的那道） */
     }
     [data-theme="dark"] {
       --bg: #232834; --panel: #2a3040; --panel2: #333a4a; --line: #4a5568;   /* 对 --panel2 1.51:1 */
@@ -59,6 +71,15 @@
       --accent-soft: #2b3448;    /* 与深色 --accent 文字对比 5.07:1 */
       --accent-soft-2: #354265;
       --accent-select: rgba(123,166,240,.28);
+      /* 左栏皮肤（深色）：浮雕靠「更深的暗 + 很淡的亮」成对出现，底比面板更沉一档 */
+      --abar-top: #2b3241; --abar-bot: #1f242e; --abar-line: #394354;
+      --abar-edge: rgba(123,166,240,.6);
+      --abar-chip: rgba(255,255,255,.07);
+      --abar-raise: 2px 2px 4px rgba(0,0,0,.55), -2px -2px 5px rgba(255,255,255,.055);
+      --abar-press: inset 2px 2px 4px rgba(0,0,0,.62), inset -2px -2px 4px rgba(255,255,255,.055);
+      --abar-well-bg: rgba(0,0,0,.30);
+      --abar-well-line: rgba(255,255,255,.07);
+      --abar-well-lip: inset 0 3px 8px rgba(0,0,0,.62);
     }
     /* ============ 设计令牌：刻度层（FE-03 P1-1） ============
      * 迁前骨架只有 9 个颜色变量，间距/字号/圆角/阴影/层级全是逐处手写的 px 与魔数：
@@ -265,13 +286,20 @@
 
     /* ============ 骨架：顶栏项目横排 + 工作区图标栏 ============ */
     .project-tabs { display: flex; align-items: center; gap: var(--sp-1); margin-left: 14px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+    /* 顶栏「欢迎」按钮：与图标栏同属一个按钮家族（2026-10-14 六版，用户：也做一下相同的改变）——
+     * 状态同样**只用投影**表达：常态突起、选中按下，不再靠底色 + 描边。
+     * 图标单列一个置位 `.ptab-ico`：否则它会跟着正文一起缩到 --fs-base(13px)，
+     * 比图标栏里的图标小一大圈，两处看着不像一套。 */
     .ptab {
-      flex-shrink: 0; padding: 6px 14px; border-radius: var(--r-3); font-size: var(--fs-base); cursor: pointer;
+      flex-shrink: 0; padding: 6px 15px; border-radius: var(--r-3); font-size: var(--fs-base); cursor: pointer;
       color: var(--muted); background: transparent; border: 1px solid transparent; white-space: nowrap;
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 7px;
+      box-shadow: var(--abar-raise);
+      transition: color .16s, box-shadow .16s;
     }
-    .ptab:hover { background: var(--panel); color: var(--text); }
-    .ptab.on { background: var(--accent-soft-2); color: var(--accent); border-color: var(--accent-soft-2); font-weight: 600; }
+    .ptab-ico { font-size: 18px; line-height: 1; }
+    .ptab:hover { color: var(--text); background: var(--abar-chip); }
+    .ptab.on { color: var(--accent); font-weight: 600; box-shadow: var(--abar-press); }
     .plus-btn {
       flex-shrink: 0; width: 26px; height: 26px; margin-left: var(--sp-1); border-radius: var(--r-full);
       background: var(--accent-solid); color: #fff; border: none; font-size: var(--fs-md); line-height: 1;
@@ -287,27 +315,101 @@
       background: var(--panel); color: var(--text); max-width: 200px; cursor: pointer; outline: none;
     }
     .project-select:hover { border-color: var(--accent); }
+    /* 图标栏（只显示图标：一级=功能类别·手风琴；二级=类别下的功能；底部系统组）。
+     * 由 privhub-shell 的 AppIconbar 渲染；这里只管样式。
+     * 视觉方向（2026-10-14 六版）：**浮雕式图标栏** —— 竖向渐变底 + 右缘一条渐隐的发光细线（HUD 电源线）；
+     *   栏内不出现任何文字：名称走原生悬停提示（title）+ 无障碍名（aria-label），更简洁。
+     *   状态**不画外框、不发外光，只用投影表达**（用户指定）：
+     *     常态 / 未选中 = 突起（右下暗、左上亮的外部投影）；
+     *     按下 / 选中   = 陷入（同样两个方向，但收进盒子内部的 inset 投影）。
+     *   展开的类别 = 一只**抽屉**：把手与抽屉同宽、下缘取直、共用同一块比栏面更暗的底板，
+     *     底板开口上缘有一道内投影（像是真凹进去）—— 组内按钮一眼看出属于上面那个类别，
+     *     不会跟下一组串味。（把手与抽屉是一块，故把手用「开口上缘」的内投影而不是通用按下投影，
+     *     否则它下缘会亮起一道边，把一整块切开。）
+     *   收起时抽屉高度归零（底板一起被 overflow 剪掉），动画由 max-height 承担。
+     * 尺寸（2026-10-14 六版，用户要求「更自然」）：各级按钮一律**近似方形**，
+     *   不再「宽而扁」——把手 46×44、条目 42×42、抽屉内条目 38×36；图标字号取盒高的
+     *   4~6 成（22 / 18 / 16px），既不缩成一点、也不顶满盒子。栏宽 62px 比最宽的把手
+     *   （46px）宽出一圈留白 —— 投影不会被栏边裁切，展开动画也不会互相遮挡。
+     * 项目选择【不在】栏内（顶栏已有欢迎按钮与项目下拉）。
+     * 深浅两套皮肤令牌见 :root / [data-theme="dark"]（--abar-*）。*/
     .appbar {
-      width: 52px; background: var(--panel); border-right: 1px solid var(--line);
-      display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: var(--sp-1);
+      width: 62px; flex: 0 0 auto; position: relative;
+      background: linear-gradient(180deg, var(--abar-top) 0%, var(--abar-bot) 100%);
+      border-right: 1px solid var(--abar-line);
+      display: flex; flex-direction: column; align-items: center; padding: 8px 0 8px; overflow: hidden;
     }
+    /* 右缘渐隐发光细线：HUD 的「电源线」（贴着 border-right，须落在 appbar 内才不被 overflow 裁掉） */
+    .appbar::after {
+      content: ''; position: absolute; top: 0; right: 0; width: 1px; height: 100%;
+      background: linear-gradient(180deg, transparent, var(--abar-edge) 32%, var(--abar-edge) 68%, transparent);
+      pointer-events: none;
+    }
+    /* 分隔线：中间亮、两端渐隐 */
+    .abar-sep { height: 1px; width: 46px; background: linear-gradient(90deg, transparent, var(--abar-line), transparent); margin: 9px 0; flex: 0 0 auto; }
+    /* 中段可滚动：类别 + 条目（细滚动条，深色下不刺眼；纵向单列居中） */
+    .abar-scroll {
+      flex: 1 1 auto; min-height: 0; width: 100%; padding: 2px 0;
+      overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; align-items: center;
+      scrollbar-width: thin;
+    }
+    .abar-scroll::-webkit-scrollbar { width: 6px; }
+    .abar-scroll::-webkit-scrollbar-thumb { background: var(--abar-line); border-radius: var(--r-pill); }
+    .abar-scroll::-webkit-scrollbar-track { background: transparent; }
+    /* 类别（一级）= 抽屉的把手：**只显示图标，无箭头、无文字**。
+     *   常态 = 突起的浮雕按钮；展开 = 与抽屉共用底板、陷入（开口上缘内投影）、下缘取直。*/
+    .abar-sec { display: flex; flex-direction: column; align-items: center; width: 100%; }
+    .abar-head {
+      width: 46px; height: 44px; display: grid; place-items: center;
+      border-radius: var(--r-3); cursor: pointer; user-select: none;
+      color: var(--muted); font-size: 22px;
+      background: transparent; box-shadow: var(--abar-raise);
+      transition: color .18s, background .18s, box-shadow .18s, border-radius .18s;
+    }
+    .abar-head:hover { color: var(--text); }
+    .abar-head.on {
+      color: var(--accent); background: var(--abar-well-bg);
+      border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+      box-shadow: var(--abar-well-lip);
+    }
+    .abar-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    /* 抽屉容器：只管「收合」—— 高度归零 + overflow 剪裁，动画由它承担。
+     *   （底板与按钮都画在里面，收起来时整体被剪掉，不留残边。）*/
+    .abar-sub {
+      width: 100%; overflow: hidden; max-height: 0;
+      transition: max-height .26s cubic-bezier(.4, 0, .2, 1);
+    }
+    .abar-sub.open { max-height: 320px; }
+    .abar-sub .abar-item { opacity: 0; transform: translateY(-4px); }
+    .abar-sub.open .abar-item { opacity: 1; transform: none; }
+    /* 抽屉本体：同一组共用的一块**凹陷**底板（比栏面暗 + 内凹描边），顶边不封，
+     *   与上面同宽的把手接成一体，看上去就是把手拉出来的那个抽屉。
+     *   overflow 剪裁：组内按钮的浮雕投影不越出底板，才像「嵌在抽屉里」。*/
+    .abar-drawer {
+      width: 46px; margin: 0 auto; padding: 5px 0 6px; overflow: hidden;
+      display: flex; flex-direction: column; align-items: center;
+      background: var(--abar-well-bg); border: 1px solid var(--abar-well-line); border-top: none;
+      border-radius: 0 0 var(--r-3) var(--r-3);
+    }
+    /* 条目：只有图标（名称走原生 title 悬停提示，不再画文字）。
+     *   底是透明的 —— 形状全由投影给出：常态突起、选中陷入。*/
     .abar-item {
-      width: 38px; height: 34px; border-radius: 7px; display: flex; align-items: center;
-      justify-content: center; font-size: 16px; cursor: pointer; color: var(--muted); position: relative;
+      width: 42px; height: 42px; display: grid; place-items: center; margin: 3px 0;
+      border-radius: var(--r-2); cursor: pointer; color: var(--text); font-size: 18px;
+      position: relative;                 /* 角标（回收站计数）以它为准定位 */
+      background: transparent; box-shadow: var(--abar-raise);
+      transition: background .16s, color .16s, box-shadow .16s, opacity .2s, transform .2s;
     }
-    .abar-item:hover { background: var(--panel2); color: var(--text); }
-    .abar-item.on { background: var(--accent-soft); color: var(--accent); }
-    .abar-item:hover::after {
-      content: attr(title); position: absolute; left: 44px; top: 50%; transform: translateY(-50%);
-      background: var(--text); color: var(--panel2); font-size: var(--fs-xs); padding: 3px 9px;
-      border-radius: 5px; white-space: nowrap; z-index: var(--z-tooltip); pointer-events: none;
-    }
-    .abar-spacer { flex: 1; }
-    /* 底部管理组（设置/用户管理/权限管理/审计）与业务组的分隔 */
-    .abar-bottom { border-top: 1px solid var(--line); margin-top: var(--sp-1); padding-top: var(--sp-1); }
+    .abar-item:hover { background: var(--abar-chip); }
+    .abar-item.on { color: var(--accent); box-shadow: var(--abar-press); }
+    .abar-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    /* 抽屉里的按钮：同一套浮雕规则，只是底换成了抽屉底板（常态突起、选中陷入）。*/
+    .abar-drawer .abar-item { width: 38px; height: 36px; margin: 3px 0; font-size: 16px; }
+    .abar-bottom { flex: 0 0 auto; }
     .abar-badge {
-      position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; border-radius: var(--r-3);
-      background: var(--danger); color: #fff; font-size: var(--fs-nano); line-height: 15px; text-align: center; padding: 0 3px;
+      position: absolute; top: 1px; right: 1px; min-width: 14px; height: 14px; border-radius: var(--r-3);
+      background: var(--danger); color: #fff; font-size: var(--fs-nano); line-height: 14px; text-align: center; padding: 0 3px;
+      box-shadow: 0 0 8px -2px var(--danger);
     }
 
     /* ============ 右侧预览容器 ============ */
@@ -349,8 +451,14 @@
     /* 功能面板视图（⑤：设置/用户管理/权限/审计/标签/模板/图谱/知识库）
        对齐 llm_wiki：面板 = main 全宽视图，独占主区；内容限宽居中 */
     .view-page { height: 100%; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
+    /* overflow-y:auto 而不是 hidden：面板的两种写法都要能滚。
+       (a) `view-inner > h2 + 内容`（如功能权限开关、Webhook 订阅）——没有内层滚动容器，
+           靠这里滚；写 hidden 时内容一长就被裁掉、页面没有滚动条。
+       (b) `view-inner > .modal-body`（多数面板）——.modal-body 是 flex:1/min-height:0，
+           自己吃掉剩余高度并内部滚动，外层不会溢出，因此不会出现双滚动条。
+       overflow-x 保持隐藏：横向溢出（超宽表格）本来就不该把整页顶出横向滚动条。 */
     .view-inner {
-      flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+      flex: 1; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; min-height: 0;
       width: 100%; max-width: 1100px; margin: 0 auto;
       padding: 20px 24px; background: var(--panel2);
     }
