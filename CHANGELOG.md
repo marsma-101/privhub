@@ -1,7 +1,7 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.1.3**
+**当前版本：3.1.4**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -22,10 +22,9 @@
 
 ---
 
-> 本文件当前有 **20 段 `[未发布]`**（均未随部署包同步、未升版本号；当前发布版本为 **3.1.3**）：
-> **任务看板插件（PLAN-01 第 1 期）**、**前端视觉层（FE-03）**、**工作台**、**模型回包解析加固 + 密钥脱敏**、
-> **RAG 问答流式输出（PLAN-06 第 2 期）**、**系统数据「明文 → 密文」迁移（D13）**、**系统 JSON「损坏不得静默当空数据」（D4）**、
-> **并发「读-改-写」丢更新收口（D6）**、**表格行上限 1000→10000 + `.doc` 正文直读**、**音视频预览**、
+> 本文件当前有 **16 段 `[未发布]`**（均未随部署包同步、未升版本号；当前发布版本为 **3.1.4**）：
+> **任务看板插件（PLAN-01 第 1 期）**、**前端视觉层（FE-03）**、**工作台**、
+> **RAG 问答流式输出（PLAN-06 第 2 期）**、**表格行上限 1000→10000 + `.doc` 正文直读**、**音视频预览**、
 > **项目看板**、**引用检查 + 任务日历**、**Webhook 订阅**、**功能权限开关**、**多 Profile 模型配置 + 生成参数**、
 > **双链 ID 化**、**上传查重（重复提示 + 近似族删除开关）**、**宿主机智能体管家 MCP（①地基）**、
 > **长页面缺滚动条收口（看板/日历/引用检查/工作台 + 骨架 `.view-inner`）**、
@@ -538,267 +537,6 @@ ffmpeg.wasm（约 25 MB）、video.js（约 150 KB）、字幕轨道 / `poster` 
 
 ---
 
-## [未发布] — 并发「读-改-写」丢更新收口（D6）：共享 JSON 的落盘点全部串行化
-
-**无接口破坏、无数据变更**（唯一的行为变化：并发写入时不再丢记录；单请求响应体不变）。
-**未同步部署包**（同步生产需显式授权）。
-
-### 问题：单次写盘是原子的，但「读 → 改 → 写」这个**序列**不是
-
-`svc-storage` 的每次写盘都走「临时名 + rename」，断电也不会留下半个文件（D7 已保证临时名唯一）。
-但那保护的是**一次写**。本仓二十来个插件的落盘模式统一是：
-
-```ts
-const store = await load(FILE)   // ① 读全量
-store[key].push(entry)           // ② 改一份
-await save(FILE, store)          // ③ 写全量
-```
-
-两个并发请求会各自读到同一份旧数据、各自写回，**后者覆盖前者**。丢的不是同一条记录，
-而是**对方刚写进去的那条**。表现全是用户看得见的：
-
-- 「管理员刚签发的 Agent Key / 邀请码，库里查不到」——凭据丢失，连吊销都无从下手；
-- 「我明明收藏了，刷新就没了」；
-- 「两个人同时批注，少了一条」；
-- 「版本历史里少了刚才那次保存」。
-
-`withFileLock` 其实早就在 `privhub-core` 里（回收站删除用它，注释写得很清楚），
-但**全仓只有 core 自己在用** —— 插件层的落盘点一处都没串行化。
-
-### 收口：锁键 = **文件绝对路径**，同一文件的所有写入者共用一把锁
-
-一律把整段「读 → 改 → 写」包进 `ctx.privhub.withFileLock(<文件绝对路径>, …)`，
-而不是只锁最后那一次 `save()`（只锁写等于没锁：两个请求仍会基于同一份旧快照写回）。
-锁键取**绝对路径**这一点很关键，见下节。
-
-| 插件 | 数据文件 | 收口的写路径 |
-|---|---|---|
-| `shell-settings` | `settings.json` | 设置项合并保存（主题 / 默认视图 / 上传上限 / 注册开关） |
-| `shell-favorites` | `favorites.json` | 收藏 / 取消收藏 |
-| `shell-recent` | `recent.json` | 记录「最近打开」；个人空间改名时的整份改写 |
-| `files-comments` | `comments.json` | 新建批注 / 删除 / 回复 / 改状态 |
-| `files-invite` | `invites.json` | 生成邀请码 / 撤销 |
-| `files-publish` | `publish.json` | 发布 / 撤销 |
-| `files-versions` | `versions.json` | 建快照 / 回滚（回写正文 + 追加反悔版本） |
-| `files-edit-md` | `data/doc-versions/index.json` | 保存前存档（版本索引是**所有文件共用一份**） |
-| `files-office-ai` | `office-api.json` | 生成 Office 接口密钥 / 吊销 |
-| `files-agent` | `agent-keys.json` | 签发 / 吊销 / 挂起 / 恢复 / 轮换 / 自助签发 / 自助吊销 / **鉴权时惰性标记过期** |
-| `files-agent` | `versions.json` | 覆盖前快照（`m2.versionSnapshot`）、沙箱版本恢复 |
-
-三个值得单独说明的点：
-
-- **`data/versions.json` 有三个写入者**（`privhub-files-versions`、`files-agent` 的覆盖前快照、
-  `files-agent` 的沙箱版本恢复）。它们分散在不同插件、不同模块里，要互相串行，唯一可行的锁键就是
-  **同一个文件绝对路径** —— 三处都用 `join(rootDir, 'data', 'versions.json')` 作键，才真是一把锁。
-- **`favorites.json` / `recent.json` 是「所有用户共用一份、按 username 分键」**，
-  所以两个人同时操作会撞同一个文件 —— 丢的是**别人**的记录。
-- **`agent-keys.json` 有八处写入者**。收口时新增了 `mutateKeys(ctx, fn)` 统一入口（读 → 回调改 → 写）。
-  同时把「构造一条新密钥记录」从落盘里**拆出来**（`buildKey` 只校验和生成、不碰文件）：
-  轮换要「读库定位旧 key → 追加新 key」，若让构造函数自己去取锁，就会对同一把锁重入而死锁。
-
-### 判定为「不需要加锁」的几处（附理由，不是漏掉）
-
-- `svc-acl` / `svc-meta` / `svc-model`：**启动读进内存、之后按需写回**的缓存型服务，
-  不存在「从盘上读回来再合并」的窗口；且它们挂在 L2，早于持有 `privhub` 的 core，
-  无法 `inject privhub` 去用 `withFileLock`。它们的读失败风险由 D4 的 `assertStoreWritable` 兜住。
-- `svc-rag`（语料清单 / 向量状态 / 策展日志）：内存优先，摄取队列是**进程内单写者**，
-  落盘只是把内存对象整体序列化，不是读盘合并。
-- `files-agent` 的配额账本与限流桶：单写者 + 周期落盘（`dirty` 才写）。
-- 幂等记录（`agent-idem/<hash>.json`）：**按幂等键分文件**，不同键天然互斥。
-
-### 测试：`tests/write-serialization.mjs`（25 断言，自带 3199 隔离实例）
-
-不验实现（不数 `withFileLock` 出现几次），只验**行为**：N 个请求并发打同一个落盘点，
-请求全部成功后，N 条记录必须一条不少地读得回来。覆盖设置合并、收藏、最近、批注、邀请码、
-Agent 密钥、文档版本、通用文件版本。另附一条「服务端 stderr 无插件加载失败」的装配哨兵。
-
-**带反向对照（证明这套测试真的抓得住回归）**：临时摘掉 `shell-favorites` POST 的锁后重跑 ——
-12 条并发收藏**只剩 1 条**（正是「后写覆盖先写」），恢复锁后 12/12。没有这个对照，
-「全绿」可能只是因为并发不够狠。
-
-> 附注（一次假对照的教训）：第一版反向对照只把 `withFileLock(FILE, async () => {…})`
-> 的开头换了，忘了把结尾的 `})` 改成 `})()` —— 于是那个箭头函数**根本没被调用**，
-> 路由拿到的是一个函数对象，解构出 `undefined`，响应成了 `{"ok":true}`、文件压根没写。
-> 它同样表现为「断言红」，但红的理由完全不是并发。故对照必须看成对改动，且要看**响应体**。
-
-### 验证
-
-- `npm run typecheck` 干净；
-- `node tests/run-all.mjs --spawn` **EXIT=0**：HTTP 套件 120/0（新增
-  `agent-sandbox` 的「E2 密钥生命周期：轮换 / 挂起 / 恢复 / 已吊销不可操作」一条 ——
-  这三条路径正是 `mutateKeys` 重构过的，用它钉住没被改坏）；静态套件全绿
-  （前端模板 26 / 管理控制台 76 / 个人空间界面 362 / 审计可靠性 16 / 交付完整性 60 /
-  首次部署 3 / A 批修复 66 / 模型解析 48 / 明文迁移 40 / JSON 损坏防护 79 /
-  **并发写串行化 25** / 预览上限 42 / 扩展名收敛 69 / Office 收敛 79）。
-
----
-
-## [未发布] — 系统 JSON 数据「损坏不得静默当空数据」（D4）：把「坏了」和「还没有」分开，并修掉两个同类的静默缺陷
-
-**无接口破坏、无数据变更**（唯一的行为变化：数据文件损坏时，操作**失败并说明原因**，而不是假装成功；新增 `.corrupt-<哈希8>.bak` 隔离存证，只增不改）。
-**未同步部署包**（同步生产需显式授权）。
-
-### 问题：`catch { return {} }` 把「坏了」和「还没有」抹成同一件事
-
-十来个插件过去都这么读落盘 JSON：
-
-```ts
-if (!existsSync(FILE)) return {}
-try { return JSON.parse(await storage.readText(FILE)) } catch { return {} }
-```
-
-两件坏事连在一起：
-
-1. **看不见** —— 文件损坏（或解密失败、被截断）时界面显示「空列表」，用户以为数据本来就没有，
-   于是不会有人去修；
-2. **被覆盖** —— 多数调用点是「读 → 改 → 写」。读到空的 `{}`，紧接着一次 `save()`
-   就把那份**可能还能人工恢复**的原文永久盖掉。
-
-`data/agent-keys.json`、`data/invites.json` 这类**凭据文件**尤其致命：一次「新建密钥 / 生成邀请」
-就把已有凭据全部清空，而且不报错。
-
-### 收口：一个统一入口，按「丢了还能不能重建」分两档
-
-新增 `plugins/privhub-core/src/json-store.ts`：
-
-| 入口 | 语义 | 用在 |
-|---|---|---|
-| `readJsonStore(storage, file, fallback, check?)` | 不存在 / 空文件 → `fallback`；损坏 → **逐字节隔离存证 + 抛错** | 丢了就找不回来的：凭据、批注、收藏、最近、版本历史、回收站、邀请码、发布、模板、ACL 规则、元数据、看板、设置、模型配置、Agent Key |
-| `readJsonStoreLenient(...)` | 同样隔离 + 记日志，但返回 `fallback` | **只给派生数据**：RAG 语料清单、向量状态、chunk JSONL（真身是盘上的语料，可重建） |
-| `assertStoreWritable(healthy, file)` | 内存里缓存过坏数据的服务，写回前自查 | `acl` / `meta` / `model`：它们是「启动读进内存、之后按需写回」，读失败会被构造函数吞掉，留一份空数据在内存里等着覆盖原文 |
-
-- 隔离文件命名 `<原名>.corrupt-<内容哈希8位>.bak`：**按内容命名**，同一份损坏只隔离一次，且**原文原地不动**。
-  去重只靠内容哈希 + `flag:'wx'`，**不另设**「同一路径只隔离一次」的内存表 —— 那种表以路径为键，
-  同一文件先后坏成不同内容时会把**最新的现场**当成重复丢掉（本批写测试时实测发现，已改）。
-- 判据只有一条：**这份数据丢掉之后还能不能重建**；不能重建就用严格版。
-- 顺带修正 `core.moveToTrash`：先读回收站记录、再动目录，避免「文件已移走但没记账」的半截状态。
-
-### 看得见：损坏的原因要能到用户眼前
-
-`CorruptDataError` 标了 `userVisible = true`，`src/web-server.ts` 唯一的兜底 catch 据此回
-`500 + {ok:false,error:'<中文原因>'}`（其余异常仍只回 `internal server error`，不泄露细节）。
-文案点名**是哪个文件**、**为什么**、**隔离到哪**、**下一步该做什么**，且不含完整磁盘路径。
-
-### 顺带挖出并修掉的两个老缺陷（同类：静默失效）
-
-1. **`privhub-files-office-ai` 整个插件没挂上，路由全 404。** 它的 `package.json` 缺
-   `"type": "module"`，于是该包被判为 CJS，`import … from '../../privhub-core/src/json-store'`
-   （无扩展名的 `.ts`）在 CJS 解析器下找不到模块 → 装配期 `[assembly] 插件加载失败` →
-   `/privhub/api/ai/office/*`（schema / read / write / keys）**全部 404**，而现场只有一行 stderr。
-   修：补 `"type": "module"`（与其余所有带 `package.json` 的插件一致）；
-   `privhub-files-office-ui` 同样补上（今天没有相对导入，属同类隐患）。
-   教训是**新增一处相对导入就可能让插件静默消失**，故把「启动期无插件加载失败」变成常驻断言。
-2. **模型配置重启后从来不生效。** `privhub-svc-model` 声明 `inject: []`，而 `loadConfig` 用
-   `ctx.storage` —— cordis 对未 `inject` 的服务键是**取用即抛**
-   （`cannot get property "storage" without inject`），当时的 `catch { this.cfg = null }`
-   把这句静静吞了。现象：界面显示「未配置」，运维再填一遍又能用，谁也不会怀疑落盘/重读。
-   修：`inject: ['storage']`，catch 改为告警。
-
-### 刻意不动的一处（残余，已记账）
-
-ACL 规则文件读坏时，本层仍退化为「无规则」—— 即**细粒度裁决失效、退回 core 的项目级权限
-（fail-open）**。本批只保证「规则文件不会被一次新增规则清空」。收紧为 fail-closed 会让
-**修复前的所有文件访问一律被拒**，属独立评估项，已记入待改进清单。
-
-### 测试
-
-- 新增 `tests/json-corruption.mjs`：**79 条**，两部分 ——
-  ① 进程内单测 `json-store` 语义（不存在 / 空 / 合法 / 损坏 / 形状不符 / 解密失败 /
-  ENOENT 竞态 / 宽容版 / 写前自查，并含「合法文件不被误判」的阴性对照）；
-  ② 端到端（隔离实例，端口 3198）：HTTP 层看得见原因 + 写路径真的被拒 + 盘上内容分毫未动 +
-  存证逐字节一致 + 日志有记录 + 人工修好后恢复 + **重启后读得到、写得进**；
-  另有 **stderr 哨兵**（两次启动都不得有插件加载失败）。
-- `tests/model-parsing.mjs` 的进程内挂载补一个最小 `storage`（`inject` 声明变严后仍按生产装配挂载）。
-- `npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0**
-  （A 批断言 66 / 模型解析 48 / 明文迁移 40 / JSON 损坏防护 79 / 预览上限 42 /
-  扩展名 69 / Office 契约 79，全绿）。
-- 运维备注：`data/**/*.corrupt-<哈希8>.bak` 是损坏现场的逐字节存证，**不自动清理**，
-  何时清理由运维决定。
-
----
-
-## [未发布] — 系统数据「明文 → 密文」迁移落地（D13）：把一件早就该做、但一直没人能做的事做完
-
-**无接口破坏、无数据变更**（迁移只作用于**已经存在**的明文文件，且迁移前自动备份明文）。
-**未同步部署包**（同步生产需显式授权）。
-
-### 问题：写入口早就加密了，早先写下的文件却永远停在明文
-
-D10 那一批把读写统一到了 `ctx.storage`（`PHENC1` 密文），此后**新写入**自然是密文。但
-**在切换之前**落到盘上的文件不会自己变密文 —— 只有「下次被这个文件写一遍」才会。于是那些
-**再也不会被写**的旧数据就永远停在明文：老邀请码、老批注、旧发布链接。这正是要迁移的东西，
-而它们恰恰可能含**免登录取证**。
-
-实测本机 `data/invites.json` 就是明文，内容开头的 `{"code": "zzvxf…` 直接用记事本就能读。
-本机当前仍为明文的只有 3 个文件（`comments.json` / `invites.json` / `publish.json`）——
-问题很精确，不是全仓扫荡。
-
-### 原来的迁移函数是个危险品（已删除）
-
-仓里有个 `migrateTree`：递归遍历整个目录、**零调用**、无备份、原地写、失败即半截。
-对最自然的调用 `migrateTree(dataDir)`，它会顺手加密掉四类绝不该被 `PHENC1` 包一层的文件：
-
-| 文件 | 被加密后的后果 |
-|---|---|
-| `data/secret.key` | **密钥本身没了 → 全部密文永久不可恢复** |
-| `data/audit.jsonl` | 自有 `PHAUD1` 块格式被套一层 `PHENC1`，`auditScan()` 读不出任何块（审计整段失效） |
-| `data/logs/*.log` | 明文追加的日志被加密后，新旧内容混成乱码 |
-| `data/git-backup/**` | 真 git 仓库，内部文件一加密，备份全废 |
-
-所以本次**不是**在「修」它，而是删掉它，换成「显式清单 + 逐条守卫 + 备份 + 原子写 + 回读校验」。
-
-### 改动 · `plugins/privhub-svc-storage/src/index.ts`
-
-- 删除 `migrateTree` / `migrateTreeExclude`（零调用死代码，且是上面那类事故的唯一入口）。
-- 新增 `scanPlaintextSystemFiles()`：只列 **`data/` 顶层的 `*.json`**，跳过隐藏文件与已是
-  `PHENC1` 的文件。**不递归** —— 递归正是灾难的来源。
-- 新增 `migrateFilesToEncrypted(files)`，逐文件返回
-  `migrated | already-encrypted | refused | failed`，并带 `reason` / `backup`：
-  - **守卫**：密钥文件（按 `resolve` 全等判）、`audit*`、`data/logs/` 之下、`data/git-backup/`
-    之下、以及「加密未启用」——**每一类都拒绝并说明原因**，不是静默跳过。目录比较带 `sep`，
-    `data/logs-extra/` 这类**同前缀兄弟目录不会被误伤**。
-  - **保底**：迁移前用 `flag:'wx'` 写一份 `<名>.plain-<时间戳>.bak`（已存在则报错，不覆盖）；
-    写入走 `ctx.storage.writeBuffer`（原子）；写完**回读比对**，不一致就**还原明文**并在
-    `reason` 里说明「已还原明文」；连还原都失败则明确提示「请从备份手工恢复」。
-  - 备份**留在原地不自动清理** —— 那是明文的存证，何时清理由运维决定。
-- **启动自检**：挂载时异步扫描一次，发现明文就用 `console.warn` 列出**具体文件名**与
-  **下一步动作**（该调哪个管理接口）。这里必须走 `console`：本仓没有 logger exporter，
-  `ctx.logger.*` 实测输出到虚空；`main.ts` 的 `installFileLogger` 挂在 `console` 上。
-  同一处顺带把原先那条同样没人看得见的 `ctx.logger.error('[storage] 密钥初始化失败…')`
-  也改成了 `console.error`。
-
-### 改动 · `plugins/privhub-admin/src/index.ts`（两条管理端路由，分开「看见」与「动手」）
-
-| 路由 | 行为 |
-|---|---|
-| `GET /privhub/api/storage/plaintext` | 列出仍明文的系统数据（**只回文件名与体积，不回绝对路径**）+ `encryptionEnabled`。管理员一进来就能看到「还有几个明文」，而不是点了迁移才知道 |
-| `POST /privhub/api/storage/migrate` | 加密未启用时 400 拒绝（迁移无意义）；逐文件回报 `status/reason/backup`；每个文件写一条 `storage-migrate` 审计（含操作人、文件名、备份名） |
-
-两条都是**仅管理员**（普通用户 403，测试钉住）。
-
-### 测试
-
-- **`tests/storage-migration.mjs`（新增，40 条，自给自足）**：进程内挂真身 `svc-storage`，
-  造一个「什么文件都有」的 `data/`（明文 json / `secret.key` / `PHAUD1` 审计 / 日志 /
-  `git-backup` / 同前缀兄弟目录），验证：启动告警走 `console.warn` 且点名文件、扫描只收顶层
-  `*.json`、四类危险文件各自「拒绝 + 说明原因」且**内容没被动过**、同前缀兄弟目录不被误伤、
-  迁移后是 `PHENC1` 且**读回来逐字一致**、备份与原文**逐字节一致**、重复迁移幂等、
-  **注入回读不一致 → 报 `failed` 并还原明文**（含「注入确实被触发」的自证断言，
-  否则该条是假绿）、加密关闭时拒绝且文件不动。
-- **`tests/rag-resilience.mjs` 新增 18 条端到端**：启动告警真的落进了 `data/logs` 日志、
-  `GET` 未登录 401 / 管理员可见 / 普通用户 403、`POST` 迁移 `migrated=1`、盘上变 `PHENC1`、
-  备份逐字节一致、二次迁移 `migrated=0`、清单归零、审计记录点名文件与操作人。
-- `tests/run-all.mjs` 把 `storage-migration.mjs` 纳入静态批并加入 `needsTsx` 名单
-  （它要 `import()` 真身 `.ts`）。
-
-### 验证
-
-`npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0**
-（系统数据迁移 40 / A 批 66 / 模型解析 48 / 前端模板 26 / 个人空间 362 / 管理控制台 76 /
-交付完整性 60 / …）。
-
----
-
 ## [未发布] — RAG 问答流式输出（PLAN-06 第 2 期）：同一条路由加一个开关
 
 **无接口破坏、无数据变更**。给既有的 `POST /privhub/api/rag/ask` 加 `stream: true`：
@@ -860,80 +598,6 @@ D10 那一批把读写统一到了 `ctx.storage`（`PHENC1` 密文），此后**
 
 `npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0**（A 批 48 / 模型解析 48 /
 前端模板 26 / 个人空间 362 …）。D13 批之后 A 批累计 66（见上一条）。
-
----
-
-## [未发布] — 模型回包解析加固 + 密钥脱敏（svc-model），附独立回归套件
-
-**无接口变更、无数据变更、无配置变更**。改的是 `svc-model` 对上游回包的**宽容度**与
-**出错时说的话**。触发点很具体：`/api/rag/ask` 的 catch 把 `ModelError.message`
-**原样**交给前端 toast —— 这段文案就是用户看到的一切。
-
-迁前的问题（两类，都很实际）：
-
-- **官方形状之外一概不认**：只读 `choices[0].message.content`，抽不到就
-  `'chat 响应异常：' + JSON.stringify(body)`，把整段 JSON dump 到界面上。换一个兼容网关
-  （回 `choices[0].text` / `output_text` / Gemini 的 `candidates[].content.parts`）就整个
-  问答不可用 —— 而 PrivHub 这边其实什么都没做错。
-- **空回答静默通过**：流式只认 `delta.content`，只吐 `reasoning_content` 或一帧正文都没有时
-  返回**空字符串**，界面上是一个没有任何解释的空气泡；末帧若没有收尾换行，最后一次增量
-  会被缓冲区吞掉。
-
-### 改动 · `plugins/privhub-svc-model/src/index.ts`
-
-- `ModelHealth` 一侧新增错误码 `MODEL_RATE_LIMIT`：HTTP 429 与「格式不对」分开
-  （两者处置完全不同：前者稍后重试/降并发，后者要改配置）。
-- 四个**纯函数**（都在文件头注明了铁律：**sanitize，永不 dump JSON**）：
-  - `sanitizeError(input, max=300)` —— `sk-…` 保留前 4 位打码、`Bearer …` 打码、
-    `api_key|api_token|authorization` 打码，折叠空白并截断。上游**回显**密钥是常有的事，
-    不做这层等于把密钥显示在用户屏幕上。
-  - `upstreamMessage(body, rawText)` —— 优先取结构化原因（`error.message`/`message`/`msg`/
-    `detail`/`reason`/`type`/`code`），取不到再回退脱敏后的原文。
-  - `extractChatText(body) → { text, reasoning }` —— 一套代码吃多家兼容形状（见上），
-    推理内容**单独取出**，不当正文用（否则等于把思考过程当答案）。
-  - `describeShape(body)` —— 紧凑的形状摘要（`foo bar{baz} list[2]`、`空响应体`），
-    定位问题时比「响应异常」有用得多。
-- 非 2xx 分支改为：429 → `MODEL_RATE_LIMIT` + 可执行文案；其余 → `MODEL_BAD_RESPONSE` +
-  `模型端点返回 HTTP N：<上游原因>`。
-- 流式读取循环新增 `feedLine()`，接受 `delta.content`/`delta.text`/`message.content`/`text`，
-  并 flush 末尾无换行的残留帧；流结束仍无正文时**抛错**（区分「只给了推理内容」与
-  「一帧正文都没有」），不再返回空串。
-- `embed()` 同时接受 `data[].embedding` 与 `embeddings`；报错写清「需要几个、收到几个」
-  + 脱敏原因 + 形状摘要。
-
-### 新增 · `tests/model-parsing.mjs`（44 条），已挂进 `run-all`
-
-自给自足：进程内挂**真身** `svc-model` + 本机假上游（端口 3197），不连真实模型、不碰 `data/`。
-关键是假上游把「各家兼容网关的真实差异」做成可切换档位（std / legacy / responses / gemini /
-reasoningOnly / garbage / 400 / 429 / 500 / 四种流式畸形），而不是只喂标准形状 ——
-只喂标准形状的测试对上面那批 bug 是瞎的（改前改后都绿）。
-
-断言指向**行为与用户可见文案**，不指向实现：能抽出正文就对；抽不出时报错里得有人话、
-不得 dump JSON、不得出现完整密钥。含**自证断言**（假上游确实被请求到 N 次、确实以
-`stream:true` 发过 5 次），否则整套可能只是假绿。
-
-阴性对照：临时注入迁前实现 → 35 通过 / 9 失败，其中一条正是用户可见的
-`chat 响应异常：{"choices":[{"text":"旧形状正文"}]}`；移除注入后 44/0，typecheck 干净。
-
-### 修复 · 测试对行尾的隐式依赖（本批新套件连带暴露）
-
-本仓 `core.autocrlf=true`，工作区里 **LF 与 CRLF 混着**（同一文件经过不同工具后行尾会变）。
-而若干「从源码抠函数真身」的断言用了 `\n\n` / `\n}` 这类**行尾锚点**，在 CRLF 文件上
-匹配长度直接是 0 —— 轻则报「找不到真身」，重则静默退化成**空断言**（看着通过其实没验）。
-
-实测：`ModelHealth` 联合类型用旧锚点在真源上解析出 **0** 种状态；归一化 + 改成
-「到下一个顶层 `export`」后解析出 **6** 种。改动：
-
-- `tests/frontend-templates.mjs`：读源码后统一 `replace(/\r\n/g, '\n')`；联合类型的边界从
-  「空行」改成「下一个顶层 `export`」（空行只是排版，随时会挪）。
-- `tests/personal-ui.mjs`：新增 `lf()`，`layoutForAction`/`kindOf`/`extOf` 三处行尾锚点
-  先归一化再匹配（同类隐患，当前恰好通过）。
-
-### 验证
-
-`npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0** 全绿（前端模板 26 /
-个人空间 362 / 管理控制台 76 / 审计 16 / 交付完整性 60 / 首次部署 3 / smoke 119 / 模型解析 44 /
-预览上限 42 / 扩展名 69 / .doc+Office 收敛 79）。
 
 ---
 
@@ -1141,6 +805,346 @@ reasoningOnly / garbage / 400 / 429 / 500 / 四种流式畸形），而不是只
 新增回归 11 例，覆盖上述四条的行为面：改密的四种拒绝路径 + 旧密码作废 + 其它会话失效 +
 当前会话保留；不存在项目 404；超长名与坏目录的错误文案不含绝对路径/errno；
 个人空间全文检索给说明且他人仍 403。并入 `run-all.mjs` 常驻。
+
+---
+
+## [3.1.4] — 2026-10-14
+
+> **发布收口批 A**（对应 [`docs/PrivHub-开发状态与路线图.md`](docs/PrivHub-开发状态与路线图.md) §4.2）：
+> 纯内部加固，**不引入新功能面**，风险最低、最先落。四段合并为一次修订号发布。
+
+### 并发「读-改-写」丢更新收口（D6）：共享 JSON 的落盘点全部串行化
+
+**无接口破坏、无数据变更**（唯一的行为变化：并发写入时不再丢记录；单请求响应体不变）。
+**未同步部署包**（同步生产需显式授权）。
+
+#### 问题：单次写盘是原子的，但「读 → 改 → 写」这个**序列**不是
+
+`svc-storage` 的每次写盘都走「临时名 + rename」，断电也不会留下半个文件（D7 已保证临时名唯一）。
+但那保护的是**一次写**。本仓二十来个插件的落盘模式统一是：
+
+```ts
+const store = await load(FILE)   // ① 读全量
+store[key].push(entry)           // ② 改一份
+await save(FILE, store)          // ③ 写全量
+```
+
+两个并发请求会各自读到同一份旧数据、各自写回，**后者覆盖前者**。丢的不是同一条记录，
+而是**对方刚写进去的那条**。表现全是用户看得见的：
+
+- 「管理员刚签发的 Agent Key / 邀请码，库里查不到」——凭据丢失，连吊销都无从下手；
+- 「我明明收藏了，刷新就没了」；
+- 「两个人同时批注，少了一条」；
+- 「版本历史里少了刚才那次保存」。
+
+`withFileLock` 其实早就在 `privhub-core` 里（回收站删除用它，注释写得很清楚），
+但**全仓只有 core 自己在用** —— 插件层的落盘点一处都没串行化。
+
+#### 收口：锁键 = **文件绝对路径**，同一文件的所有写入者共用一把锁
+
+一律把整段「读 → 改 → 写」包进 `ctx.privhub.withFileLock(<文件绝对路径>, …)`，
+而不是只锁最后那一次 `save()`（只锁写等于没锁：两个请求仍会基于同一份旧快照写回）。
+锁键取**绝对路径**这一点很关键，见下节。
+
+| 插件 | 数据文件 | 收口的写路径 |
+|---|---|---|
+| `shell-settings` | `settings.json` | 设置项合并保存（主题 / 默认视图 / 上传上限 / 注册开关） |
+| `shell-favorites` | `favorites.json` | 收藏 / 取消收藏 |
+| `shell-recent` | `recent.json` | 记录「最近打开」；个人空间改名时的整份改写 |
+| `files-comments` | `comments.json` | 新建批注 / 删除 / 回复 / 改状态 |
+| `files-invite` | `invites.json` | 生成邀请码 / 撤销 |
+| `files-publish` | `publish.json` | 发布 / 撤销 |
+| `files-versions` | `versions.json` | 建快照 / 回滚（回写正文 + 追加反悔版本） |
+| `files-edit-md` | `data/doc-versions/index.json` | 保存前存档（版本索引是**所有文件共用一份**） |
+| `files-office-ai` | `office-api.json` | 生成 Office 接口密钥 / 吊销 |
+| `files-agent` | `agent-keys.json` | 签发 / 吊销 / 挂起 / 恢复 / 轮换 / 自助签发 / 自助吊销 / **鉴权时惰性标记过期** |
+| `files-agent` | `versions.json` | 覆盖前快照（`m2.versionSnapshot`）、沙箱版本恢复 |
+
+三个值得单独说明的点：
+
+- **`data/versions.json` 有三个写入者**（`privhub-files-versions`、`files-agent` 的覆盖前快照、
+  `files-agent` 的沙箱版本恢复）。它们分散在不同插件、不同模块里，要互相串行，唯一可行的锁键就是
+  **同一个文件绝对路径** —— 三处都用 `join(rootDir, 'data', 'versions.json')` 作键，才真是一把锁。
+- **`favorites.json` / `recent.json` 是「所有用户共用一份、按 username 分键」**，
+  所以两个人同时操作会撞同一个文件 —— 丢的是**别人**的记录。
+- **`agent-keys.json` 有八处写入者**。收口时新增了 `mutateKeys(ctx, fn)` 统一入口（读 → 回调改 → 写）。
+  同时把「构造一条新密钥记录」从落盘里**拆出来**（`buildKey` 只校验和生成、不碰文件）：
+  轮换要「读库定位旧 key → 追加新 key」，若让构造函数自己去取锁，就会对同一把锁重入而死锁。
+
+#### 判定为「不需要加锁」的几处（附理由，不是漏掉）
+
+- `svc-acl` / `svc-meta` / `svc-model`：**启动读进内存、之后按需写回**的缓存型服务，
+  不存在「从盘上读回来再合并」的窗口；且它们挂在 L2，早于持有 `privhub` 的 core，
+  无法 `inject privhub` 去用 `withFileLock`。它们的读失败风险由 D4 的 `assertStoreWritable` 兜住。
+- `svc-rag`（语料清单 / 向量状态 / 策展日志）：内存优先，摄取队列是**进程内单写者**，
+  落盘只是把内存对象整体序列化，不是读盘合并。
+- `files-agent` 的配额账本与限流桶：单写者 + 周期落盘（`dirty` 才写）。
+- 幂等记录（`agent-idem/<hash>.json`）：**按幂等键分文件**，不同键天然互斥。
+
+#### 测试：`tests/write-serialization.mjs`（25 断言，自带 3199 隔离实例）
+
+不验实现（不数 `withFileLock` 出现几次），只验**行为**：N 个请求并发打同一个落盘点，
+请求全部成功后，N 条记录必须一条不少地读得回来。覆盖设置合并、收藏、最近、批注、邀请码、
+Agent 密钥、文档版本、通用文件版本。另附一条「服务端 stderr 无插件加载失败」的装配哨兵。
+
+**带反向对照（证明这套测试真的抓得住回归）**：临时摘掉 `shell-favorites` POST 的锁后重跑 ——
+12 条并发收藏**只剩 1 条**（正是「后写覆盖先写」），恢复锁后 12/12。没有这个对照，
+「全绿」可能只是因为并发不够狠。
+
+> 附注（一次假对照的教训）：第一版反向对照只把 `withFileLock(FILE, async () => {…})`
+> 的开头换了，忘了把结尾的 `})` 改成 `})()` —— 于是那个箭头函数**根本没被调用**，
+> 路由拿到的是一个函数对象，解构出 `undefined`，响应成了 `{"ok":true}`、文件压根没写。
+> 它同样表现为「断言红」，但红的理由完全不是并发。故对照必须看成对改动，且要看**响应体**。
+
+#### 验证
+
+- `npm run typecheck` 干净；
+- `node tests/run-all.mjs --spawn` **EXIT=0**：HTTP 套件 120/0（新增
+  `agent-sandbox` 的「E2 密钥生命周期：轮换 / 挂起 / 恢复 / 已吊销不可操作」一条 ——
+  这三条路径正是 `mutateKeys` 重构过的，用它钉住没被改坏）；静态套件全绿
+  （前端模板 26 / 管理控制台 76 / 个人空间界面 362 / 审计可靠性 16 / 交付完整性 60 /
+  首次部署 3 / A 批修复 66 / 模型解析 48 / 明文迁移 40 / JSON 损坏防护 79 /
+  **并发写串行化 25** / 预览上限 42 / 扩展名收敛 69 / Office 收敛 79）。
+
+---
+
+### 系统 JSON 数据「损坏不得静默当空数据」（D4）：把「坏了」和「还没有」分开，并修掉两个同类的静默缺陷
+
+**无接口破坏、无数据变更**（唯一的行为变化：数据文件损坏时，操作**失败并说明原因**，而不是假装成功；新增 `.corrupt-<哈希8>.bak` 隔离存证，只增不改）。
+**未同步部署包**（同步生产需显式授权）。
+
+#### 问题：`catch { return {} }` 把「坏了」和「还没有」抹成同一件事
+
+十来个插件过去都这么读落盘 JSON：
+
+```ts
+if (!existsSync(FILE)) return {}
+try { return JSON.parse(await storage.readText(FILE)) } catch { return {} }
+```
+
+两件坏事连在一起：
+
+1. **看不见** —— 文件损坏（或解密失败、被截断）时界面显示「空列表」，用户以为数据本来就没有，
+   于是不会有人去修；
+2. **被覆盖** —— 多数调用点是「读 → 改 → 写」。读到空的 `{}`，紧接着一次 `save()`
+   就把那份**可能还能人工恢复**的原文永久盖掉。
+
+`data/agent-keys.json`、`data/invites.json` 这类**凭据文件**尤其致命：一次「新建密钥 / 生成邀请」
+就把已有凭据全部清空，而且不报错。
+
+#### 收口：一个统一入口，按「丢了还能不能重建」分两档
+
+新增 `plugins/privhub-core/src/json-store.ts`：
+
+| 入口 | 语义 | 用在 |
+|---|---|---|
+| `readJsonStore(storage, file, fallback, check?)` | 不存在 / 空文件 → `fallback`；损坏 → **逐字节隔离存证 + 抛错** | 丢了就找不回来的：凭据、批注、收藏、最近、版本历史、回收站、邀请码、发布、模板、ACL 规则、元数据、看板、设置、模型配置、Agent Key |
+| `readJsonStoreLenient(...)` | 同样隔离 + 记日志，但返回 `fallback` | **只给派生数据**：RAG 语料清单、向量状态、chunk JSONL（真身是盘上的语料，可重建） |
+| `assertStoreWritable(healthy, file)` | 内存里缓存过坏数据的服务，写回前自查 | `acl` / `meta` / `model`：它们是「启动读进内存、之后按需写回」，读失败会被构造函数吞掉，留一份空数据在内存里等着覆盖原文 |
+
+- 隔离文件命名 `<原名>.corrupt-<内容哈希8位>.bak`：**按内容命名**，同一份损坏只隔离一次，且**原文原地不动**。
+  去重只靠内容哈希 + `flag:'wx'`，**不另设**「同一路径只隔离一次」的内存表 —— 那种表以路径为键，
+  同一文件先后坏成不同内容时会把**最新的现场**当成重复丢掉（本批写测试时实测发现，已改）。
+- 判据只有一条：**这份数据丢掉之后还能不能重建**；不能重建就用严格版。
+- 顺带修正 `core.moveToTrash`：先读回收站记录、再动目录，避免「文件已移走但没记账」的半截状态。
+
+#### 看得见：损坏的原因要能到用户眼前
+
+`CorruptDataError` 标了 `userVisible = true`，`src/web-server.ts` 唯一的兜底 catch 据此回
+`500 + {ok:false,error:'<中文原因>'}`（其余异常仍只回 `internal server error`，不泄露细节）。
+文案点名**是哪个文件**、**为什么**、**隔离到哪**、**下一步该做什么**，且不含完整磁盘路径。
+
+#### 顺带挖出并修掉的两个老缺陷（同类：静默失效）
+
+1. **`privhub-files-office-ai` 整个插件没挂上，路由全 404。** 它的 `package.json` 缺
+   `"type": "module"`，于是该包被判为 CJS，`import … from '../../privhub-core/src/json-store'`
+   （无扩展名的 `.ts`）在 CJS 解析器下找不到模块 → 装配期 `[assembly] 插件加载失败` →
+   `/privhub/api/ai/office/*`（schema / read / write / keys）**全部 404**，而现场只有一行 stderr。
+   修：补 `"type": "module"`（与其余所有带 `package.json` 的插件一致）；
+   `privhub-files-office-ui` 同样补上（今天没有相对导入，属同类隐患）。
+   教训是**新增一处相对导入就可能让插件静默消失**，故把「启动期无插件加载失败」变成常驻断言。
+2. **模型配置重启后从来不生效。** `privhub-svc-model` 声明 `inject: []`，而 `loadConfig` 用
+   `ctx.storage` —— cordis 对未 `inject` 的服务键是**取用即抛**
+   （`cannot get property "storage" without inject`），当时的 `catch { this.cfg = null }`
+   把这句静静吞了。现象：界面显示「未配置」，运维再填一遍又能用，谁也不会怀疑落盘/重读。
+   修：`inject: ['storage']`，catch 改为告警。
+
+#### 刻意不动的一处（残余，已记账）
+
+ACL 规则文件读坏时，本层仍退化为「无规则」—— 即**细粒度裁决失效、退回 core 的项目级权限
+（fail-open）**。本批只保证「规则文件不会被一次新增规则清空」。收紧为 fail-closed 会让
+**修复前的所有文件访问一律被拒**，属独立评估项，已记入待改进清单。
+
+#### 测试
+
+- 新增 `tests/json-corruption.mjs`：**79 条**，两部分 ——
+  ① 进程内单测 `json-store` 语义（不存在 / 空 / 合法 / 损坏 / 形状不符 / 解密失败 /
+  ENOENT 竞态 / 宽容版 / 写前自查，并含「合法文件不被误判」的阴性对照）；
+  ② 端到端（隔离实例，端口 3198）：HTTP 层看得见原因 + 写路径真的被拒 + 盘上内容分毫未动 +
+  存证逐字节一致 + 日志有记录 + 人工修好后恢复 + **重启后读得到、写得进**；
+  另有 **stderr 哨兵**（两次启动都不得有插件加载失败）。
+- `tests/model-parsing.mjs` 的进程内挂载补一个最小 `storage`（`inject` 声明变严后仍按生产装配挂载）。
+- `npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0**
+  （A 批断言 66 / 模型解析 48 / 明文迁移 40 / JSON 损坏防护 79 / 预览上限 42 /
+  扩展名 69 / Office 契约 79，全绿）。
+- 运维备注：`data/**/*.corrupt-<哈希8>.bak` 是损坏现场的逐字节存证，**不自动清理**，
+  何时清理由运维决定。
+
+---
+
+### 系统数据「明文 → 密文」迁移落地（D13）：把一件早就该做、但一直没人能做的事做完
+
+**无接口破坏、无数据变更**（迁移只作用于**已经存在**的明文文件，且迁移前自动备份明文）。
+**未同步部署包**（同步生产需显式授权）。
+
+#### 问题：写入口早就加密了，早先写下的文件却永远停在明文
+
+D10 那一批把读写统一到了 `ctx.storage`（`PHENC1` 密文），此后**新写入**自然是密文。但
+**在切换之前**落到盘上的文件不会自己变密文 —— 只有「下次被这个文件写一遍」才会。于是那些
+**再也不会被写**的旧数据就永远停在明文：老邀请码、老批注、旧发布链接。这正是要迁移的东西，
+而它们恰恰可能含**免登录取证**。
+
+实测本机 `data/invites.json` 就是明文，内容开头的 `{"code": "zzvxf…` 直接用记事本就能读。
+本机当前仍为明文的只有 3 个文件（`comments.json` / `invites.json` / `publish.json`）——
+问题很精确，不是全仓扫荡。
+
+#### 原来的迁移函数是个危险品（已删除）
+
+仓里有个 `migrateTree`：递归遍历整个目录、**零调用**、无备份、原地写、失败即半截。
+对最自然的调用 `migrateTree(dataDir)`，它会顺手加密掉四类绝不该被 `PHENC1` 包一层的文件：
+
+| 文件 | 被加密后的后果 |
+|---|---|
+| `data/secret.key` | **密钥本身没了 → 全部密文永久不可恢复** |
+| `data/audit.jsonl` | 自有 `PHAUD1` 块格式被套一层 `PHENC1`，`auditScan()` 读不出任何块（审计整段失效） |
+| `data/logs/*.log` | 明文追加的日志被加密后，新旧内容混成乱码 |
+| `data/git-backup/**` | 真 git 仓库，内部文件一加密，备份全废 |
+
+所以本次**不是**在「修」它，而是删掉它，换成「显式清单 + 逐条守卫 + 备份 + 原子写 + 回读校验」。
+
+#### 改动 · `plugins/privhub-svc-storage/src/index.ts`
+
+- 删除 `migrateTree` / `migrateTreeExclude`（零调用死代码，且是上面那类事故的唯一入口）。
+- 新增 `scanPlaintextSystemFiles()`：只列 **`data/` 顶层的 `*.json`**，跳过隐藏文件与已是
+  `PHENC1` 的文件。**不递归** —— 递归正是灾难的来源。
+- 新增 `migrateFilesToEncrypted(files)`，逐文件返回
+  `migrated | already-encrypted | refused | failed`，并带 `reason` / `backup`：
+  - **守卫**：密钥文件（按 `resolve` 全等判）、`audit*`、`data/logs/` 之下、`data/git-backup/`
+    之下、以及「加密未启用」——**每一类都拒绝并说明原因**，不是静默跳过。目录比较带 `sep`，
+    `data/logs-extra/` 这类**同前缀兄弟目录不会被误伤**。
+  - **保底**：迁移前用 `flag:'wx'` 写一份 `<名>.plain-<时间戳>.bak`（已存在则报错，不覆盖）；
+    写入走 `ctx.storage.writeBuffer`（原子）；写完**回读比对**，不一致就**还原明文**并在
+    `reason` 里说明「已还原明文」；连还原都失败则明确提示「请从备份手工恢复」。
+  - 备份**留在原地不自动清理** —— 那是明文的存证，何时清理由运维决定。
+- **启动自检**：挂载时异步扫描一次，发现明文就用 `console.warn` 列出**具体文件名**与
+  **下一步动作**（该调哪个管理接口）。这里必须走 `console`：本仓没有 logger exporter，
+  `ctx.logger.*` 实测输出到虚空；`main.ts` 的 `installFileLogger` 挂在 `console` 上。
+  同一处顺带把原先那条同样没人看得见的 `ctx.logger.error('[storage] 密钥初始化失败…')`
+  也改成了 `console.error`。
+
+#### 改动 · `plugins/privhub-admin/src/index.ts`（两条管理端路由，分开「看见」与「动手」）
+
+| 路由 | 行为 |
+|---|---|
+| `GET /privhub/api/storage/plaintext` | 列出仍明文的系统数据（**只回文件名与体积，不回绝对路径**）+ `encryptionEnabled`。管理员一进来就能看到「还有几个明文」，而不是点了迁移才知道 |
+| `POST /privhub/api/storage/migrate` | 加密未启用时 400 拒绝（迁移无意义）；逐文件回报 `status/reason/backup`；每个文件写一条 `storage-migrate` 审计（含操作人、文件名、备份名） |
+
+两条都是**仅管理员**（普通用户 403，测试钉住）。
+
+#### 测试
+
+- **`tests/storage-migration.mjs`（新增，40 条，自给自足）**：进程内挂真身 `svc-storage`，
+  造一个「什么文件都有」的 `data/`（明文 json / `secret.key` / `PHAUD1` 审计 / 日志 /
+  `git-backup` / 同前缀兄弟目录），验证：启动告警走 `console.warn` 且点名文件、扫描只收顶层
+  `*.json`、四类危险文件各自「拒绝 + 说明原因」且**内容没被动过**、同前缀兄弟目录不被误伤、
+  迁移后是 `PHENC1` 且**读回来逐字一致**、备份与原文**逐字节一致**、重复迁移幂等、
+  **注入回读不一致 → 报 `failed` 并还原明文**（含「注入确实被触发」的自证断言，
+  否则该条是假绿）、加密关闭时拒绝且文件不动。
+- **`tests/rag-resilience.mjs` 新增 18 条端到端**：启动告警真的落进了 `data/logs` 日志、
+  `GET` 未登录 401 / 管理员可见 / 普通用户 403、`POST` 迁移 `migrated=1`、盘上变 `PHENC1`、
+  备份逐字节一致、二次迁移 `migrated=0`、清单归零、审计记录点名文件与操作人。
+- `tests/run-all.mjs` 把 `storage-migration.mjs` 纳入静态批并加入 `needsTsx` 名单
+  （它要 `import()` 真身 `.ts`）。
+
+#### 验证
+
+`npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0**
+（系统数据迁移 40 / A 批 66 / 模型解析 48 / 前端模板 26 / 个人空间 362 / 管理控制台 76 /
+交付完整性 60 / …）。
+
+---
+
+### 模型回包解析加固 + 密钥脱敏（svc-model），附独立回归套件
+
+**无接口变更、无数据变更、无配置变更**。改的是 `svc-model` 对上游回包的**宽容度**与
+**出错时说的话**。触发点很具体：`/api/rag/ask` 的 catch 把 `ModelError.message`
+**原样**交给前端 toast —— 这段文案就是用户看到的一切。
+
+迁前的问题（两类，都很实际）：
+
+- **官方形状之外一概不认**：只读 `choices[0].message.content`，抽不到就
+  `'chat 响应异常：' + JSON.stringify(body)`，把整段 JSON dump 到界面上。换一个兼容网关
+  （回 `choices[0].text` / `output_text` / Gemini 的 `candidates[].content.parts`）就整个
+  问答不可用 —— 而 PrivHub 这边其实什么都没做错。
+- **空回答静默通过**：流式只认 `delta.content`，只吐 `reasoning_content` 或一帧正文都没有时
+  返回**空字符串**，界面上是一个没有任何解释的空气泡；末帧若没有收尾换行，最后一次增量
+  会被缓冲区吞掉。
+
+#### 改动 · `plugins/privhub-svc-model/src/index.ts`
+
+- `ModelHealth` 一侧新增错误码 `MODEL_RATE_LIMIT`：HTTP 429 与「格式不对」分开
+  （两者处置完全不同：前者稍后重试/降并发，后者要改配置）。
+- 四个**纯函数**（都在文件头注明了铁律：**sanitize，永不 dump JSON**）：
+  - `sanitizeError(input, max=300)` —— `sk-…` 保留前 4 位打码、`Bearer …` 打码、
+    `api_key|api_token|authorization` 打码，折叠空白并截断。上游**回显**密钥是常有的事，
+    不做这层等于把密钥显示在用户屏幕上。
+  - `upstreamMessage(body, rawText)` —— 优先取结构化原因（`error.message`/`message`/`msg`/
+    `detail`/`reason`/`type`/`code`），取不到再回退脱敏后的原文。
+  - `extractChatText(body) → { text, reasoning }` —— 一套代码吃多家兼容形状（见上），
+    推理内容**单独取出**，不当正文用（否则等于把思考过程当答案）。
+  - `describeShape(body)` —— 紧凑的形状摘要（`foo bar{baz} list[2]`、`空响应体`），
+    定位问题时比「响应异常」有用得多。
+- 非 2xx 分支改为：429 → `MODEL_RATE_LIMIT` + 可执行文案；其余 → `MODEL_BAD_RESPONSE` +
+  `模型端点返回 HTTP N：<上游原因>`。
+- 流式读取循环新增 `feedLine()`，接受 `delta.content`/`delta.text`/`message.content`/`text`，
+  并 flush 末尾无换行的残留帧；流结束仍无正文时**抛错**（区分「只给了推理内容」与
+  「一帧正文都没有」），不再返回空串。
+- `embed()` 同时接受 `data[].embedding` 与 `embeddings`；报错写清「需要几个、收到几个」
+  + 脱敏原因 + 形状摘要。
+
+#### 新增 · `tests/model-parsing.mjs`（44 条），已挂进 `run-all`
+
+自给自足：进程内挂**真身** `svc-model` + 本机假上游（端口 3197），不连真实模型、不碰 `data/`。
+关键是假上游把「各家兼容网关的真实差异」做成可切换档位（std / legacy / responses / gemini /
+reasoningOnly / garbage / 400 / 429 / 500 / 四种流式畸形），而不是只喂标准形状 ——
+只喂标准形状的测试对上面那批 bug 是瞎的（改前改后都绿）。
+
+断言指向**行为与用户可见文案**，不指向实现：能抽出正文就对；抽不出时报错里得有人话、
+不得 dump JSON、不得出现完整密钥。含**自证断言**（假上游确实被请求到 N 次、确实以
+`stream:true` 发过 5 次），否则整套可能只是假绿。
+
+阴性对照：临时注入迁前实现 → 35 通过 / 9 失败，其中一条正是用户可见的
+`chat 响应异常：{"choices":[{"text":"旧形状正文"}]}`；移除注入后 44/0，typecheck 干净。
+
+#### 修复 · 测试对行尾的隐式依赖（本批新套件连带暴露）
+
+本仓 `core.autocrlf=true`，工作区里 **LF 与 CRLF 混着**（同一文件经过不同工具后行尾会变）。
+而若干「从源码抠函数真身」的断言用了 `\n\n` / `\n}` 这类**行尾锚点**，在 CRLF 文件上
+匹配长度直接是 0 —— 轻则报「找不到真身」，重则静默退化成**空断言**（看着通过其实没验）。
+
+实测：`ModelHealth` 联合类型用旧锚点在真源上解析出 **0** 种状态；归一化 + 改成
+「到下一个顶层 `export`」后解析出 **6** 种。改动：
+
+- `tests/frontend-templates.mjs`：读源码后统一 `replace(/\r\n/g, '\n')`；联合类型的边界从
+  「空行」改成「下一个顶层 `export`」（空行只是排版，随时会挪）。
+- `tests/personal-ui.mjs`：新增 `lf()`，`layoutForAction`/`kindOf`/`extOf` 三处行尾锚点
+  先归一化再匹配（同类隐患，当前恰好通过）。
+
+#### 验证
+
+`npm run typecheck` 干净；`node tests/run-all.mjs --spawn` **EXIT=0** 全绿（前端模板 26 /
+个人空间 362 / 管理控制台 76 / 审计 16 / 交付完整性 60 / 首次部署 3 / smoke 119 / 模型解析 44 /
+预览上限 42 / 扩展名 69 / .doc+Office 收敛 79）。
 
 ---
 
