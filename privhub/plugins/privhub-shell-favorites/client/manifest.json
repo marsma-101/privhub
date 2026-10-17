@@ -3,8 +3,19 @@
   "title": "收藏",
   "icon": "⭐",
   "description": "文件/文件夹收藏（星标）：收藏列表，一键跳转原路径",
-  "slots": ["fav-view"],
+  "slots": [
+    "fav-view"
+  ],
   "barItems": [
-    { "icon": "⭐", "title": "收藏", "slot": "app-iconbar", "view": "favorites", "group": "files", "capFeature": "nav.favorites" }
+    {
+      "icon": "⭐",
+      "title": "收藏",
+      "slot": "app-iconbar",
+      "view": "favorites",
+      "group": "files",
+      "capFeature": "nav.favorites",
+      "desc": "星标文件/文件夹，在列表里一键跳回原路径。",
+      "doc": "01-文件与目录.md"
+    }
   ]
 }

@@ -3,9 +3,28 @@
   "title": "设置",
   "icon": "⚙",
   "description": "系统设置面板（D25）：主题 / 默认视图 / 上传限制",
-  "slots": ["settings", "admin-settings"],
+  "slots": [
+    "settings",
+    "admin-settings"
+  ],
   "barItems": [
-    { "icon": "⚙", "title": "设置", "slot": "app-iconbar", "view": "settings", "group": "system" },
-    { "icon": "⚙", "title": "系统设置", "slot": "admin-nav", "view": "settings", "capFeature": "admin.settings" }
+    {
+      "icon": "⚙",
+      "title": "设置",
+      "slot": "app-iconbar",
+      "view": "settings",
+      "group": "system",
+      "desc": "主题 / 默认视图 / 上传限制 / 登录密码（改自己的那一份）。",
+      "doc": "06-个人与设置.md"
+    },
+    {
+      "icon": "⚙",
+      "title": "系统设置",
+      "slot": "admin-nav",
+      "view": "settings",
+      "capFeature": "admin.settings",
+      "desc": "全局设置：读取对所有人开放，写入仅管理员。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

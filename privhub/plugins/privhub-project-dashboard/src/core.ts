@@ -18,13 +18,18 @@
  */
 
 import { join } from 'node:path'
-import { readJsonStore } from '../../privhub-core/src/json-store'
+import { readJsonStore, msgOf } from '../../privhub-core/src/json-store'
+/* 「任务进度」组件的数据来自任务看板的同一个加载器 —— 项目看板不另存一份进度，
+ * 因此两边永远不会漂移（这正是「任务看板为第一信息源」的落地方式）。 */
+import { loadTaskSummary, type TaskSummary } from '../../privhub-task-board/src/core'
+/* 「智能体名册」组件的数据来自名册的同一个加载器（名册条目 + 该项目里的系统实证）。 */
+import { loadAgentsView, type AgentView } from '../../privhub-roster/src/core'
 
 /* ============ 契约 ============ */
 
 export type SectionWidth = 'full' | 'half'
 export type PlanState = 'done' | 'doing' | 'todo' | 'blocked'
-export type WidgetType = 'markdown' | 'stats' | 'plan'
+export type WidgetType = 'markdown' | 'stats' | 'plan' | 'tasks' | 'agents'
 
 export interface StatItem { label: string; ref?: string; value?: string; hint?: string }
 export interface PlanItem { text: string; state: PlanState; note?: string }
@@ -33,6 +38,14 @@ export interface Widget {
   title: string
   text: string
   items: (StatItem | PlanItem)[]
+  /** tasks 专用：只看这些列（列 id 或列标题；缺省=全部列）。 */
+  columns?: string[]
+  /** tasks 专用：卡片明细条数上限（1…LIMITS.taskCards，缺省 30）。 */
+  limit?: number
+  /** tasks 专用：false = 只显示计数与进度条，不列卡片。 */
+  showCards?: boolean
+  /* agents 组件没有旋钮：它的内容 = **服务本项目的智能体名册**（按服务范围过滤），
+   * 每条带「擅长 / 自述 / 系统实证」。范围由名册自身声明，不在这里改。 */
 }
 export interface Section {
   id: string
@@ -73,9 +86,11 @@ export const LIMITS = {
   title: 80,
   label: 40,
   note: 200,
+  taskColumns: 12,
+  taskCards: 60,
 } as const
 
-const WIDGET_TYPES: Record<WidgetType, true> = { markdown: true, stats: true, plan: true }
+const WIDGET_TYPES: Record<WidgetType, true> = { markdown: true, stats: true, plan: true, tasks: true, agents: true }
 const PLAN_STATES: Record<PlanState, true> = { done: true, doing: true, todo: true, blocked: true }
 
 /* ============ 路径与默认文档 ============ */
@@ -111,8 +126,14 @@ export function defaultDashboard(project: string): DashboardDoc {
         }],
       },
       {
-        id: 'sec_plan', title: '计划 / 里程碑', width: 'full', collapsed: false,
-        widgets: [{ type: 'plan', title: '', text: '', items: [] }],
+        id: 'sec_tasks', title: '任务进度（实时取自任务看板）', width: 'full', collapsed: false,
+        widgets: [{ type: 'tasks', title: '', text: '', items: [] }],
+      },
+      {
+        id: 'sec_agents', title: '智能体名册（登记/自述 + 系统实证）', width: 'full', collapsed: false,
+        widgets: [{
+          type: 'agents', title: '', text: '', items: [],
+        }],
       },
       {
         id: 'sec_note', title: '说明', width: 'full', collapsed: false,
@@ -120,7 +141,8 @@ export function defaultDashboard(project: string): DashboardDoc {
           type: 'markdown', title: '', text:
             '这个看板由 **AI 智能体**按项目实际情况维护：分区的大小、顺序与内容都可以被重写。\n\n' +
             '- 顶部「概览」里的数字是**实时**从项目里算出来的，不是写死的。\n' +
-            '- 「计划 / 里程碑」与后续分区由智能体写入。\n' +
+            '- 「任务进度」直接投影**任务看板**（同一份数据）：在这里改不了任务，任务请在「任务看板」里维护。\n' +
+            '- 其余分区（计划 / 里程碑、说明等）由智能体写入。\n' +
             '- 写入接口：`PUT /privhub/api/dashboard`（登录态）或 `POST /privhub/api/agent/v1/dashboard`（智能体密钥）。',
           items: [],
         }],
@@ -167,6 +189,18 @@ function cleanPlanItem(v: unknown): PlanItem | null {
   return { text, state: PLAN_STATES[st] ? st : 'todo', ...(o.note ? { note: s(o.note, LIMITS.note) } : {}) }
 }
 
+function cleanTaskColumns(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const x of v) {
+    if (typeof x !== 'string') continue
+    const t = x.trim().slice(0, LIMITS.label)
+    if (t && !out.includes(t)) out.push(t)
+    if (out.length >= LIMITS.taskColumns) break
+  }
+  return out
+}
+
 function cleanWidget(v: unknown): Widget | null {
   if (!v || typeof v !== 'object') return null
   const o = v as Record<string, unknown>
@@ -180,7 +214,18 @@ function cleanWidget(v: unknown): Widget | null {
   } else if (type === 'plan') {
     items = rawItems.slice(0, LIMITS.planItems).map(cleanPlanItem).filter((x): x is PlanItem => !!x)
   }
-  return { type, title, text: clipText(o.text), items }
+  const w: Widget = { type, title, text: clipText(o.text), items }
+  /* tasks 组件：内容由任务看板实时算出来，所以只接受两个「旋钮」，不接受任何写死的条目
+   * —— 这正是它与 plan 的区别：plan 是手写的计划快照（会跟任务看板漂移），tasks 是实时视图。 */
+  if (type === 'tasks') {
+    const cols = cleanTaskColumns(o.columns)
+    if (cols.length) w.columns = cols
+    if (typeof o.limit === 'number' && Number.isFinite(o.limit)) {
+      w.limit = Math.max(1, Math.min(LIMITS.taskCards, Math.trunc(o.limit)))
+    }
+    if (o.showCards === false) w.showCards = false
+  }
+  return w
 }
 
 /**
@@ -334,4 +379,59 @@ export async function computeFactsCached(ctx: { privhub: any }, project: string)
   const facts = await computeFacts(ctx, project)
   factsCache.set(project, { at: Date.now(), facts })
   return facts
+}
+
+/* ============ 任务进度（实时投影自任务看板） ============ */
+
+/**
+ * 「任务进度」视图的三态：
+ *   · 有数据 → `{ ok: true, …TaskSummary }`（各列计数 / 完成度 / 卡片明细）；
+ *   · 功能被关或数据不可读 → `{ ok: false, disabled: true, reason }`（前端显示一行说明，不报错）；
+ *   · 该看板没有 tasks 组件 → 路由根本不算它（响应里 `tasks: null`）。
+ */
+export type TaskProgressView = ({ ok: true } & TaskSummary) | { ok: false; disabled: true; reason: string }
+
+/** 看板文档里有没有 tasks 组件 —— 没有就不必去读任务看板文件（省一次 IO）。 */
+export function wantsTasks(doc: DashboardDoc): boolean {
+  return doc.sections.some((sec) => sec.widgets.some((w) => w.type === 'tasks'))
+}
+
+/* ============ 智能体名册（实时投影自名册 + 该项目的系统实证） ============ */
+
+/**
+ * 「智能体名册」视图的三态（与任务进度同构）：
+ *   · 有数据 → `{ ok: true, entries }`（服务本项目的智能体 + 各自在该项目的战绩）；
+ *   · 名册数据不可读 → `{ ok: false, disabled: true, reason }`（前端显示一行说明，不报错）；
+ *   · 该看板没有 agents 组件 → 路由根本不算它（响应里 `agents: null`）。
+ */
+export type AgentsView = { ok: true; entries: AgentView[] } | { ok: false; disabled: true; reason: string }
+
+/** 看板文档里有没有 agents 组件 —— 没有就不必去读名册（省一次 IO）。 */
+export function wantsAgents(doc: DashboardDoc): boolean {
+  return doc.sections.some((sec) => sec.widgets.some((w) => w.type === 'agents'))
+}
+
+/**
+ * 读某项目的智能体名册视图。**读失败不抛**：名册只是附加视图，名册文件出问题
+ * 不该让整块项目看板 500 —— 降级成一行说明即可（json-store 已把损坏隔离存证并打了日志）。
+ */
+export async function readAgents(storage: StorageLike, project: string): Promise<AgentsView> {
+  try {
+    return { ok: true, entries: await loadAgentsView(storage, project) }
+  } catch (e) {
+    return { ok: false, disabled: true, reason: '智能体名册数据不可读：' + msgOf(e) }
+  }
+}
+
+/**
+ * 读任务进度。**读失败不抛**：项目看板不该因为任务看板的文件出问题而整页 500
+ * —— 进度只是附加视图，降级成一行说明即可（`json-store` 已把损坏隔离存证并打了日志，
+ * 所以这里降级不属于「静默」）。
+ */
+export async function readTaskProgress(storage: StorageLike, project: string): Promise<TaskProgressView> {
+  try {
+    return { ok: true, ...(await loadTaskSummary(storage, project)) }
+  } catch (e) {
+    return { ok: false, disabled: true, reason: '任务看板数据不可读：' + msgOf(e) }
+  }
 }

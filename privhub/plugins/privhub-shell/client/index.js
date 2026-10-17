@@ -75,18 +75,28 @@ const TopbarUser = {
  *   二级 = 类别下的具体功能，全是「对当前项目内文件」的操作，只在选了项目后出现。
  *   全局 = 跨项目 / 系统：工作台、智能体接入（跨项目）、设置、管理控制台 —— 常驻不折叠。
  *
- * 栏内【只显示图标】（窄栏、更简洁）：名称走悬停提示（原生 title）+ 无障碍名（aria-label）。
+ * 栏内【只显示图标】（窄栏、更简洁）：名称走悬停提示 + 无障碍名（aria-label）。
+ *   悬停提示分两种：条目/分类声明了 `desc` 时弹**自定义气泡**（标题 + 一句话简介 +
+ *   「查看完整说明」，导读站内《使用说明》文档）；没有 desc 时退回原生 title。
+ *   气泡用 teleport 挂到 body（appbar 是 overflow:hidden，气泡在栏内会被裁掉）。
  * 归组是【数据】：每个条目属于哪一段由各插件 manifest 的 barItem.group 决定；
  * 这里只定「类别的先后 / 图标 / 中文名」「组内条目的先后」，改这里不碰任何插件。
  * 契约由 tests/integrity.mjs 兜底（非 admin-nav 条目必须声明合法 group）。
  */
 const SECTION_DEFS = [
-  { id: 'files',     label: '文件', icon: '🗄️', order: ['files', 'search', 'favorites', 'trash'] },
-  { id: 'knowledge', label: '知识', icon: '🧠', order: ['wiki', 'kg', 'tags', 'template', 'refcheck'] },
-  { id: 'collab',    label: '协作', icon: '🤝', order: ['taskboard', 'dashboard', 'calendar'] },
-  { id: 'ai',        label: 'AI',   icon: '✨', order: ['rag'] },
+  { id: 'files',     label: '文件', icon: '🗄️', order: ['files', 'search', 'favorites', 'trash'],
+    desc: '对当前项目里文件的操作：浏览 / 上传 / 搜索 / 收藏 / 回收站。', doc: '01-文件与目录.md' },
+  { id: 'knowledge', label: '知识', icon: '🧠', order: ['wiki', 'kg', 'tags', 'template', 'refcheck'],
+    desc: '把文件变成能找、能连、能读的知识：知识库 / 图谱 / 标签 / 新建文档 / 引用检查。', doc: '02-知识组织.md' },
+  { id: 'collab',    label: '协作', icon: '🤝', order: ['taskboard', 'dashboard', 'calendar'],
+    desc: '记任务、展示进度、指派到人：任务看板 / 项目看板 / 任务日历。', doc: '03-协作与看板.md' },
+  { id: 'ai',        label: 'AI',   icon: '✨', order: ['rag'],
+    desc: '站内 AI 工具：语料仓库 / 向量化 / 问答 / 模型与 Key 管理。', doc: '04-AI与智能体接入.md' },
 ]
-const GLOBAL_ORDER = ['home', 'agent']
+/* 全局组的一级图标（竖栏最上面那一段，未选项目时也常驻）。
+ * 顺序即版面：🌳 全局思维导图（privhub-mindmap，P3，仅管理员）插在
+ * 「📊 工作台」与「🔌 智能体接入」之间 —— 主人 2026-10-17 指定的位置。 */
+const GLOBAL_ORDER = ['home', 'mindmap-global', 'agent']
 const SYSTEM_ORDER = ['admin', 'settings']
 const KNOWN_GROUPS = new Set([...SECTION_DEFS.map((d) => d.id), 'global', 'system'])
 
@@ -99,9 +109,14 @@ function byOrder(order) {
   })
 }
 
+/* 悬停气泡的收起定时器（模块级：图标栏全局只有一份，且不参与响应式）。
+ * 留 ~160ms 宽限：鼠标从图标滑到气泡上时不至于闪没。 */
+let helpHideTimer = null
+function helpHideNow() { if (helpHideTimer) { clearTimeout(helpHideTimer); helpHideTimer = null } }
+
 const AppIconbar = {
   name: 'shell-app-iconbar',
-  data() { return { barItems, badges, nav, open: null } },
+  data() { return { barItems, badges, nav, open: null, help: null, helpPos: { top: 0, left: 0 } } },
   computed: {
     /* 可上栏的条目：capFeature 已在骨架按开关过滤掉；这里再去掉管理控制台侧栏条目
      * （admin-nav 只在控制台里导航用，不在图标栏占位）。 */
@@ -110,7 +125,10 @@ const AppIconbar = {
     sections() {
       if (nav.project === null) return []
       return SECTION_DEFS
-        .map((d) => ({ id: d.id, label: d.label, icon: d.icon, items: byOrder(d.order)(this.rail.filter((bi) => bi.group === d.id)) }))
+        .map((d) => ({
+          id: d.id, label: d.label, icon: d.icon, desc: d.desc, doc: d.doc,
+          items: byOrder(d.order)(this.rail.filter((bi) => bi.group === d.id)),
+        }))
         .filter((s) => s.items.length)
     },
     /* 全局：常驻、不折叠。group 不认识的条目并进来 —— 宁可多显，不可静默吞掉。 */
@@ -139,8 +157,9 @@ const AppIconbar = {
     'nav.project'() { this.syncOpen() },
   },
   mounted() { this.syncOpen() },
+  beforeUnmount() { helpHideNow() },
   methods: {
-    openBar(bi) { window.PrivHub.openBarItem(bi) },
+    openBar(bi) { helpHideNow(); this.help = null; window.PrivHub.openBarItem(bi) },
     /* 手风琴：开一个就关掉其它；再点当前这个则收起。 */
     toggleSection(id) { this.open = this.open === id ? null : id },
     syncOpen() {
@@ -148,18 +167,43 @@ const AppIconbar = {
       const sec = this.sections.find((s) => s.items.some((bi) => (bi.view || bi.slot) === v))
       if (sec) this.open = sec.id
     },
+    /* ---- 悬停说明气泡 ----
+     * 只有声明了 desc 的条目才弹（否则保留原生 title，行为与迁前一致）。
+     * 位置由被悬停元素的 boundingRect 推出来，气泡用 position:fixed 贴在它右侧。 */
+    showHelp(bi, ev) {
+      helpHideNow()
+      if (!bi || !bi.desc) return
+      const el = ev && ev.currentTarget
+      if (el && typeof el.getBoundingClientRect === 'function') {
+        const r = el.getBoundingClientRect()
+        this.helpPos = { top: Math.max(8, Math.round(r.top)), left: Math.round(r.right + 10) }
+      }
+      this.help = bi
+    },
+    /* 鼠标离开图标/分类：延迟收起，给一个滑到气泡上的宽限 */
+    hideHelp() { helpHideNow(); helpHideTimer = setTimeout(() => { this.help = null; helpHideTimer = null }, 160) },
+    keepHelp() { helpHideNow() },
+    /* 「查看完整说明」：交给骨架的 nav.openHelp（弹站内《使用说明》文档） */
+    openHelpDoc(bi) {
+      helpHideNow()
+      this.help = null
+      const n = window.PrivHub && window.PrivHub.nav
+      if (n && typeof n.openHelp === 'function') n.openHelp((bi && bi.doc) || '00-总览.md')
+    },
   },
   template: `
     <div class="appbar">
-      <div class="abar-scroll">
+      <div class="abar-scroll ph-scroll">
         <!-- 一级：功能类别（图标）。点开才露出该类别的条目，一次只开一个。
              未选项目时整段为空 —— 项目内功能无从谈起。 -->
         <div v-for="s in sections" :key="s.id" class="abar-sec">
           <div
             class="abar-head" :class="{ on: open === s.id }"
             role="button" tabindex="0" :aria-expanded="open === s.id ? 'true' : 'false'"
-            :title="s.label + '（点击展开 / 收起）'" :aria-label="s.label"
+            :title="s.desc ? null : (s.label + '（点击展开 / 收起）')" :aria-label="s.label"
             @click="toggleSection(s.id)" @keydown.enter="toggleSection(s.id)"
+            @mouseenter="showHelp({ icon: s.icon, title: s.label, desc: s.desc, doc: s.doc }, $event)"
+            @mouseleave="hideHelp" @focus="showHelp({ icon: s.icon, title: s.label, desc: s.desc, doc: s.doc }, $event)" @blur="hideHelp"
           >
             <span class="abar-ico">{{ s.icon }}</span>
           </div>
@@ -169,8 +213,9 @@ const AppIconbar = {
               <div
                 v-for="bi in s.items" :key="bi.title"
                 class="abar-item" :class="{ on: isActive(bi) }"
-                role="button" tabindex="0" :title="bi.title" :aria-label="bi.title"
+                role="button" tabindex="0" :title="bi.desc ? null : bi.title" :aria-label="bi.title"
                 @click="openBar(bi)" @keydown.enter="openBar(bi)"
+                @mouseenter="showHelp(bi, $event)" @mouseleave="hideHelp" @focus="showHelp(bi, $event)" @blur="hideHelp"
               >
                 <span class="abar-ico">{{ bi.icon }}</span>
                 <span v-if="(bi.view || bi.slot) === 'trash' && badges.trash > 0" class="abar-badge">{{ badges.trash }}</span>
@@ -183,8 +228,9 @@ const AppIconbar = {
         <div
           v-for="bi in globalItems" :key="bi.title"
           class="abar-item" :class="{ on: isActive(bi) }"
-          role="button" tabindex="0" :title="bi.title" :aria-label="bi.title"
+          role="button" tabindex="0" :title="bi.desc ? null : bi.title" :aria-label="bi.title"
           @click="openBar(bi)" @keydown.enter="openBar(bi)"
+          @mouseenter="showHelp(bi, $event)" @mouseleave="hideHelp" @focus="showHelp(bi, $event)" @blur="hideHelp"
         >
           <span class="abar-ico">{{ bi.icon }}</span>
         </div>
@@ -195,11 +241,33 @@ const AppIconbar = {
       <div
         v-for="bi in bottomItems" :key="bi.title"
         class="abar-item abar-bottom" :class="{ on: isActive(bi) }"
-        role="button" tabindex="0" :title="bi.title" :aria-label="bi.title"
+        role="button" tabindex="0" :title="bi.desc ? null : bi.title" :aria-label="bi.title"
         @click="openBar(bi)" @keydown.enter="openBar(bi)"
+        @mouseenter="showHelp(bi, $event)" @mouseleave="hideHelp" @focus="showHelp(bi, $event)" @blur="hideHelp"
       >
         <span class="abar-ico">{{ bi.icon }}</span>
       </div>
+
+      <!-- 悬停说明气泡：teleport 到 body（appbar overflow:hidden 会把气泡裁掉）。
+           鼠标可移到气泡上（keepHelp 取消收起），点「查看完整说明」打开站内说明文档。 -->
+      <teleport to="body">
+        <div
+          v-if="help" class="ph-help" role="tooltip"
+          :style="{ top: helpPos.top + 'px', left: helpPos.left + 'px' }"
+          @mouseenter="keepHelp" @mouseleave="hideHelp"
+        >
+          <div class="ph-help-head">
+            <span class="ph-help-ico">{{ help.icon }}</span>
+            <span class="ph-help-title">{{ help.title }}</span>
+          </div>
+          <div class="ph-help-desc">{{ help.desc }}</div>
+          <div class="ph-help-foot">
+            <a v-if="help.doc" class="ph-help-more" tabindex="0"
+               @click="openHelpDoc(help)" @keydown.enter="openHelpDoc(help)">📖 查看完整说明</a>
+            <span v-else class="ph-help-hint">暂无详细说明</span>
+          </div>
+        </div>
+      </teleport>
     </div>
   `,
 }

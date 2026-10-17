@@ -62,6 +62,22 @@ export function build() {
     eq(r.status, 403, '普通用户读全表应 403')
   })
 
+  /* §1.8：AI 写作助手是新登记的用户侧功能（默认 read）。这条用例是「开关真的连着功能」的
+   * 端到端证据 —— 不是只看 /cap/me 的数字，而是真去打那条被守着的路由。 */
+  s.test('AI 写作助手（ai.write）：默认对普通用户开放，关掉即 403', async () => {
+    let r = await GET('/privhub/api/model/write', { token: user1 })
+    ok(r.status === 200 && r.json && r.json.ok && Array.isArray(r.json.actions),
+      '默认普通用户可取得 AI 动作清单（HTTP ' + r.status + '）')
+    const me = await GET('/privhub/api/cap/me', { token: user1 })
+    eq(me.json.levels['ai.write'], 'read', '/cap/me 应把 ai.write 报为 read')
+    await POST('/privhub/api/cap/save', { token: admin, body: { feature: 'ai.write', level: 'none' } })
+    r = await GET('/privhub/api/model/write', { token: user1 })
+    eq(r.status, 403, '关掉 ai.write 后普通用户应 403')
+    await POST('/privhub/api/cap/save', { token: admin, body: { feature: 'ai.write', level: 'read' } })
+    r = await GET('/privhub/api/model/write', { token: user1 })
+    eq(r.status, 200, '恢复 ai.write 后普通用户应重新可用')
+  })
+
   s.test('默认：普通用户对 admin.audit 不可用（403）', async () => {
     const r = await GET('/privhub/api/audit', { token: user1 })
     eq(r.status, 403, '默认普通用户审计应 403')

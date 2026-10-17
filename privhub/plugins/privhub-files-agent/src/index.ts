@@ -34,7 +34,11 @@ import { tokenOf, readJsonStore } from '../../privhub-core/src/index'
 import { TEXT_EXTS as SHARED_TEXT_EXTS, SENSITIVE_EXTS_BARE } from '../../privhub-core/src/file-exts'
 import { WriteGate, Idempotency, QuotaLedger, RateLimiter, PathLocks, versionSnapshot, startFlusher, restoreRateBuckets, fileEtag, sha256 as sha256m, M2Config, M2_DEFAULTS } from './m2'
 /* Z 批：项目看板的存储/清洗与网页路由同源（core.ts 纯逻辑，不注册路由）。 */
-import { computeFactsCached, dashFile, loadDashboard, sanitizeDashboard, writeDashboard } from '../../privhub-project-dashboard/src/core'
+import { computeFactsCached, dashFile, loadDashboard, readTaskProgress, sanitizeDashboard, wantsTasks, writeDashboard } from '../../privhub-project-dashboard/src/core'
+/* T 批：智能体名册（自注册/自述）与网页路由、项目看板 agents 组件**同源**——同一份清洗与存储。 */
+import { findByKey, loadAgentsView, loadRoster, rosterFile, sanitizeEntryInput, saveRoster, servesProject, upsertByKey } from '../../privhub-roster/src/core'
+/* T 批：任务看板（只读）——让智能体看得见「指派给我的卡」。 */
+import { boardFile, loadBoard } from '../../privhub-task-board/src/core'
 
 export const name = 'privhub-files-agent'
 export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus', 'cap']
@@ -501,6 +505,9 @@ export function apply(ctx: Context, config?: M2Config): void {
   startFlusher(ctx, quota, rate, idem, m2cfg.flushSec)
   /* E1 事件声明 */
   ctx.eventBus.declareEmit('audit:logged', 'privhub-files-agent', '写操作成功审计广播（S1 闭环）')
+  /* 与 privhub-roster 同一领域的第二个 emit 方：智能体经密钥自注册也会改名册，
+   * 因此这里同样声明（事件名/载荷类型见 privhub-core/src/events.ts）。 */
+  ctx.eventBus.declareEmit('roster:changed', 'privhub-files-agent', '智能体名册变更（智能体自注册）')
   const svc = ctx.privhub
 
   /* ---------- 发现与身份 ---------- */
@@ -532,6 +539,7 @@ export function apply(ctx: Context, config?: M2Config): void {
         projectReadOnly: true,
         writeScope: '沙箱 = 绑定用户的个人空间（data-files/<真实姓名>/，按 key scope 分区）；项目只读',
         projectWriteExceptions: ['/privhub/api/agent/v1/dashboard —— 仅项目【看板文档】（展示布局），不碰任何项目文件'],
+        globalMetaWrites: ['/privhub/api/agent/v1/roster —— 仅写全局【智能体名册】里**自己那一条**（自述/服务范围），不碰任何项目文件'],
         sensitiveExts: SENSITIVE_EXTS,
         channel: '仅 X-Agent-Key 通道；禁止使用网页会话',
       },
@@ -552,8 +560,11 @@ export function apply(ctx: Context, config?: M2Config): void {
         { name: 'delete', method: 'POST', path: '/privhub/api/agent/v1/delete', body: '{ path }', desc: '删除专属空间文件（进回收站，可经管理员恢复）' },
         { name: 'versions', method: 'GET', path: '/privhub/api/agent/v1/versions?path=', params: { path: '专属空间文件相对路径' }, desc: '专属空间版本历史（覆盖前快照，最多 20 版）' },
         { name: 'versions_restore', method: 'POST', path: '/privhub/api/agent/v1/versions/restore', body: '{ path, at }', desc: '恢复到指定版本（写回 + 生成新版本可反悔）' },
-        { name: 'dashboard', method: 'GET', path: '/privhub/api/agent/v1/dashboard?project=', params: { project: '项目名' }, desc: '读项目看板（布局 + 实时 facts：文件数/成员/近7天变更…）。项目只读的例外之一' },
-        { name: 'dashboard_set', method: 'POST', path: '/privhub/api/agent/v1/dashboard', body: '{ project, dashboard }', desc: '重写项目看板【布局文档】（纵向分区页；组件 markdown/stats/plan）。只改看板，不改任何项目文件；需该密钥 scope 命中该项目且 ACL 允许编辑' },
+        { name: 'dashboard', method: 'GET', path: '/privhub/api/agent/v1/dashboard?project=', params: { project: '项目名' }, desc: '读项目看板（布局 + 实时 facts：文件数/成员/近7天变更…；若含 tasks 组件另附任务看板实时进度）。项目只读的例外之一' },
+        { name: 'dashboard_set', method: 'POST', path: '/privhub/api/agent/v1/dashboard', body: '{ project, dashboard }', desc: '重写项目看板【布局文档】（纵向分区页；组件 markdown/stats/plan/tasks/agents，其中 tasks 读任务看板、agents 读智能体名册，都不写死）。只改看板，不改任何项目文件；需该密钥 scope 命中该项目且 ACL 允许编辑' },
+        { name: 'roster', method: 'GET', path: '/privhub/api/agent/v1/roster?project=', params: { project: '项目名（可选）：带上则只列「服务该项目」的智能体，并各带该项目里的系统实证' }, desc: '读【智能体名册】（全局公开元数据：谁在、擅长什么、干过什么、服务哪些项目）。按密钥可见项目过滤服务范围' },
+        { name: 'roster_set', method: 'POST', path: '/privhub/api/agent/v1/roster', body: '{ name, kind?, skills?, bio?, scope?, projects?, status?, contact? }', desc: '登记/更新【自己那一条】名册条目（按密钥幂等：同一把钥匙重复调用=更新同一条）。name 即任务卡 assignee 用的名字；服务范围只能填绑定账号看得见的项目。写 data/roster.json，不碰任何项目文件' },
+        { name: 'board', method: 'GET', path: '/privhub/api/agent/v1/board?project=', params: { project: '项目名' }, desc: '读项目【任务看板】（只读），并单列出「指派给我的卡」（assignee === 你在名册里的名字）。本批不提供任务看板写入' },
         /* 管家车道（需 type=butler 专用钥匙；仅宿主机本机；管理员等价） */
         { name: 'butler_key', method: 'GET|POST|DELETE', path: '/privhub/api/agent/v1/butler/key', body: '{ name?, username? } | { id }', desc: '【网页会话·管理员】签发 / 查看 / 吊销管家钥匙（type=butler）。服务端强制 scope=all 且 IP 白名单=本机回环(127.0.0.0/8)；绑定账号须为管理员' },
         { name: 'butler_status', method: 'GET', path: '/privhub/api/agent/v1/butler/status', params: {}, desc: '【管家钥匙】自检：返回服务状态与各分项开关当前等级（none=已关闭）。仅本机可调' },
@@ -561,9 +572,10 @@ export function apply(ctx: Context, config?: M2Config): void {
       errorCodes: [
         { code: 'AGENT-4001', desc: '参数缺失/非法/缺少幂等键' }, { code: 'AGENT-4010', desc: '无效/缺失密钥' }, { code: 'AGENT-4011', desc: '密钥过期' }, { code: 'AGENT-4012', desc: '密钥吊销' },
         { code: 'AGENT-4013', desc: '密钥挂起' }, { code: 'AGENT-4014', desc: 'IP 白名单拒绝' }, { code: 'AGENT-4031', desc: '超出 scope' },
+        { code: 'AGENT-4040', desc: '智能体接口路径不存在（响应 hint 给出正确前缀与请求头）' },
         { code: 'AGENT-4032', desc: '项目只读，写入仅限专属空间' }, { code: 'AGENT-4033', desc: '敏感文件豁免' }, { code: 'AGENT-4034', desc: '绑定用户无权限' }, { code: 'AGENT-4035', desc: '仅管理员' },
         { code: 'AGENT-4037', desc: '非管家钥匙（普通钥匙不得调用 butler/*）' }, { code: 'AGENT-4038', desc: '管家车道仅限本机（非回环来源拒绝）' }, { code: 'AGENT-4039', desc: '管家车道开关已关闭' },
-        { code: 'AGENT-4041', desc: '文件/目录不存在' }, { code: 'AGENT-4091', desc: '并发版本冲突（ETag 不匹配）' }, { code: 'AGENT-4092', desc: '幂等键冲突/目标已存在' },
+        { code: 'AGENT-4041', desc: '文件/目录不存在' }, { code: 'AGENT-4042', desc: '名册内已有同名智能体（name 唯一）' }, { code: 'AGENT-4091', desc: '并发版本冲突（ETag 不匹配）' }, { code: 'AGENT-4092', desc: '幂等键冲突/目标已存在' },
         { code: 'AGENT-4131', desc: '超出大小上限' }, { code: 'AGENT-4291', desc: '限流触发（附 Retry-After）' }, { code: 'AGENT-4292', desc: '配额超限（附用量/限额）' },
         { code: 'AGENT-4293', desc: '写队列已满' }, { code: 'AGENT-4294', desc: '排队超时（可携带相同幂等键重试）' }, { code: 'AGENT-5001', desc: '内部错误' },
       ],
@@ -1335,8 +1347,11 @@ export function apply(ctx: Context, config?: M2Config): void {
         loadDashboard(ctx.storage, project),
         computeFactsCached(ctx, project),
       ])
+      /* 任务进度：与网页端同源（投影任务看板）。看板用了 tasks 组件才带出来，
+       * 智能体据此读到「真实进度」而不是被写死在布局里的过时快照。 */
+      const tasks = wantsTasks(dashboard) ? await readTaskProgress(ctx.storage, project) : null
       void audit(ctx, 'ai:' + a.key.name, 'agent-dashboard-read', project, 'via=' + a.user.username)
-      json(res, 200, { ok: true, dashboard, facts }, extra)
+      json(res, 200, { ok: true, dashboard, facts, tasks }, extra)
       return
     }
 
@@ -1365,6 +1380,95 @@ export function apply(ctx: Context, config?: M2Config): void {
     void audit(ctx, 'ai:' + a.key.name, 'agent-dashboard-write', project, 'via=' + a.user.username + ' sections=' + saved.sections.length + ' rev=' + saved.revision)
     json(res, 200, { ok: true, dashboard: saved }, extra)
   }), 'agent-dashboard')
+
+  /* ---------- 智能体名册（T 批：登记自己 / 看同侪 / 看指派给我的卡） ----------
+   * 名册是本实例的**全局公开元数据**（这个系统里有哪些智能体、各擅长什么），因此：
+   *   · **读** —— 任何有效密钥都能读，但按「密钥可见项目」过滤服务范围，
+   *     智能体看不到自己够不着的项目上有什么智能体；
+   *   · **写** —— 只能写**自己那一条**（以 keyId 为幂等锚点，同一把钥匙重复注册=更新同一条），
+   *     不能改别人的条目，也不能把服务范围写成自己看不见的项目。
+   * 写的是 `data/roster.json`（系统元数据），**不碰任何项目文件** ——
+   * 与上方 dashboard 一样，属于「项目只读」之外的特许写，但落点都不是项目内容。 */
+  svc.route('/privhub/api/agent/v1/roster', withAgent(async (ctx, env, a, req, res, extra) => {
+    const url = new URL(req.url ?? '/', 'http://x')
+
+    if (req.method === 'GET') {
+      const project = relOf(url.searchParams.get('project') ?? '')
+      if (project) {
+        /* 单项目视图：谁服务这个项目 + 各自在该项目的系统实证（与看板 agents 组件同一加载器）。 */
+        const pr = await authProjectRead(ctx, a, project, '')
+        if (!pr.ok) return json(res, pr.status, { ok: false, code: pr.code, error: pr.hint, hint: pr.hint, requestId: env.rid }, extra)
+        const entries = await loadAgentsView(ctx.storage, project)
+        void audit(ctx, 'ai:' + a.key.name, 'agent-roster-read', project, 'via=' + a.user.username)
+        json(res, 200, { ok: true, project, entries }, extra)
+        return
+      }
+      const doc = await loadRoster(ctx.storage)
+      const visible = await ctx.privhub.visibleProjects(a.user as never)
+      const mine = findByKey(doc, a.key.id)
+      const entries = doc.entries
+        .filter((e) => {
+          if (e.status === 'retired') return false
+          if (mine && e.id === mine.id) return true // 自己那条永远看得见（好确认登记结果）
+          return visible.some((p) => servesProject(e, p)) // 服务范围与「密钥可见项目」有交集
+        })
+        .sort((x, y) => x.name.localeCompare(y.name))
+      void audit(ctx, 'ai:' + a.key.name, 'agent-roster-read', 'roster', 'via=' + a.user.username + ' n=' + entries.length)
+      json(res, 200, { ok: true, entries, mine: mine ? mine.id : '' }, extra)
+      return
+    }
+
+    if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET/POST', requestId: env.rid }, extra)
+
+    let body: any
+    try { body = JSON.parse(await readBody(req, 1024 * 1024)) } catch { return json(res, 400, { ok: false, code: 'AGENT-4001', error: 'invalid json', hint: '请求体不是合法 JSON', requestId: env.rid }, extra) }
+    const input = sanitizeEntryInput(body)
+    if (!input) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '条目非法', hint: 'name 不能为空（名册内唯一）', requestId: env.rid }, extra)
+    if (input.scope === 'projects' && input.projects.length) {
+      const visible = new Set(await ctx.privhub.visibleProjects(a.user as never))
+      const bad = input.projects.filter((p) => !visible.has(p))
+      if (bad.length) return json(res, 400, { ok: false, code: 'AGENT-4031', error: '服务范围超出可见项目', hint: '这些项目你（绑定账号）看不见：' + bad.join('、'), requestId: env.rid }, extra)
+    }
+
+    const file = rosterFile()
+    let total = 0
+    const r = await ctx.privhub.withFileLock(file, async () => {
+      const doc = await loadRoster(ctx.storage)
+      const out = upsertByKey(doc, { id: a.key.id, name: a.key.name, username: a.user.username }, input)
+      if ('conflict' in out) return out
+      await saveRoster(ctx.storage, doc)
+      total = doc.entries.length
+      return out
+    })
+    if ('conflict' in r) {
+      return json(res, 409, { ok: false, code: 'AGENT-4042', error: '同名条目已存在', hint: '名册内名字唯一，请换一个 name 再登记', requestId: env.rid }, extra)
+    }
+    void audit(ctx, 'ai:' + a.key.name, r.created ? 'agent-roster-create' : 'agent-roster-update', 'agent:' + r.entry.name, 'via=' + a.user.username + ' scope=' + r.entry.scope)
+    ctx.emit('roster:changed', { action: r.created ? 'create' : 'update', id: r.entry.id, name: r.entry.name, total })
+    json(res, 200, { ok: true, created: r.created, entry: r.entry }, extra)
+  }), 'agent-roster')
+
+  /* ---------- 任务看板（T 批：只读 —— 看得见「指派给我的卡」） ----------
+   * 「PM 指派给智能体」要闭环，被指派方就得看得见那张卡，否则指派是单向的。
+   * 本条只读（与项目文件读取同一套 authProjectRead 闸门），**不提供任何写**：
+   * 智能体暂时不能在任务板上改状态（那是后续批次的事，需另议权限）。 */
+  svc.route('/privhub/api/agent/v1/board', withAgent(async (ctx, env, a, req, res, extra) => {
+    if (req.method !== 'GET') return json(res, 405, { ok: false, code: 'AGENT-4001', error: 'method not allowed', hint: '仅 GET（本批只读）', requestId: env.rid }, extra)
+    const url = new URL(req.url ?? '/', 'http://x')
+    const project = relOf(url.searchParams.get('project') ?? '')
+    if (!ctx.privhub.isValidProjectName(project)) return json(res, 400, { ok: false, code: 'AGENT-4001', error: '参数缺失/非法', hint: '需要 ?project=<项目名>', requestId: env.rid }, extra)
+    const pr = await authProjectRead(ctx, a, project, '')
+    if (!pr.ok) return json(res, pr.status, { ok: false, code: pr.code, error: pr.hint, hint: pr.hint, requestId: env.rid }, extra)
+    const board = await loadBoard(ctx.storage, boardFile(project), project)
+    /* 「我的名字」= 名册里以本密钥登记的名字；还没登记时退回密钥名。
+     * 这是指派匹配的唯一口径（任务卡 assignee === 名册 name）。 */
+    const doc = await loadRoster(ctx.storage)
+    const mine = findByKey(doc, a.key.id)
+    const myName = mine ? mine.name : a.key.name
+    const assigned = board.cards.filter((c) => c.assignee === myName)
+    void audit(ctx, 'ai:' + a.key.name, 'agent-board-read', project, 'via=' + a.user.username + ' n=' + assigned.length)
+    json(res, 200, { ok: true, project, myName, assigned, board }, extra)
+  }), 'agent-board')
 
   /* ---------- 管家车道（宿主机智能体管家；方案 §5 路 A：专用钥匙） ----------
    * 与内容通道（上面的 /list /read /write …）**严格分开**：

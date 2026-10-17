@@ -3,8 +3,19 @@
   "title": "AI 工具",
   "icon": "🤖",
   "description": "AI 工具（RAG 总台）：语料仓库 / 语料总览 / 待裁决 / 模型接入 / 向量化 / 问答 / Key 管理 / 专属回收站 / 我的 AI 密钥",
-  "slots": ["rag-view"],
+  "slots": [
+    "rag-view"
+  ],
   "barItems": [
-    { "icon": "🤖", "title": "AI 工具", "slot": "app-iconbar", "view": "rag", "group": "ai", "capFeature": "nav.rag" }
+    {
+      "icon": "🤖",
+      "title": "AI 工具",
+      "slot": "app-iconbar",
+      "view": "rag",
+      "group": "ai",
+      "capFeature": "nav.rag",
+      "desc": "语料仓库 / 向量化 / 问答 / 模型与 Key 管理。",
+      "doc": "04-AI与智能体接入.md"
+    }
   ]
 }

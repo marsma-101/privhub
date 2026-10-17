@@ -1,14 +1,16 @@
 # PrivHub — 项目架构与功能说明（V3 现状快照）
 
-> 版本：**V3 现状快照 · 复核 2026-10-15（v3.2.0）**（历次核对：2026-09-06 / 09-11 / 09-14 v3.1.0 / 09-21 v3.1.1 / 10-13 初查 / **10-15 v3.2.0 逐节同步**）· docs/ 根目录，持续维护
-> **2026-10-15 复核结论（并入发布收口批 B → 3.2.0，正文数字已逐节替换为实测值）**：v3.1.1 → 3.2.0 期间
-> 插件从 **50 增至 62**、注册 HTTP 路由从 **112 增至 148**，新增 `svc-links` / `svc-dup` / `svc-cap` /
+> 版本：**V3 现状快照 · 复核 2026-10-15（v3.3.0）**（历次核对：2026-09-06 / 09-11 / 09-14 v3.1.0 / 09-21 v3.1.1 / 10-13 初查 / 10-15 v3.2.0 逐节同步 / **10-15 并入 3.3.0 收口批**）· docs/ 根目录，持续维护
+> **2026-10-15 复核结论（并入发布收口批 B → 3.2.0 与批 C+D → 3.3.0，正文数字已逐节替换为实测值）**：v3.1.1 → 3.3.0 期间
+> 插件从 **50 增至 62**、注册 HTTP 路由从 **112 增至 150**，新增 `svc-links` / `svc-dup` / `svc-cap` /
 > `svc-lock` / `admin-cap` / `project-dashboard` / `task-board` / `task-calendar` / `webhook` /
 > `files-refcheck` / `shell-home` 等目录；分层架构、装配顺序、鉴权、存储、slot 机制等**结构描述未变**，仍然有效。
 > 本次复核方式：直接扫描 `privhub/plugins/`、`privhub/src/`、`privhub/frontend/index.html` 逐项替换数字
 > （不再依赖启动日志）。新增问题与遗留项以《PrivHub-待改进清单-2026-09-21.md》为准。
+> **2026-10-16 增量（看板改进批首项）**：插件 **62 → 63**（新增 `roster` 智能体名册）、
+> 注册 HTTP 路由 **150 → 154**；slot / 视图并集**未变**（名册复用 `dashboard-view`）。详见 §2.1 / §2.3。
 > **核对口径**：插件数 = `privhub/plugins/` 下**非 `_` 开头**目录数（`_retired-v2/` 为归档目录、不参与装配）；
-> 路由数 = `.route('<路径>'` 调用数（注释里提及的 `svc.route()` 不计入；按「`.route(` 出现次数」的旧口径连注释一起数会得到 150）；
+> 路由数 = `.route('<路径>'` 调用数（注释里提及的 `svc.route()` 不计入；按「`.route(` 出现次数」的旧口径连注释一起数会得到 156）；
 > slot 数 = 各 `client/manifest.json` 的 `slots` 并集；视图数 = `barItems[].view` 并集。
 > 代码位置：`privhub/`（纯 Cordis 插件架构，零 DSH 依赖）· 开发环境 3180 · 生产环境 3181（`deploy/privhub-deploy/`）
 > 历史文档归档：`docs/v2/`（V2 时代全部方案/计划/报告）· `docs/v1/`（最早归档）
@@ -25,20 +27,20 @@
 
 ## 二、总体架构
 
-### 2.1 插件全景（**62 个插件目录**，2026-10-15 v3.2.0 复核）
+### 2.1 插件全景（**63 个插件目录**，2026-10-16 复核）
 
-`privhub/plugins/` 下非归档目录共 **62 个**（另有 `_retired-v2/` 归档目录，内含若干已退役插件，以 `_` 前缀整体排除，不参与装配）。
+`privhub/plugins/` 下非归档目录共 **63 个**（另有 `_retired-v2/` 归档目录，内含若干已退役插件，以 `_` 前缀整体排除，不参与装配）。
 
 **按装配方式拆解（权威依据 = `src/main.ts` + 启动日志）**：
 
 | 装配方式 | 数量 | 说明 |
 |---|---|---|
 | 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 21 项） | 21 | L2 能力 Service 14 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
-| L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 41 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2） |
+| L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 42 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2）、`roster`（智能体名册，2026-10-16 新增） |
 | 纯前端插件（只有 `client/`，无 `src/index.ts`） | 9 | `admin-audit-panel` / `admin-console`※ / `files-upload` / `files-upload-queue` / `files-wiki` / `shell`※ / `shell-home` / `task-calendar` / `trash-ui` |
 
-→ **53 个含 `src/index.ts` + 9 个纯前端 = 62**。其中 **39 个插件带 `client/manifest.json`**（前端可挂载）；
-53 个有 `src/` 的插件里，**38 个注册 HTTP 路由**，其余仅提供注入能力或纯前端。
+→ **54 个含 `src/index.ts` + 9 个纯前端 = 63**。其中 **39 个插件带 `client/manifest.json`**（前端可挂载）；
+54 个有 `src/` 的插件里，**39 个注册 HTTP 路由**，其余仅提供注入能力或纯前端。
 
 > ※ `admin-console`（v3.1.0 新增）是**纯前端插件**：无 `src/` 故不参与服务端装配，只提供
 > 管理控制台外壳与 `admin-nav` / `admin-*` slot 契约。
@@ -50,7 +52,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  L3 功能插件（41 个，自动发现装配）                          │
+│  L3 功能插件（42 个，自动发现装配）                          │
 │  admin-audit admin-cap auth-watermark                        │
 │  files-agent files-comments files-dataview                   │
 │  files-edit-md files-explorer-v3 files-export                │
@@ -61,7 +63,7 @@
 │  files-tags files-template files-versions                    │
 │  git-backup project-dashboard shell-agent-console            │
 │  shell-favorites shell-recent shell-settings                 │
-│  svc-rag task-board webhook                                  │
+│  svc-rag roster task-board webhook                           │
 ├─────────────────────────────────────────────────────────────┤
 │  L2 能力 Service（14 个，手动挂载）                           │
 │  svc-storage(S7加密) svc-events(事件注册表) svc-audit(S1审计)  │
@@ -78,13 +80,13 @@
 
 **挂载顺序（`src/main.ts`）**：webServer → L2（S7 storage 最先，其余依赖它）→ core → adminAcl（包装 `svc.route`，必须在路由注册前）→ auth/files/trash/admin/shell → L3 功能插件自动发现（`CORE_PLUGINS` 清单外的插件）→ listen。
 
-**L3 装配数量（2026-10-15 实测）**：按 `CORE_PLUGINS` 清单外、且带 `src/index.ts` 的目录计，自动发现装配 **41 个**。
+**L3 装配数量（2026-10-16 实测）**：按 `CORE_PLUGINS` 清单外、且带 `src/index.ts` 的目录计，自动发现装配 **42 个**。
 （历史实证：`privhub/server-dev.log` 2026-09-06 09:39 记录当时 26 个 L3 全部发现并挂载成功、无失败项，
 唯一告警是 Node `fs.rmdir({recursive:true})` 的 DEP0147 弃用提示——该日志早于其后多批改动，仅作历史参考。）
 
 ### 2.2 前端骨架（frontend/index.html，1100 行单文件 + Vue3 全局）
 
-| 机制 | 实际现状（2026-10-15 v3.2.0 复核） |
+| 机制 | 实际现状（2026-10-15 v3.3.0 复核） |
 |---|---|
 | `window.PrivHub` 桥 | **骨架 26 个键 + 插件运行时追加**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`；骨架扩展 14：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin`（=`openConsole`）/ `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`；插件运行时追加（实测 2 个）：`openRagDup` / `ragIntent`（svc-rag） |
 | `window.PrivHub` 第二层鉴权 | 插件前端代码经 `/privhub-plugins/<名>/<文件>` 加载，**需有效会话**（v3.0.1 起）。仅放行登录框自身（声明 `auth` slot 的插件，与 manifest 分级同判据）。会话经 `privhub_sid` Cookie 传递（HttpOnly + SameSite=Strict）——浏览器 `import()` 子资源无法附加 `Authorization` 头；`Bearer` 通道保持不变 |
@@ -98,11 +100,11 @@
 | 项目上下文 | 选项目后搜索/收藏/回收站均限定当前项目（服务端 visibleProjects 白名单兜底） |
 | 持久化 | localStorage（token/主题/侧栏宽/字体档/**管理侧栏折叠态/管理详情列表宽/上次管理路由**）、sessionStorage（标签，按用户名分 key） |
 
-### 2.3 后端路由面（**148 条路由 · 38 个插件**，2026-10-15 v3.2.0 复核）
+### 2.3 后端路由面（**154 条路由 · 39 个插件**，2026-10-16 复核）
 
-- 全仓 `.route('<路径>'` 注册 **148 条**（无重复路径），分布于 **38 个插件**（其余有 `src/` 的插件不注册 HTTP 路由，仅提供注入能力）。
-  统计口径：以 `.route('<路径>'` 调用计（注释里提及的 `svc.route()` 不计入）；按「`.route(` 出现次数」的旧口径连注释一起数会得到 150。
-- 路由数 Top：`files-agent` 22 · `svc-rag` 17 · `files` 10 · `webhook` 8 · `admin` 8。
+- 全仓 `.route('<路径>'` 注册 **154 条**（无重复路径），分布于 **39 个插件**（其余有 `src/` 的插件不注册 HTTP 路由，仅提供注入能力）。
+  统计口径：以 `.route('<路径>'` 调用计（注释里提及的 `svc.route()` 不计入）；按「`.route(` 出现次数」的旧口径连注释一起数会得到 156。
+- 路由数 Top：`files-agent` 24 · **`svc-rag` 18** · `files` 10 · `webhook` 8 · `admin` 8（`svc-rag` 含本轮新增的 `model/write` 写作助手；`task-board` 5 —— 含 `cards/review` 审核流；`files-agent` 含 2026-10-16 新增的智能体名册 `roster` 与 `board` 两条）。
 - **ACL 守卫覆盖面**：`admin-acl` 以白名单表 `GUARD_PATHS` 显式管辖 **38 条文件相关路由**（per-method 裁决 view/upload/edit/delete），并包装 `svc.route` 使之后注册的全部路由都经守卫函数（未列入白名单的 method 直接透传）。守卫于 2026-09-05 从 L1 扩展到 L3 写路由。
 
 ### 2.3b 核心概念：项目 / 个人空间 / 智能体沙箱（v3.0.1 新增）

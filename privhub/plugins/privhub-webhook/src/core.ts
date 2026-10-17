@@ -51,6 +51,7 @@ export const EVENTS: EventSpec[] = [
   { name: 'audit:logged', desc: '审计流水（各类写操作落盘后广播）；载荷无项目字段，设了项目过滤的订阅收不到' },
   { name: 'task:changed', desc: '任务看板变更（卡片增删改、拖拽、列操作）' },
   { name: 'dashboard:changed', desc: '项目看板（纵向分区页）变更' },
+  { name: 'roster:changed', desc: '智能体名册变更（人工登记 / 智能体自注册 / 编辑 / 删除）' },
 ]
 
 /** 事件名集合（校验订阅的 events 字段用）。 */

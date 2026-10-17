@@ -3,8 +3,19 @@
   "title": "Webhook 订阅",
   "icon": "🪝",
   "description": "事件订阅（全事件：文件/任务/看板/审计）→ 指定地址 POST，HMAC-SHA256 签名 + 失败重试 + 投递日志与重放，仅管理员",
-  "slots": ["admin-webhook"],
+  "slots": [
+    "admin-webhook"
+  ],
   "barItems": [
-    { "icon": "🪝", "title": "Webhook 订阅", "slot": "admin-nav", "view": "admin-webhook", "adminOnly": true, "capFeature": "admin.webhook" }
+    {
+      "icon": "🪝",
+      "title": "Webhook 订阅",
+      "slot": "admin-nav",
+      "view": "admin-webhook",
+      "adminOnly": true,
+      "capFeature": "admin.webhook",
+      "desc": "把事件 POST 到指定地址：HMAC 签名 + 失败重试 + 投递日志与重放。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

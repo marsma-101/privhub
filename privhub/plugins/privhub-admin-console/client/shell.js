@@ -123,7 +123,7 @@ const AdminShell = {
         <AdminSidebar></AdminSidebar>
         <div class="ad-drawer-mask" v-if="st.drawerOpen" @click="closeDrawer"></div>
 
-        <main class="ad-content">
+        <main class="ad-content ph-scroll">
           <div class="ad-content-inner">
             <AdminSectionHeader
               v-if="route"

@@ -393,6 +393,16 @@ ok(/--fs-base:\s*13px/.test(skCss) && /--r-2:\s*6px/.test(skCss),
 ok(/failedPlugins/.test(skeletonSrc) && /界面组件加载失败/.test(skeletonSrc),
   '插件加载失败时界面给出可见原因与重试入口（不再永久停在「加载中…」）')
 
+/* GC-15：插件子资源仅认会话 Cookie，失效即整体 401 → 白屏。
+ * 旧的失败面只会「重试」，而会话真失效时重试永远失败、用户对着白屏不知所以。
+ * 守两条：① 若重取会话仍不通，必须显式进入「会话已失效」态；② 该态给出「重新登录」出口。 */
+ok(/sessionLost/.test(skeletonSrc) && /会话已失效/.test(skeletonSrc),
+  '会话 Cookie 失效（插件整体 401）时有可见的「会话已失效」出口（GC-15）')
+ok(/if \(me\.ok\)[\s\S]{0,400}?this\.sessionLost = true/.test(skeletonSrc),
+  '重取会话仍不通时标记 sessionLost（而不是只弹一个转瞬即逝的 toast）')
+ok(/reLogin\(\)\s*\{[\s\S]{0,300}?logout/.test(skeletonSrc) && /@click="reLogin"/.test(skeletonSrc),
+  '「会话已失效」提供「重新登录」按钮（清会话回到登录面）')
+
 /* 查重面板的删除操作栏必须常驻（位于滚动容器【之外】）。
  * 修复前它在列表末尾、随内容滚动，重复组一多就被推出屏幕，
  * 用户反馈「查重之后找不到删除按钮」——按钮其实渲染了，只是看不见。 */

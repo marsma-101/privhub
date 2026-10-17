@@ -3,8 +3,18 @@
   "title": "审计",
   "icon": "📋",
   "description": "审计日志可视化（F15）：时间线 + 四维筛选（时间/操作/用户/项目）+ CSV 导出，仅管理员",
-  "slots": ["audit"],
+  "slots": [
+    "audit"
+  ],
   "barItems": [
-    { "icon": "📋", "title": "审计", "slot": "admin-nav", "view": "audit", "capFeature": "admin.audit" }
+    {
+      "icon": "📋",
+      "title": "审计",
+      "slot": "admin-nav",
+      "view": "audit",
+      "capFeature": "admin.audit",
+      "desc": "所有操作流水：时间线 + 四维筛选（时间/操作/用户/项目）+ CSV 导出。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

@@ -5,14 +5,14 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readdir, readFile, realpath } from 'node:fs/promises'
+import { join, sep } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tokenOf } from '../../privhub-core/src/index'
 
 export const name = 'privhub-shell'
-export const inject = ['webServer', 'privhub']
+export const inject = ['webServer', 'privhub', 'storage']
 
 export interface ShellManifest {
   id: string
@@ -21,7 +21,15 @@ export interface ShellManifest {
   description?: string
   slots: string[]
   entry: string
-  barItems?: { icon: string; title: string; slot: string; adminOnly?: boolean }[]
+  /* barItems 是图标栏条目的来源。除既有字段外，另带两个**展示用**可选字段：
+   *   desc —— 悬停气泡里的一句话功能简介（骨架 AppIconbar 读它，非空才弹自定义气泡）；
+   *   doc  —— 「查看完整说明」指向《使用说明》里的文件名（相对 `使用说明/` 目录）。
+   * 两个字段由 manifest 声明、原样透传给前端；缺省时退回原生 title 提示。 */
+  barItems?: {
+    icon: string; title: string; slot: string; adminOnly?: boolean
+    view?: string; group?: string; capFeature?: string
+    desc?: string; doc?: string
+  }[]
 }
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
@@ -109,4 +117,46 @@ export function apply(ctx: Context): void {
       json(res, 500, { ok: false, error: 'manifest 聚合失败: ' + String(e) })
     }
   }, 'shell-manifest')
+
+  /* ---- 使用说明：只读帮助文档 ----
+   *
+   * 图标栏悬停气泡里的「查看完整说明」读的就是这里。文档放在**站内 privhub 项目**的
+   * `使用说明/` 子目录（加密落盘，与其他站内文档一致）。
+   *
+   * ⚠️ 本路由**刻意不列进 privhub-admin-acl 的 GUARD_PATHS**：
+   *   它是**产品说明**（不是用户数据），要求「人和 AI 都能看」——登录即可读，
+   *   不按项目成员资格卡。为控制面，它**只**能从固定目录 `使用说明/` 读**单层** .md，
+   *   文件名白名单正则 + realpath 双保险，杜绝路径穿越。不要把它改造成能传任意路径。
+   */
+  svc.route('/privhub/api/help', async (req: IncomingMessage, res: ServerResponse) => {
+    const u = svc.me(tokenOf(req))
+    if (!u) return json(res, 401, { ok: false, error: '未登录' })
+    const helpDir = join(rootDir, 'data-files', 'privhub', '使用说明')
+    try {
+      const url = new URL(req.url ?? '/', 'http://x')
+      const doc = url.searchParams.get('doc')
+      if (!doc) {
+        // 目录列表（忽略非 .md；目录缺失时返回空表而不是报错）
+        let names: string[] = []
+        try {
+          names = (await readdir(helpDir)).filter((n) => n.toLowerCase().endsWith('.md')).sort()
+        } catch { /* 目录不存在 = 空 */ }
+        json(res, 200, { ok: true, docs: names.map((name) => ({ name, title: name.replace(/\.md$/i, '') })) })
+        return
+      }
+      // 单层文件名（禁 / 与 \），防穿越；扩张名限定 .md
+      if (!/^[^/\\]+\.md$/i.test(doc)) return json(res, 400, { ok: false, error: '说明文件名不合法' })
+      const target = join(helpDir, doc)
+      if (!existsSync(target)) return json(res, 404, { ok: false, error: '说明文件不存在' })
+      // 双保险：realpath 必须落在说明目录内（防 junction / symlink 逃逸）
+      const [rootReal, targetReal] = await Promise.all([realpath(helpDir), realpath(target)])
+      if (targetReal !== rootReal && !targetReal.startsWith(rootReal + sep)) {
+        return json(res, 400, { ok: false, error: '路径无效' })
+      }
+      const text = await ctx.storage.readText(targetReal)
+      json(res, 200, { ok: true, name: doc, title: doc.replace(/\.md$/i, ''), text })
+    } catch (e) {
+      json(res, 500, { ok: false, error: '说明文档读取失败: ' + String(e) })
+    }
+  }, 'shell-help')
 }

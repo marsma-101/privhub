@@ -112,13 +112,13 @@ ok(sameSet(MEDIA_EXTS, [
 ok(sameSet(VERSION_TEXT_EXTS, [
   'txt', 'md', 'markdown', 'json', 'jsonl', 'js', 'ts', 'tsx', 'html', 'htm', 'css', 'xml',
   'yaml', 'yml', 'toml', 'ini', 'conf', 'csv', 'tsv', 'log', 'sql', 'py', 'java', 'c', 'cpp',
-  'go', 'rs', 'sh', 'bat', 'ps1', 'vue', 'ipynb',
-]), '索引/快照集逐项同值（迁前 fulltext 是 23 项、versions 只有 17 项，本批收敛后两侧同为 32 项）')
+  'go', 'rs', 'sh', 'bat', 'ps1', 'vue', 'ipynb', 'mindmap',
+]), '索引/快照集逐项同值（迁前 fulltext 是 23 项、versions 只有 17 项，收敛后两侧同值；2026-10-17 随思维导图新增 `.mindmap` ⇒ 33 项）')
 ok(sameSet(RAG_TEXT_EXTS, [
   'txt', 'md', 'markdown', 'json', 'js', 'ts', 'tsx', 'html', 'htm', 'css', 'xml', 'yaml', 'yml',
   'toml', 'ini', 'conf', 'csv', 'log', 'sql', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'sh', 'bat',
-  'ps1', 'vue',
-]), '向量化集逐项同值（`.env`/`.jsonl`/`.tsv`/`.ipynb` 本批**有意不在**其中 —— 判不了的不替用户决定）')
+  'ps1', 'vue', 'mindmap',
+]), '向量化集逐项同值（`.env`/`.jsonl`/`.tsv`/`.ipynb` 本批**有意不在**其中 —— 判不了的不替用户决定；`.mindmap` 是纯文本大纲，随新增一并进向量库）')
 ok(sameSet(AGENT_SNAPSHOT_EXTS, [
   'txt', 'json', 'csv', 'log', 'yaml', 'yml', 'ini', 'py', 'sh', 'bat', 'sql', 'xml', 'js', 'ts', 'css', 'md',
 ]), '智能体快照集逐项同值（与迁前的 17 项手写清单一致；迁前那 5 项遗漏保持原样，不扩权）')

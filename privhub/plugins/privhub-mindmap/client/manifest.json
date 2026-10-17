@@ -1,0 +1,29 @@
+{
+  "id": "privhub-mindmap",
+  "title": "思维导图",
+  "icon": "🌳",
+  "description": "Markdown 缩进大纲式思维导图：画布与大纲并排实时同步；项目内导图是一份 .mindmap 文件（人与智能体同权读写），全局总览图只有管理员看得到",
+  "slots": ["office-editor", "mindmap", "mindmap-global"],
+  "barItems": [
+    {
+      "icon": "🌳",
+      "title": "思维导图",
+      "slot": "panel",
+      "view": "mindmap",
+      "group": "knowledge",
+      "capFeature": "nav.mindmap",
+      "desc": "列出本项目全部 .mindmap（新建 / 打开 / 改名 / 删除）。一张导图就是一个纯文本大纲文件，人和智能体都能读写。",
+      "doc": "02-知识组织.md"
+    },
+    {
+      "icon": "🌳",
+      "title": "全局思维导图",
+      "slot": "panel",
+      "view": "mindmap-global",
+      "group": "global",
+      "capFeature": "mindmap.global",
+      "desc": "实例级总览图（不属于任何项目）：管理员画「我现在有哪些项目」，可建多张。默认只有管理员看得到。",
+      "doc": "02-知识组织.md"
+    }
+  ]
+}

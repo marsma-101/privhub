@@ -334,6 +334,32 @@ async function newSheetFile() {
   } else window.PrivHub.toast(r.error || '创建失败', 'error')
 }
 
+/* 新建思维导图（.mindmap 纯文本大纲，2026-10-17）
+ *
+ * 为什么模板写在这里而不是从 privhub-mindmap 插件取：本插件（explorer-v3）不该反向依赖
+ * 一个可卸载的查看器插件；格式本身是**一份普通的缩进大纲**，任何文本编辑器都能改，
+ * 模板写死也符合「插件关掉后文件仍可读」这条设计（规划 §1）。
+ *
+ * 写入走 `/privhub/api/text/save`（扩展名无关的文本写接口，且已登记在 ACL GUARD_PATHS 的
+ * edit 侧）；**不用** `/api/doc` —— 那条链只认 `.md`（`isMd` 闸），`.mindmap` 会被 400。
+ * 建完直接 `openTab`：建导图的目的就是马上画，不像数据表/页面那样可以先建着不用。 */
+async function newMindmapFile() {
+  if (!nav.project) return
+  const name = '未命名思维导图-' + Date.now().toString(36).slice(-4) + '.mindmap'
+  const rel = nav.path ? nav.path + '/' + name : name
+  const title = name.replace(/\.mindmap$/i, '')
+  const text = '# ' + title + '\n\n- 中心主题\n  - 分支一\n  - 分支二\n'
+  const r = await api('/privhub/api/text/save', {
+    method: 'POST',
+    body: JSON.stringify({ project: nav.project, path: rel, text }),
+  })
+  if (!r.ok) { window.PrivHub.toast(r.error || '创建失败', 'error'); return }
+  window.PrivHub.toast('已创建「' + name + '」')
+  await nav.openDir(nav.project, nav.path)
+  await refreshTree()
+  openTab({ name, isDir: false, type: 'text' }, nav.project, nav.path)
+}
+
 /* 新建页面（空 HTML 模板） */
 async function newPageFile() {
   if (!nav.project) return
@@ -354,4 +380,4 @@ async function newPageFile() {
   void rel
 }
 
-export { openMenuFor, closeMenu, ctxRelPath, openDetail, openPermFor, openPerm, doRename, cancelRename, submitRename, doCopyHere, doMoveOpen, doMoveSubmit, doDelete, doFavorite, doDownload, convertDocToDocx, doEdit, doMkdirHere, doMkdirHereSubmit, refreshAfterChange, submitMkdirV3, newSheetFile, newPageFile }
+export { openMenuFor, closeMenu, ctxRelPath, openDetail, openPermFor, openPerm, doRename, cancelRename, submitRename, doCopyHere, doMoveOpen, doMoveSubmit, doDelete, doFavorite, doDownload, convertDocToDocx, doEdit, doMkdirHere, doMkdirHereSubmit, refreshAfterChange, submitMkdirV3, newSheetFile, newPageFile, newMindmapFile }

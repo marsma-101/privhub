@@ -482,6 +482,35 @@ async function main() {
     } })
     console.log(`     [实测] 空语料流式帧=${parseSSE(sseEmpty.text).map((f) => f.event).join(',') || '（无）'}｜有语料增量帧=${deltas.length}｜正文=${joined.length} 字`)
 
+    /* ---------- §1.8 AI 写作助手动作组 ----------
+     * 「选中一段 → 一个动作 → 模型改过的文字」这条通道的**服务端契约**：
+     *   GET 拿动作清单（前端不内联标题，所以必须真返回）、POST 得到改写结果。
+     * mock 模型会回显最后一条 user 消息（`[mock] …`），正好用来证明「动作与正文真的被送进了
+     * 模型」——不含正文的空手返回会让这条断言变红。 */
+    console.log('\n── §1.8 AI 写作助手（动作清单 / 鉴权 / 非法输入 / 正文回填）──')
+    const waList = await api('GET', '/privhub/api/model/write', { token })
+    ok(waList.status === 200 && waList.json && waList.json.ok === true && Array.isArray(waList.json.actions),
+      `动作清单接口可用（HTTP ${waList.status}）`)
+    const waIds = (waList.json && waList.json.actions || []).map((a) => a.id)
+    ok(waIds.includes('polish') && waIds.includes('custom'),
+      `清单含润色与自定义（实测 ${waIds.join(',') || '（空）'}）`)
+    ok((waList.json.actions || []).every((a) => a.id && a.title && a.group),
+      '每个动作都带 id / title / group（界面要按 group 分栏）')
+    const waNoTok = await api('POST', '/privhub/api/model/write', { body: { action: 'polish', text: 'x' } })
+    ok(waNoTok.status === 401, `写作接口先鉴权（未登录 ${waNoTok.status}）`)
+    const waBad = await api('POST', '/privhub/api/model/write', { token, body: { action: '不存在的动作', text: '你好世界' } })
+    ok(waBad.status === 400, `未知动作被拒（${waBad.status}）—— 不静默放行成「乱改一通」`)
+    const waEmpty = await api('POST', '/privhub/api/model/write', { token, body: { action: 'polish', text: '   ' } })
+    ok(waEmpty.status === 400, `空正文被拒（${waEmpty.status}）`)
+    const wa = await api('POST', '/privhub/api/model/write', { token, body: { action: 'polish', text: '这是一段需要润色的文字。' } })
+    ok(wa.status === 200 && wa.json && wa.json.ok === true && typeof wa.json.text === 'string' && wa.json.text.trim().length > 0,
+      `润色请求拿到了模型输出（实测「${String(wa.json && wa.json.text || '').slice(0, 40)}」）`)
+    ok(/\[mock\]/.test(String(wa.json && wa.json.text || '')) && /需要润色的文字/.test(String(wa.json && wa.json.text || '')),
+      '输出里同时含模型回显与**被处理的正文** —— 证明正文确实进了模型（不是空手返回）')
+    const waCustom = await api('POST', '/privhub/api/model/write', { token, body: { action: 'custom', text: '原文', instruction: '改成反问句' } })
+    ok(waCustom.status === 200 && /改成反问句/.test(String(waCustom.json && waCustom.json.text || '')),
+      '自定义动作把用户填的指令也送进了模型')
+
     /* ---------- D13：明文系统数据「看得见 + 迁得动」----------
      * 这条链路的每一环过去都是断的：迁移函数零调用、盘上遗留明文没人知道、
      * 管理端没有任何入口。这里端到端跑一遍，确保「看不见的明文」不会再无声存在。 */

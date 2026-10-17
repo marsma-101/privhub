@@ -3,8 +3,18 @@
   "title": "管理",
   "icon": "👥",
   "description": "用户 / 角色 / 项目权限管理（权限系统）",
-  "slots": ["admin"],
+  "slots": [
+    "admin"
+  ],
   "barItems": [
-    { "icon": "👥", "title": "用户管理", "slot": "admin-nav", "view": "admin", "capFeature": "admin.users" }
+    {
+      "icon": "👥",
+      "title": "用户管理",
+      "slot": "admin-nav",
+      "view": "admin",
+      "capFeature": "admin.users",
+      "desc": "新建/编辑/删除用户、重置密码，并给用户授权可见的项目。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

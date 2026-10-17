@@ -165,6 +165,9 @@
     .ac-fresh { border-color: var(--warn); background: rgba(200,150,60,.08); }
     .ac-keyrow { display: flex; gap: var(--sp-2); align-items: center; margin-top: 10px; flex-wrap: wrap; }
     .ac-key { flex: 1; min-width: 240px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-2); word-break: break-all; }
+    /* JT-19：接入信息卡里的「自检命令」一行——可复制，紧跟在密钥字段下方 */
+    .ac-cmdrow { display: flex; gap: var(--sp-2); align-items: stretch; margin-top: 10px; }
+    .ac-cmd { flex: 1; min-width: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-2); overflow-x: auto; white-space: pre; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
     .ac-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--line); margin: 6px 0 14px; }
     .ac-tab { padding: 7px 14px; font-size: var(--fs-base); color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
     .ac-tab:hover { color: var(--text); }
@@ -175,6 +178,9 @@
     .ac-status.on { color: #3f9d63; background: rgba(63,157,99,.14); }
     .ac-status.off { color: var(--muted); background: rgba(128,128,128,.14); }
     .ac-dim { color: var(--muted); font-size: var(--fs-sm); }
+    /* FE-06：本面板以前借用了 explorer-v3 宿主的 .v3-loading 类 —— 跨插件 DOM 耦合一例
+     * （explorer-v3 一改类名/不在场，这里就静默失去样式）。改成自己的 .ac-loading。 */
+    .ac-loading { color: var(--muted); font-size: var(--fs-base); padding: 60px 0; text-align: center; }
     .ac-codes { display: flex; flex-direction: column; gap: var(--sp-1); font-size: 12.5px; }
     .ac-code { display: flex; gap: 10px; }
     .ac-code code { flex: 0 0 92px; color: var(--muted); }
@@ -188,6 +194,12 @@
     .auth-err { color: var(--danger); font-size: var(--fs-sm); margin-top: 10px; min-height: 16px; }
     .auth-switch { margin-top: 14px; text-align: center; font-size: var(--fs-sm); color: var(--muted); }
     .auth-switch a { color: var(--accent); cursor: pointer; }
+    /* JT-19：匿名面接入指路（低权重小字，不抢登录表单的注意力） */
+    .auth-hint {
+      margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+      text-align: center; font-size: var(--fs-xs, 12px); color: var(--muted); line-height: 1.7;
+    }
+    .auth-hint code { font-size: var(--fs-xs, 12px); color: var(--text); }
 
     /* ============ 主界面 ============ */
     /* 整体缩放（页面字体 A−/A+）：html zoom 下 vh 不随缩放收缩，这里按比例补偿高度，避免整页纵向滚动/底部截断 */
@@ -347,15 +359,14 @@
     }
     /* 分隔线：中间亮、两端渐隐 */
     .abar-sep { height: 1px; width: 46px; background: linear-gradient(90deg, transparent, var(--abar-line), transparent); margin: 9px 0; flex: 0 0 auto; }
-    /* 中段可滚动：类别 + 条目（细滚动条，深色下不刺眼；纵向单列居中） */
+    /* 中段可滚动：类别 + 条目（滚动条走全站标准 .ph-scroll；纵向单列居中） */
     .abar-scroll {
       flex: 1 1 auto; min-height: 0; width: 100%; padding: 2px 0;
       overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; align-items: center;
-      scrollbar-width: thin;
     }
-    .abar-scroll::-webkit-scrollbar { width: 6px; }
-    .abar-scroll::-webkit-scrollbar-thumb { background: var(--abar-line); border-radius: var(--r-pill); }
-    .abar-scroll::-webkit-scrollbar-track { background: transparent; }
+    /* 左栏是独立皮肤：滑块色沿用 --abar-line（比 --line 更淡，压在深色栏上不刺眼），
+       其余（6px 粗细 / 右下 2px 投影 / hover 变深）全部继承全站标准。 */
+    .abar-scroll.ph-scroll::-webkit-scrollbar-thumb { background: var(--abar-line); }
     /* 类别（一级）= 抽屉的把手：**只显示图标，无箭头、无文字**。
      *   常态 = 突起的浮雕按钮；展开 = 与抽屉共用底板、陷入（开口上缘内投影）、下缘取直。*/
     .abar-sec { display: flex; flex-direction: column; align-items: center; width: 100%; }
@@ -412,6 +423,73 @@
       box-shadow: 0 0 8px -2px var(--danger);
     }
 
+    /* ============ 图标栏悬停说明气泡 ============
+     * 由 shell 的 AppIconbar 渲染，teleport 到 body（appbar overflow:hidden 会裁掉栏内气泡）。
+     * 位置由被悬停元素的 boundingRect 推出（position:fixed）。条目 manifest 声明 desc 才弹；
+     * 没 desc 的退回原生 title，行为与迁前一致。 */
+    .ph-help {
+      position: fixed; z-index: var(--z-tooltip); max-width: 300px;
+      background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+      border-radius: var(--r-3); box-shadow: var(--sh-2); padding: 10px 12px;
+      font-size: var(--fs-sm); line-height: 1.5;
+    }
+    .ph-help-head { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 4px; }
+    .ph-help-ico { font-size: 15px; }
+    .ph-help-desc { opacity: .88; }
+    .ph-help-foot { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); }
+    .ph-help-more { color: var(--accent); cursor: pointer; text-decoration: none; }
+    .ph-help-more:hover { text-decoration: underline; }
+    .ph-help-hint { color: var(--muted); }
+
+    /* 页内「功能说明」小标（?）：贴在被说明的文字 / 按钮右侧，点开是一个悬浮窗，
+     * 讲「这个功能是干啥的 / 怎么用」，并给「查看完整说明」入口跳到站内说明文档。
+     * 骨架级全局组件 <ph-help>（各插件页面复用；RAG 插件原有的同款交互是它的前身）。 */
+    .ph-hb {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 15px; height: 15px; margin-left: 5px; border-radius: 50%;
+      font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer;
+      color: var(--muted); background: var(--bg); border: 1px solid var(--line);
+      vertical-align: middle; user-select: none; flex: 0 0 auto;
+    }
+    .ph-hb:hover { color: var(--accent); border-color: var(--accent); }
+    /* 点开时的透明遮罩：点空白处关闭（在悬浮窗之下、页面之上） */
+    .ph-hb-mask { position: fixed; inset: 0; z-index: var(--z-scrim); }
+    .ph-hb-pop {
+      position: fixed; z-index: var(--z-tooltip); width: 320px; max-width: 92vw;
+      max-height: 70vh; overflow: auto;
+      background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+      border-radius: var(--r-3); box-shadow: var(--sh-2); padding: 12px 14px;
+      font-size: var(--fs-sm); line-height: 1.6;
+    }
+    .ph-hb-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .ph-hb-head b { font-size: var(--fs-base); color: var(--accent); }
+    .ph-hb-x { cursor: pointer; color: var(--muted); }
+    .ph-hb-x:hover { color: var(--danger); }
+    .ph-hb-desc { opacity: .9; }
+    .ph-hb-steps { margin: 8px 0 0; padding-left: 20px; }
+    .ph-hb-steps li { margin: 3px 0; }
+    .ph-hb-tips { margin-top: 8px; padding: 7px 9px; background: var(--bg); border-radius: var(--r-2); color: var(--muted); }
+    .ph-hb-foot { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); }
+
+    /* 说明文档弹层（骨架级：nav.openHelp 打开，复用 .modal 外壳 + .ph-doc 正文样式） */
+    .ph-doc { overflow: auto; font-size: var(--fs-base); line-height: 1.65; }
+    .ph-doc h1, .ph-doc h2, .ph-doc h3, .ph-doc h4 { margin: 14px 0 8px; line-height: 1.4; }
+    .ph-doc h1 { font-size: var(--fs-xl); border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+    .ph-doc h2 { font-size: var(--fs-lg); }
+    .ph-doc h3 { font-size: 16px; }
+    .ph-doc p { margin: var(--sp-2) 0; }
+    .ph-doc ul, .ph-doc ol { padding-left: 22px; margin: var(--sp-2) 0; }
+    .ph-doc li { margin: 3px 0; }
+    .ph-doc code { background: var(--bg); padding: 1px 5px; border-radius: var(--r-1); font-family: Consolas, monospace; font-size: var(--fs-base); }
+    .ph-doc pre { background: #1e1e2e; color: #e4e4e7; padding: 12px 14px; border-radius: var(--r-3); overflow: auto; }
+    .ph-doc pre code { background: none; padding: 0; color: inherit; }
+    .ph-doc table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+    .ph-doc th, .ph-doc td { border: 1px solid var(--line); padding: 5px 10px; font-size: var(--fs-base); text-align: left; }
+    .ph-doc th { background: var(--bg); }
+    .ph-doc blockquote { border-left: 3px solid var(--accent); margin: var(--sp-2) 0; padding: 2px 12px; color: var(--muted); background: var(--bg); border-radius: 0 var(--r-2) var(--r-2) 0; }
+    .ph-doc hr { border: none; border-top: 1px solid var(--line); margin: var(--sp-3) 0; }
+    .ph-doc a { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); cursor: pointer; }
+
     /* ============ 右侧预览容器 ============ */
     .right-panel { width: 340px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; overflow: hidden; }
     .right-head { padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--line); font-size: var(--fs-base); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
@@ -465,6 +543,34 @@
     .view-inner h2 { font-size: 16px; margin-bottom: var(--sp-4); }
     .view-inner .modal-body { flex: 1; min-height: 0; }
     .view-inner .modal-foot { margin-top: var(--sp-4); display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* ============ 全站细滚动条（唯一标准，页面只挂类名 ph-scroll） ============
+       任何自带滚动的容器（看板视口、面板 body、浮层……）都加 class="ph-scroll"，
+       不要再各写一套 —— 全站粗细、颜色、投影、悬停表现必须一致。
+
+       ⚠ 一个必须避开的坑：标准属性 scrollbar-width / scrollbar-color 一旦被声明，
+       Chromium 会**整体忽略** ::-webkit-scrollbar 的全部样式，退回带上下箭头的经典
+       滚动条（又宽又丑）。而 CSS.supports('selector(::-webkit-scrollbar)') 在 Chromium
+       里返回 true，没法当开关使。所以这里：
+         · 主路径 = ::-webkit-scrollbar* （Chromium/Edge/Safari）
+         · 标准属性只放进 @supports not selector(...) （即 Firefox）做回退
+       —— 两者互斥地写在同一条元素上，才不会互相抵消。 */
+    /* 选择器写成 :is(.ph-scroll, .view-inner, .main-body, .modal-body)：后三个都是骨架自有类
+       —— .view-inner 是全部面板页的滚动容器，.main-body 是左侧各面板（搜索/收藏/回收站…）的，
+       .modal-body 是弹窗的。并入同一条规则，这些页面不必各自再挂 ph-scroll，标准也只有这一份。 */
+    :is(.ph-scroll, .view-inner, .main-body, .modal-body)::-webkit-scrollbar { width: 6px; height: 6px; }
+    :is(.ph-scroll, .view-inner, .main-body, .modal-body)::-webkit-scrollbar-track { background: transparent; }
+    /* 滑块右下 2px 小投影：让 6px 的细条从内容里「浮」出来一点点（很轻，不喧宾夺主） */
+    :is(.ph-scroll, .view-inner, .main-body, .modal-body)::-webkit-scrollbar-thumb {
+      background: var(--line); border-radius: var(--r-pill);
+      box-shadow: 2px 2px 2px rgb(var(--shadow-rgb) / .40);
+    }
+    :is(.ph-scroll, .view-inner, .main-body, .modal-body)::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    :is(.ph-scroll, .view-inner, .main-body, .modal-body)::-webkit-scrollbar-corner { background: transparent; }
+    @supports not selector(::-webkit-scrollbar) {
+      :is(.ph-scroll, .view-inner, .main-body, .modal-body) { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+    }
+
     .kv { display: flex; justify-content: space-between; font-size: var(--fs-base); padding: 9px 0; border-bottom: 1px dashed var(--line); }
     .kv .k { color: var(--muted); }
 
@@ -630,6 +736,9 @@
     /* ============================================================
      * 导航状态机（骨架持有；插件组件通过 window.PrivHub.nav 读写）
      * ============================================================ */
+    /* 选项目后落到哪个视图：按优先级挑第一个「真装得上」的。
+     * 想改落地页（例如改成任务看板），只动这一行的顺序即可；留空 [] = 回到旧行为（进文件）。 */
+    const PROJECT_LANDING = ['dashboard', 'taskboard']   // 项目看板 → 任务看板
     const nav = reactive({
       project: null,          // 当前项目名（null = 欢迎页）
       path: '',               // 项目内相对路径
@@ -646,6 +755,9 @@
          'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki | rag | agent | taskboard | calendar | dashboard | refcheck | home
          trashView/searchView/favView 为兼容镜像（视图型测试仍可读） */
       activeView: 'files',
+      /* 使用说明弹层（{ title, html, text, loading } | null）。图标栏悬停气泡的
+         「查看完整说明」调 nav.openHelp(文件名)，读 /privhub/api/help 渲染在模态里。 */
+      helpDoc: null,
       /* P2-3：骨架级内联输入模态（{ title, value, onOk } | null） */
       inputState: null,
       viewMode: 'grid',
@@ -699,10 +811,24 @@
         if (!r.ok && r.error) toast(r.error, 'error')
         bus.emit('file:opened', { project, path: nav.path })
       },
-      async openProject(name) {
+      /* 选项目 = 进入这个项目：默认落到项目的「看板」（见 PROJECT_LANDING），而不是文件夹。
+       * opts.view 显式指定落地视图——文件图标回文件视图、看板/日历内部切项目原地同步时用。 */
+      async openProject(name, opts) {
         await nav.openDir(name, '')
         const key = nav.treeKey(name, '')
         if (!nav.tree[key]) await nav.toggleTree(name, '')
+        const want = (opts && opts.view) || nav.projectLandingView()
+        if (want && want !== 'files') nav.setActiveView(want, { noToggle: true })
+      },
+      /* 落地视图：按 PROJECT_LANDING 优先级挑第一个真装得上的；都没有则回文件视图 */
+      projectLandingView() {
+        for (const v of PROJECT_LANDING) if (nav.hasBarView(v)) return v
+        return 'files'
+      },
+      /* 该视图是否真装得上（barItems 已按 cap / 管理员过滤，比原始 manifest 更准） */
+      hasBarView(view) {
+        const items = (window.PrivHub && window.PrivHub.barItems) || []
+        return items.some((b) => (b.view || b.slot) === view)
       },
       async backToWelcome() {
         nav.trashView = false
@@ -759,6 +885,22 @@
         else { nav.sortKey = key; nav.sortAsc = true }
       },
       setViewMode(m) { nav.viewMode = m },
+
+      /* ---- 使用说明（帮助弹层）----
+       * 读站内《使用说明》文档（服务端 /privhub/api/help，登录即可读，见 privhub-shell）。
+       * 图标栏悬停气泡的「查看完整说明」走这里。文档在站内 privhub 项目的 使用说明/ 下。 */
+      async openHelp(docName) {
+        const name = String(docName || '00-总览.md')
+        nav.helpDoc = { title: name.replace(/\.md$/i, ''), html: '', text: '', loading: true }
+        const r = await api('/privhub/api/help?doc=' + encodeURIComponent(name))
+        if (!r.ok) {
+          nav.helpDoc = null
+          toast(r.error || '说明文档读取失败', 'error')
+          return
+        }
+        nav.helpDoc = { title: r.title || name.replace(/\.md$/i, ''), html: mdToHtml(r.text || ''), text: r.text || '', loading: false }
+      },
+      closeHelp() { nav.helpDoc = null },
 
       /* ---- 选中 / 预览 ---- */
       async selectEntry(e) {
@@ -940,6 +1082,83 @@
       return previewImageUrl(name)
     }
 
+    /* ---------- 极小 Markdown 渲染（骨架自足，专供《使用说明》弹层） ----------
+     * 解耦复制 wiki 插件那份同语义实现（no build 下骨架不能 import 插件模块）。
+     * 先整体转义 HTML，再逐行做块级解析：围栏代码 / 标题 / 分隔线 / 引用 / 表格 / 列表 / 段落；
+     * 行内只认 `code`、**粗体**、*斜体*、[文字](链接)。说明文档是我们自己写的，够用即可。
+     * 刻意【不】处理 [[双链]]：权威正则在 privhub-svc-links/src/linkparse.ts，这里不复制第二份。 */
+    function mdEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    }
+    function mdInline(s) {
+      let out = mdEsc(s)
+      out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
+      out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+        if (/^https?:\/\//.test(href)) return '<a href="' + mdEsc(href) + '" target="_blank" rel="noopener">' + label + '</a>'
+        return '<span class="ph-doc-link">' + label + '</span>'
+      })
+      return out
+    }
+    function mdToHtml(src) {
+      const lines = String(src == null ? '' : src).replace(/\r\n/g, '\n').split('\n')
+      const html = []
+      let i = 0
+      const isSep = (l) => /^\|[\s:|-]+\|$/.test(String(l).trim())
+      while (i < lines.length) {
+        const t = lines[i].trim()
+        if (t === '') { i++; continue }
+        if (t.startsWith('```')) {
+          const buf = []
+          i++
+          while (i < lines.length && !lines[i].trim().startsWith('```')) { buf.push(lines[i]); i++ }
+          i++
+          html.push('<pre><code>' + mdEsc(buf.join('\n')) + '</code></pre>')
+          continue
+        }
+        const h = /^(#{1,6})\s+(.*)$/.exec(t)
+        if (h) { html.push('<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>'); i++; continue }
+        if (t === '---' || t === '***') { html.push('<hr />'); i++; continue }
+        if (t.startsWith('>')) {
+          const buf = []
+          while (i < lines.length && lines[i].trim().startsWith('>')) { buf.push(lines[i].trim().replace(/^>\s?/, '')); i++ }
+          html.push('<blockquote>' + mdInline(buf.join(' ')) + '</blockquote>')
+          continue
+        }
+        if (/^[-*+]\s+/.test(t) || /^\d+\.\s+/.test(t)) {
+          const ordered = /^\d+\.\s+/.test(t)
+          const buf = []
+          while (i < lines.length && (/^[-*+]\s+/.test(lines[i].trim()) || /^\d+\.\s+/.test(lines[i].trim()))) {
+            buf.push(lines[i].trim().replace(/^([-*+]|\d+\.)\s+/, ''))
+            i++
+          }
+          const tag = ordered ? 'ol' : 'ul'
+          html.push('<' + tag + '>' + buf.map((b) => '<li>' + mdInline(b) + '</li>').join('') + '</' + tag + '>')
+          continue
+        }
+        if (t.startsWith('|') && i + 1 < lines.length && isSep(lines[i + 1])) {
+          const cells = (l) => l.trim().split('|').slice(1, -1).map((c) => c.trim())
+          const head = cells(lines[i]); i += 2
+          const rows = []
+          while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(cells(lines[i])); i++ }
+          html.push('<table><thead><tr>' + head.map((c) => '<th>' + mdInline(c) + '</th>').join('') + '</tr></thead><tbody>' +
+            rows.map((r) => '<tr>' + r.map((c) => '<td>' + mdInline(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table>')
+          continue
+        }
+        // 段落：合并连续的非空、非结构行
+        const buf = [t]
+        i++
+        while (i < lines.length && lines[i].trim() !== '' &&
+               !/^#{1,6}\s|^```|^>|^[-*+]\s|^\d+\.\s|^(---|\*\*\*)$|^\|/.test(lines[i].trim())) {
+          buf.push(lines[i].trim()); i++
+        }
+        html.push('<p>' + mdInline(buf.join(' ')) + '</p>')
+      }
+      return html.join('\n')
+    }
+
     /* ============ 插件桥 ============ */
     window.PrivHub = { api, AUTH, THEME, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
     /* 图标栏角标（插件更新，骨架渲染） */
@@ -987,7 +1206,7 @@
       if (view === 'trash') { nav.openTrash() }
       else if (view === 'search') { nav.openSearch() }
       else if (view === 'favorites') { nav.openFavorites() }
-      else if (view === 'files') { if (nav.project) nav.openProject(nav.project); else nav.backToWelcome() }
+      else if (view === 'files') { if (nav.project) nav.openProject(nav.project, { view: 'files' }); else nav.backToWelcome() }
       // ⑤ 功能面板 = 视图（llm_wiki 范式）：图标点击切换 activeView，再点回文件视图
       //    例外：管理控制台不再 toggle —— 管理页之间来回切换时不该被弹回文件页。
       else if (view === 'admin') {
@@ -996,6 +1215,8 @@
       //    工作台（home）也走这条：再点一次回到文件视图，等于「从工作台回项目列表」的免费回退。
       else if (view === 'settings' || view === 'acl' || view === 'audit' ||
                view === 'tags' || view === 'template' || view === 'kg' || view === 'wiki' ||
+               view === 'mindmap' ||                                          // [mindmap] 项目思维导图视图
+               view === 'mindmap-global' ||                                   // [mindmap] 全局思维导图视图（仅管理员）
                view === 'rag' || view === 'agent' || view === 'taskboard' ||   // [kanban] 任务看板视图
                view === 'calendar' ||                                         // [calendar] 任务日历视图
                view === 'dashboard' ||                                        // [dashboard] 项目看板视图
@@ -1022,6 +1243,9 @@
           // 插件加载失败清单与 manifest 错误：让「界面空白」有可见原因，而不是只留在 console
           failedPlugins: [],
           manifestError: '',
+          // GC-15：插件子资源 401 的根因是会话 Cookie 失效；重取也救不回来时置真，
+          // 让界面给出「会话已失效 + 重新登录」的可见出口，而不是白屏 + 一闪而过的 toast
+          sessionLost: false,
         }
       },
       computed: {
@@ -1056,8 +1280,17 @@
           this.failedPlugins = []
           this.manifestError = ''
           this.bootTimedOut = false
+          this.sessionLost = false
           await this.loadManifests()
           if (this.failedPlugins.length === 0 && !this.manifestError) window.PrivHub.toast('界面已重新加载')
+        },
+        /* GC-15：会话失效后的显式出口 —— 清会话回到登录面（插件子资源靠会话 Cookie 鉴权，
+         * 会话没了插件必然整体 401，白屏是唯一表现。与其反复重试，不如让用户重新登录）。 */
+        reLogin() {
+          this.sessionLost = false
+          this.failedPlugins = []
+          if (window.PrivHub.logout) window.PrivHub.logout()
+          this.retryLoadPlugins()
         },
         /* manifest 拉取（可重复调用）。
          *
@@ -1103,8 +1336,13 @@
                 await this.loadManifests()
                 return
               }
+              /* GC-15：manifest 拉得到（说明服务端在），但 me 不通 ⇒ 会话本身已失效。
+               * 重取 Cookie 救不回来，唯一出路是重新登录。旧行为只弹一个 toast，
+               * 用户对着白屏不知所以；这里显式标记，交给模板给出可见出口。 */
+              this.sessionLost = true
+              console.warn('[shell] 插件加载失败且会话已失效（Cookie 缺失/过期），需重新登录')
             }
-            if (this.failedPlugins.length) {
+            if (this.failedPlugins.length && !this.sessionLost) {
               window.PrivHub.toast(this.failedPlugins.length + ' 个插件加载失败，部分功能不可用', 'error')
             }
             window.PrivHub.loadBarItems()
@@ -1223,7 +1461,16 @@
         <!-- 未登录兜底：正常应在数百毫秒内渲染出登录框；超时则给出可见原因与重试，
              而不是无限「加载中…」（2026-09-11 曾因 manifest 需登录而卡死在此处） -->
         <div v-if="!loggedIn && (!slotComps.auth || !slotComps.auth.length)" style="height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:12px">
-          <template v-if="bootTimedOut">
+          <template v-if="sessionLost">
+            <!-- GC-15：插件子资源只认会话 Cookie，失效即整体 401、白屏。给出可见出口。 -->
+            <div style="font-size:15px;color:var(--text)">登录会话已失效</div>
+            <div style="font-size:12px;max-width:520px;text-align:center;line-height:1.7">
+              界面组件未能加载：登录会话（Cookie）缺失或已过期。<br>
+              请重新登录以继续。
+            </div>
+            <button class="btn btn-primary" style="width:auto" @click="reLogin">重新登录</button>
+          </template>
+          <template v-else-if="bootTimedOut">
             <div style="font-size:15px;color:var(--text)">登录界面加载失败</div>
             <div style="font-size:12px;max-width:520px;text-align:center;line-height:1.7">
               {{ manifestError ? ('插件清单拉取失败：' + manifestError) : ('已加载的界面组件：' + (slotComps.auth ? slotComps.auth.length : 0) + ' 个') }}<br>
@@ -1285,6 +1532,10 @@
               <component v-for="c in slotComps.tags" :is="c" :key="c.name" v-else-if="nav.activeView === 'tags' && slotComps.tags && slotComps.tags.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.template" :is="c" :key="c.name" v-else-if="nav.activeView === 'template' && slotComps.template && slotComps.template.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.kg" :is="c" :key="c.name" v-else-if="nav.activeView === 'kg' && slotComps.kg && slotComps.kg.length" @close="nav.setActiveView('files')"></component>
+              <!-- [mindmap] 思维导图（项目层）：列出本项目全部 .mindmap，点开即在文件视图里用画布打开 -->
+              <component v-for="c in slotComps.mindmap" :is="c" :key="c.name" v-else-if="nav.activeView === 'mindmap' && slotComps.mindmap && slotComps.mindmap.length" @close="nav.setActiveView('files')"></component>
+              <!-- [mindmap] 全局思维导图（实例层，仅管理员）：不属任何项目，存服务端 data/mindmaps/global.json -->
+              <component v-for="c in slotComps['mindmap-global']" :is="c" :key="c.name" v-else-if="nav.activeView === 'mindmap-global' && slotComps['mindmap-global'] && slotComps['mindmap-global'].length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps.wiki" :is="c" :key="c.name" v-else-if="nav.activeView === 'wiki' && slotComps.wiki && slotComps.wiki.length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps['rag-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'rag' && slotComps['rag-view'] && slotComps['rag-view'].length" @close="nav.setActiveView('files')"></component>
               <component v-for="c in slotComps['agent-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'agent' && slotComps['agent-view'] && slotComps['agent-view'].length" @close="nav.setActiveView('files')"></component>
@@ -1326,7 +1577,13 @@
               <!-- 兜底：不再无限「加载中」。插件加载失败时给出可见原因与重试入口，
                    否则用户只会看到一个永远转不完的加载提示。 -->
               <div v-else class="main-welcome">
-                <template v-if="failedPlugins.length || manifestError">
+                <template v-if="sessionLost">
+                  <!-- GC-15：会话失效导致的插件整体 401 —— 重试无用，直接引导重新登录 -->
+                  <div class="big">登录会话已失效</div>
+                  <div style="margin-bottom:10px">界面组件未能加载：登录会话（Cookie）缺失或已过期。</div>
+                  <button class="btn btn-primary" style="width:auto" @click="reLogin">重新登录</button>
+                </template>
+                <template v-else-if="failedPlugins.length || manifestError">
                   <div class="big">界面组件加载失败</div>
                   <div style="margin-bottom:10px">{{ manifestError ? ('插件清单拉取失败：' + manifestError) : ('以下插件未能加载：' + failedPlugins.map(p => p.title).join('、')) }}</div>
                   <div style="font-size:12px;color:var(--muted);margin-bottom:14px">常见原因：服务端刚重启、网络中断，或该插件文件缺失。可先重试，仍失败请查看服务端日志。</div>
@@ -1372,11 +1629,89 @@
               </div>
             </div>
           </div>
+
+          <!-- 使用说明弹层（图标栏悬停气泡的「查看完整说明」→ nav.openHelp）。
+               文档来自 /privhub/api/help（登录即可读），正文用 mdToHtml 渲染。 -->
+          <div v-if="loggedIn && nav.helpDoc" class="modal-mask" @click.self="nav.closeHelp()">
+            <div class="modal" style="width:720px">
+              <h2>📖 使用说明 · {{ nav.helpDoc.title }}</h2>
+              <div class="modal-body">
+                <div v-if="nav.helpDoc.loading" style="color:var(--muted);font-size:13px">读取中…</div>
+                <div v-else class="ph-doc" v-html="nav.helpDoc.html"></div>
+              </div>
+              <div class="modal-foot">
+                <button class="btn btn-ghost" @click="nav.closeHelp()">关 闭</button>
+              </div>
+            </div>
+          </div>
         </div>
       `,
     }
 
+    /* ============ 页内功能说明小标 <ph-help>（骨架级全局组件） ============
+     * 用法（任意插件模板里）：
+     *   <ph-help title="新建列" desc="给看板加一个自定义列" :steps="['① …','② …']"
+     *            tips="…" doc="03-协作与看板.md" />
+     * 小标贴在被说明的文字 / 按钮右侧；点开弹悬浮窗（挂 body，position:fixed），
+     * 同一时刻只开一个；「查看完整说明」跳站内《使用说明》文档（nav.openHelp）。
+     * 每个封面的说明文案就地写在模板里，长文仍引导到站内 md —— 与图标栏气泡同一套口径。 */
+    let helpUidSeq = 0
+    const helpOpenState = reactive({ id: 0 })   // 当前打开的说明小标 id（0 = 都关）
+    const HelpBadge = {
+      name: 'ph-help',
+      props: {
+        title: { type: String, default: '功能说明' },
+        desc: { type: String, default: '' },
+        steps: { type: Array, default: () => [] },
+        tips: { type: String, default: '' },
+        doc: { type: String, default: '' },
+      },
+      data() { return { uid: ++helpUidSeq, pos: { top: 0, left: 0 } } },
+      computed: {
+        open() { return helpOpenState.id === this.uid },
+      },
+      methods: {
+        toggle(ev) {
+          if (this.open) { helpOpenState.id = 0; return }
+          const el = ev && ev.currentTarget
+          if (el && typeof el.getBoundingClientRect === 'function') {
+            const r = el.getBoundingClientRect()
+            const w = 320
+            // 贴着触发点下方；靠近右/下边缘时回收，避免溢出视口
+            let left = Math.round(r.left)
+            if (left + w > window.innerWidth - 12) left = Math.max(8, window.innerWidth - w - 12)
+            let top = Math.round(r.bottom + 6)
+            if (top > window.innerHeight - 160) top = Math.max(8, Math.round(r.top - 6 - 200))
+            this.pos = { top, left }
+          }
+          helpOpenState.id = this.uid
+        },
+        close() { helpOpenState.id = 0 },
+        more() { helpOpenState.id = 0; nav.openHelp(this.doc || '00-总览.md') },
+        onKeydown(e) { if (e.key === 'Escape') this.close() },
+      },
+      mounted() { document.addEventListener('keydown', this.onKeydown) },
+      beforeUnmount() { document.removeEventListener('keydown', this.onKeydown) },
+      template: `
+        <span class="ph-hb" role="button" tabindex="0" title="功能说明"
+          :aria-expanded="open ? 'true' : 'false'" @click.stop="toggle" @keydown.enter.prevent="toggle">?</span>
+        <teleport to="body">
+          <div v-if="open" class="ph-hb-mask" @click="close"></div>
+          <div v-if="open" class="ph-hb-pop" :style="{ top: pos.top + 'px', left: pos.left + 'px' }">
+            <div class="ph-hb-head"><b>{{ title }}</b><span class="ph-hb-x" @click="close">✕</span></div>
+            <div v-if="desc" class="ph-hb-desc">{{ desc }}</div>
+            <ol v-if="steps && steps.length" class="ph-hb-steps">
+              <li v-for="(s, i) in steps" :key="i">{{ s }}</li>
+            </ol>
+            <div v-if="tips" class="ph-hb-tips">💡 {{ tips }}</div>
+            <div class="ph-hb-foot"><a class="ph-help-more" @click="more">📖 查看完整说明</a></div>
+          </div>
+        </teleport>
+      `,
+    }
+
     const app = createApp(App)
+    app.component('ph-help', HelpBadge)
     app.mixin({
       methods: {
         fileIcon,

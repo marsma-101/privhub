@@ -12,8 +12,10 @@
 
 const CSS = `
 /* ============ 工作台（首页）============ */
-/* 竖版长页面，直接挂在骨架 .main（overflow:hidden）下：必须自带滚动条（同 project-dashboard 的 .db-wrap）。 */
-.home-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1080px; margin: 0 auto; padding: var(--sp-5) var(--sp-5) var(--sp-6); }
+/* 版式与任务看板/项目看板同一标准：整页铺满主区（不限宽、不居中，否则主区一宽两侧就留出两条空带）。
+ * 本页没有工具条，.home-wrap 自己就是滚动视口（挂骨架的 ph-scroll 取全站细滚动条）；
+ * flex:1 撑满、min-height:0 允许它比内容矮（缺了后者内容被撑高、滚动条被顶出屏幕）。 */
+.home-wrap { flex: 1 1 auto; min-height: 0; width: 100%; overflow: auto; padding: var(--sp-5) var(--sp-5) var(--sp-6); }
 
 .home-hello { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .home-hello .big { font-size: var(--fs-xl); font-weight: 600; }

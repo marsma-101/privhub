@@ -39,6 +39,7 @@ import { build as buildCap } from './cap.mjs'
 import { build as buildModelProfiles } from './model-profiles.mjs'
 import { build as buildWebhook } from './webhook.mjs'
 import { build as buildButlerLane } from './butler-lane.mjs'
+import { build as buildRoster } from './roster.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -116,6 +117,9 @@ async function main() {
     buildEditLock(),
     // Z 批新增：项目看板（纵向分区页；含智能体 X-Agent-Key 写入车道）
     buildDashboard(),
+    // 智能体名册（T 批）：登录态读写 + 智能体凭密钥自注册 + 看板 agents 组件投影。
+    // 它是**全局**一份名册，收尾只删自己建过的条目；放在看板之后（两者共用 tasks 数据形状）。
+    buildRoster(),
     // 任务日历（client-only 插件；验它依赖的任务看板 dueDate 契约）
     buildTaskCalendar(),
     // 附件引用检查：孤儿附件 / 断链引用只报告不删除；含「不可见文件不得泄露」断言
@@ -140,8 +144,8 @@ async function main() {
   let pass = report(results)
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
-  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 标题碰撞')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'title-collision.mjs', 'mcp-protocol.mjs']) {
+  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 标题碰撞 / 思维导图')
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }

@@ -86,9 +86,18 @@ export const FEATURES: readonly FeatureSpec[] = [
   /* ---- 协作（普通用户日常功能） ---- */
   { id: 'task.write', group: '协作', title: '任务看板写入', desc: '建卡 / 改卡 / 拖拽 / 列操作（只读则仅可查看）', userDefault: 'write' },
   { id: 'dashboard.write', group: '协作', title: '项目看板写入', desc: '编辑项目看板（分区/组件）布局', userDefault: 'write' },
+  /* 2026-10-16 新增（智能体名册）：与上面两条同类——都是「协作元数据」的写，不碰项目文件、
+   * 不涉凭据，故按兄弟项取 'write' 而非新增功能的常规 'read'（见模块头注释的例外说明）。
+   * 读名册不设开关（登录即可看）；本开关只闸「登记/编辑/删除条目」。
+   * 智能体凭密钥自注册走的是 agent 车道，不受本开关影响（那条车道的闸门是密钥本身）。 */
+  { id: 'roster.write', group: '协作', title: '智能体名册写入', desc: '登记 / 编辑 / 删除智能体名册条目（只读则仅可查看）', userDefault: 'write' },
 
-  /* ---- AI（模型能力，管理员恒可，普通用户默认关） ---- */
+  /* ---- AI（模型能力，管理员恒可） ---- */
   { id: 'ai.params', group: 'AI', title: '模型参数自定义', desc: '问答时可自调 temperature / max_tokens 等生成参数（关闭则一律用管理员配置）', userDefault: 'none' },
+  /* 2026-10-15 新增（开关表上线后的用户侧功能，按 core.ts 头注释"新增 → 默认 read"）：
+   * 写作助手是「选中一段 → 模型改 → 客户端替换」，服务端不碰文件（落盘走既有 ACL 文件写路由），
+   * 故按 read 级能力放行；关成 none 即把编辑器里的 AI 下拉整个摘掉。 */
+  { id: 'ai.write', group: 'AI', title: 'AI 写作助手', desc: '文档编辑器的 AI 动作组：润色 / 改写 / 精简 / 扩写 / 摘要 / 排版 / 翻译 / 自定义', userDefault: 'read' },
 
   /* ---- 查重（Q6/Q7；新功能，用户侧默认按"能用"给、需要时关） ---- */
   { id: 'dup.prompt', group: '查重', title: '上传期重复提示', desc: '上传文件时，若与项目内已有文件内容相同/高度相似，提示"内容重复"（只提示，不阻止、不改写）', userDefault: 'read' },
@@ -105,6 +114,8 @@ export const FEATURES: readonly FeatureSpec[] = [
   { id: 'nav.trash', group: '导航', title: '回收站入口', desc: '左栏「回收站」入口（清空权限另由 admin.trash.clean 管）', userDefault: 'read' },
   { id: 'nav.wiki', group: '导航', title: '知识库入口', desc: '左栏「知识库」入口', userDefault: 'read' },
   { id: 'nav.kg', group: '导航', title: '知识图谱入口', desc: '左栏「知识图谱」入口', userDefault: 'read' },
+  { id: 'nav.mindmap', group: '导航', title: '思维导图入口', desc: '左栏「思维导图」入口（列出本项目全部 .mindmap：新建 / 打开 / 改名 / 删除）', userDefault: 'read' },
+  { id: 'mindmap.global', group: '导航', title: '全局思维导图（仅管理员）', desc: '竖栏一级入口「🌳 全局思维导图」：实例级总览图（不属于任何项目）的入口与读写。默认 none ⇒ 只有管理员看得到 / 改得动', userDefault: 'none' },
   { id: 'nav.tags', group: '导航', title: '标签入口', desc: '左栏「标签」入口（为文件打标签 / 按标签筛选）', userDefault: 'read' },
   { id: 'nav.template', group: '导航', title: '新建文档入口', desc: '左栏「新建文档」入口（用模板建文档；管理模板另由 admin.template 管）', userDefault: 'read' },
   { id: 'nav.refcheck', group: '导航', title: '引用检查入口', desc: '左栏「引用检查」入口（只报告，不改文件）', userDefault: 'read' },

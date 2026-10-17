@@ -184,7 +184,7 @@ const TaskCalendarView = {
     },
     async pick(p) {
       if (!p || p === this.project) return
-      nav.openProject(p)
+      nav.openProject(p, { view: 'calendar' }) // 原地同步：日历跟着当前项目走
       await this.load(p)
     },
     async refresh() { await this.load(this.project) },
@@ -285,7 +285,7 @@ const TaskCalendarView = {
       <div v-else-if="error" class="cal-err">加载失败：{{ error }}</div>
       <div v-else-if="loading && !board" class="cal-empty">加载中…</div>
 
-      <div v-else class="cal-body">
+      <div v-else class="cal-body ph-scroll">
         <!-- ===== 月视图 ===== -->
         <div v-if="mode === 'month'" class="cal-month">
           <div class="cal-wd" v-for="w in weekdays" :key="w">{{ w }}</div>
@@ -380,10 +380,11 @@ const TaskCalendarView = {
             <button class="cal-btn" @click="openBoard">在任务看板中打开</button>
           </div>
         </div>
+      </div>
 
-        <div class="cal-foot">
-          任务是同一个看板的另一种看法：这里改期即刻反映到「任务看板」，反之亦然。
-        </div>
+      <!-- 页脚钉在滚动视口之外（.cal-wrap 底部），内容再长也不随滚动消失 -->
+      <div v-if="project && !error && board" class="cal-foot">
+        任务是同一个看板的另一种看法：这里改期即刻反映到「任务看板」，反之亦然。
       </div>
     </div>
   `,

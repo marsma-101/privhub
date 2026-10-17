@@ -783,6 +783,78 @@ export class ModelService extends Service {
   }
 }
 
+/* ---------- 写作助手动作组（§1.8）----------
+ *
+ * 「一段文字 + 一个动作 → 改过的文字」这件事的**唯一一处**定义：动作表 + 提示词拼装。
+ * 放在模型接入层而不是路由处，是因为「提示词长什么样」属于模型知识，与 HTTP 无关；
+ * 将来换引擎（V4）时只有适配器变，这一处不动。**路由只负责鉴权/取正文/调模型/回文本**。
+ *
+ * 两条约定，缺一即坏体验：
+ *   1. 模型**只回正文** —— 所有动作都显式要求「只输出结果本身，不要解释、不要引号或代码块
+ *      包裹、不要复述原文」。否则用户点一下「润色」会拿到一整段
+ *      「好的，这是润色后的版本：……」。
+ *   2. 结果再兜一道 {@link stripWriteResult} —— 模型不听话时把整段结果套了 ``` 围栏，
+ *      只做最保守的清理（去围栏 + 首尾空白），绝不改动正文内容。
+ */
+export interface WriteAction {
+  /** 稳定 id（前端下拉的 value、审计里的 action）。 */
+  id: string
+  /** 下拉里的分组标题。 */
+  group: string
+  /** 中文标题（下拉项）。 */
+  title: string
+  /** 送给模型的指令。`custom` 动作这条为空，改用用户当次填的 instruction。 */
+  prompt: string
+  /** 自定义动作：用用户填写的 instruction 代替 prompt。 */
+  custom?: boolean
+}
+
+export const WRITE_ACTIONS: readonly WriteAction[] = [
+  /* 优化 */
+  { id: 'polish', group: '优化', title: '润色', prompt: '润色下面这段文字：让表达更顺畅、更专业，但**不改变原意、不增删要点**。' },
+  { id: 'concise', group: '优化', title: '精简', prompt: '精简下面这段文字：删去冗余与重复，保留全部要点，尽量缩短篇幅。' },
+  { id: 'expand', group: '优化', title: '扩写', prompt: '扩写下面这段文字：在**不虚构事实**的前提下补充细节与过渡，让它更充实。' },
+  { id: 'rewrite', group: '优化', title: '改写', prompt: '改写下面这段文字：保持意思不变，换一种更清晰的表达方式。' },
+  /* 编辑 */
+  { id: 'grammar', group: '编辑', title: '修语法', prompt: '修正下面这段文字的语法、错别字与标点错误，其余一律不动。只输出改正后的文字。' },
+  { id: 'summary', group: '编辑', title: '摘要', prompt: '为下面这段文字写一段简短摘要（不超过原文的三分之一），只输出摘要本身。' },
+  { id: 'continue', group: '编辑', title: '续写', prompt: '顺着下面这段文字的语意与文风继续往下写一小段，不要重复已有内容，只输出新写的那一段。' },
+  { id: 'explain', group: '编辑', title: '解释', prompt: '解释下面这段文字在说什么：先用一句话概括，再列出关键点。' },
+  /* 翻译 */
+  { id: 'to_en', group: '翻译', title: '中译英', prompt: '把下面这段文字翻译成地道的英文，只输出译文。' },
+  { id: 'to_zh', group: '翻译', title: '英译中', prompt: '把下面这段文字翻译成自然的中文，只输出译文。' },
+  /* 格式 */
+  { id: 'md_format', group: '格式', title: 'Markdown 排版', prompt: '把下面这段文字整理成结构清晰的 Markdown（合理使用标题、列表），不要增删实质内容。只输出排版后的 Markdown 源码。' },
+  { id: 'code_format', group: '格式', title: '代码格式化', prompt: '把下面这段代码按该语言的通用风格整理格式（缩进、换行、命名一致），不改变逻辑。只输出代码本身。' },
+  /* 其他 */
+  { id: 'custom', group: '其他', title: '自定义…', prompt: '', custom: true },
+]
+
+export const WRITE_ACTION_BY_ID: ReadonlyMap<string, WriteAction> = new Map(WRITE_ACTIONS.map((a) => [a.id, a]))
+
+/**
+ * 拼装写作动作的 messages。未知动作直接抛错（调用方翻成 400），不当成空动作静默放行 ——
+ * 静默放行会让「前端传错 id」表现为「模型乱改一通」而不是一条清楚的报错。
+ */
+export function buildWriteMessages(actionId: string, text: string, instruction = ''): ChatMessage[] {
+  const a = WRITE_ACTION_BY_ID.get(actionId)
+  if (!a) throw new Error('未知的写作动作：' + actionId)
+  const task = a.custom ? (instruction.trim() || '按要求修改下面这段文字。') : a.prompt
+  const system = '你是中文写作助手。只输出【结果本身】：不要解释、不要客套、不要用引号或代码块包裹整段结果、不要复述原文。保持原文的语言与 Markdown 结构（除非任务本身就是翻译或排版）。'
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: task + '\n\n---\n' + text },
+  ]
+}
+
+/** 兜一道：模型偶尔把整段结果套了 ``` 围栏（或首尾引号），只做最保守的清理，不动正文。 */
+export function stripWriteResult(input: string): string {
+  let t = String(input ?? '').trim()
+  const fence = t.match(/^```[A-Za-z0-9_+.-]*\n([\s\S]*?)\n?```$/)
+  if (fence) t = fence[1].trim()
+  return t
+}
+
 /* mock 辅助：随机种子（测试用） */
 export function mockSeed(): string { return randomBytes(4).toString('hex') }
 

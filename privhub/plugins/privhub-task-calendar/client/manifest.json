@@ -3,8 +3,19 @@
   "title": "任务日历",
   "icon": "📅",
   "description": "把任务看板的截止日期铺到月/周/日三种视图：一眼看清每天要做什么，可拖动改期",
-  "slots": ["calendar-view"],
+  "slots": [
+    "calendar-view"
+  ],
   "barItems": [
-    { "icon": "📅", "title": "任务日历", "slot": "app-iconbar", "view": "calendar", "group": "collab", "capFeature": "task.write" }
+    {
+      "icon": "📅",
+      "title": "任务日历",
+      "slot": "app-iconbar",
+      "view": "calendar",
+      "group": "collab",
+      "capFeature": "task.write",
+      "desc": "把任务截止日期铺到月/周/日三视图，可拖动改期。",
+      "doc": "03-协作与看板.md"
+    }
   ]
 }

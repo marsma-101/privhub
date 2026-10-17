@@ -3,9 +3,28 @@
   "title": "回收站",
   "icon": "🗑️",
   "description": "回收站视图（B9）：列表/恢复/彻底删除/清空30天，角标计数",
-  "slots": ["trash-view", "admin-trash"],
+  "slots": [
+    "trash-view",
+    "admin-trash"
+  ],
   "barItems": [
-    { "icon": "🗑️", "title": "回收站", "slot": "panel", "view": "trash", "group": "files", "capFeature": "nav.trash" },
-    { "icon": "🗑️", "title": "回收站", "slot": "admin-nav", "view": "trash" }
+    {
+      "icon": "🗑️",
+      "title": "回收站",
+      "slot": "panel",
+      "view": "trash",
+      "group": "files",
+      "capFeature": "nav.trash",
+      "desc": "删除的文件先到这里：恢复 / 彻底删除 / 清空 30 天前。",
+      "doc": "01-文件与目录.md"
+    },
+    {
+      "icon": "🗑️",
+      "title": "回收站",
+      "slot": "admin-nav",
+      "view": "trash",
+      "desc": "删除的文件先到这里：恢复 / 彻底删除 / 清空 30 天前。",
+      "doc": "01-文件与目录.md"
+    }
   ]
 }

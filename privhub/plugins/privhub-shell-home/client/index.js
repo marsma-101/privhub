@@ -183,7 +183,7 @@ const Home = {
     if (this._timer) clearInterval(this._timer)
   },
   template: `
-    <div class="home-wrap">
+    <div class="home-wrap ph-scroll">
       <div class="home-hello">
         <span class="big">{{ hello }}<template v-if="userName">，{{ userName }}</template></span>
         <span class="home-time">{{ today }}</span>

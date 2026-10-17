@@ -2,20 +2,32 @@
 
 > **作者声明**：本程序作者非程序员出身，所有代码均由 AI 生成，拉取使用请务必先进行安全审查与完善后再用于生产环境！
 
+---
+
+> ## 🚧 当前状态（2026-10-16）
+>
+> **`3.3.0` 是当前发布版本**，已在生产环境连续运行一天无待改进项，稳定可用。
+> **下一步：先改进看板功能**（参考外部项目，见
+> [`docs/PrivHub-看板改进-参考项目-2026-10-16.md`](docs/PrivHub-看板改进-参考项目-2026-10-16.md)）；
+> **V4**（并入引擎 / 宿主机智能体系统，让主线从「只能看」变「能干活」）**推迟**。
+> 看板改进完成后另定版本号与发布节奏。本仓库继续在 V3 线上演进。
+
 #### 介绍
 私域枢纽 PrivHub —— 局域网文件枢纽中心：基于纯 Cordis 底座 + 自研插件架构的文件管理系统。开箱即用、数据加密落盘、可私有化部署。
 
-**当前版本 3.2.0** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)；
+**当前版本 3.3.0** —— 版本变更逐条记录在 [`CHANGELOG.md`](CHANGELOG.md)；
 「现在到哪了 / 接下来做什么」见 [`docs/PrivHub-开发状态与路线图.md`](docs/PrivHub-开发状态与路线图.md)。
+**V3 / V4 版本划分与联动规划**（V3 = 文档中枢稳定版、V4 = V3 + 引擎挂载层，含回移机制）见
+[`docs/PrivHub-V3稳定版与V4引擎版-规划-2026-10-15.md`](docs/PrivHub-V3稳定版与V4引擎版-规划-2026-10-15.md)（**方案待拍板**）。
 
 #### 软件架构
 - **纯 Cordis 底座**：核心框架仅依赖 `@deepseek-ai/cordis` + `schemastery` + `tsx`，无重型 Web 框架，整个目录搬走即可运行。
-- **三层插件架构**（当前 **62 个插件目录**；另有 `_retired-v2/` 归档目录，以 `_` 前缀排除、不参与装配）：
+- **三层插件架构**（当前 **63 个插件目录**；另有 `_retired-v2/` 归档目录，以 `_` 前缀排除、不参与装配）：
   - L1 六枢纽：core / auth / files / trash / admin / shell
   - L2 能力 Service（14 个）：storage / events / audit / acl / watermark / search / meta / collab / lock / office / model / **links** / **dup** / **cap**
   - L3 功能插件：`CORE_PLUGINS` 清单外自动发现装配（装卸 = 增删 `plugins/` 目录，无需改代码）
-  - 统计口径：53 个含 `src/index.ts`（其中 **38 个真正注册路由**）、39 个含前端、9 个纯前端
-- **自研 webServer**（node:http）：exact 路由 + 静态前端 + `/privhub-plugins/<名>/<文件>` 插件资源映射。当前注册 **148 条后端路由**（统计口径：`.route('<路径>'` 调用数，注释中提及的 `svc.route()` 不计入；按「`.route(` 出现次数」的旧口径连注释一起数会得到 150），分布于 **38 个插件**。
+  - 统计口径：54 个含 `src/index.ts`（其中 **39 个真正注册路由**）、39 个含前端、9 个纯前端
+- **自研 webServer**（node:http）：exact 路由 + 静态前端 + `/privhub-plugins/<名>/<文件>` 插件资源映射。当前注册 **155 条后端路由**（统计口径：`.route('<路径>'` 调用数，注释中提及的 `svc.route()` 不计入；按「`.route(` 出现次数」的旧口径连注释一起数会得到 157），分布于 **39 个插件**。
 - **宿主机智能体管家**（①地基）：给"装在宿主机上的 AI 软件"一把**专用钥匙**（`type=butler`，仅本机回环、可随时吊销、按 `ai:<名>` 记审计），据此后端提供 `butler/status` 与 `butler/key` 两条只管家的路由；`privhub/mcp/` 下附**零依赖 MCP 转接器**（`privhub-mcp.mjs`）与一步接入脚本（`butler-setup.mjs`）。设计见 [`docs/PrivHub-宿主机智能体管家-MCP-方案-2026-10-13.md`](docs/PrivHub-宿主机智能体管家-MCP-方案-2026-10-13.md)。
 - **前端**：Vue 单页骨架（`frontend/index.html` 单文件，无打包）+ manifest/slot 加载器，纯前端插件即建即用。骨架通过 `window.PrivHub`（骨架 26 个键 + 插件运行时追加）与插件通信。
 - **管理控制台**（v3.1.0）：进入管理相关视图渲染统一外壳（顶部栏 + 左侧管理导航 + 内容区），管理路由走 `#/admin/...` hash（刷新保持位置），侧栏按管理员职责分四组；既有 `openAdmin` / `openAcl` / `openAudit` / `openSettings` / `openTags` / `openTemplate` 入口全部保留。实现见 `privhub/plugins/privhub-admin-console/client/`。
@@ -33,6 +45,10 @@
 - 智能体的写入一律落到绑定的个人空间；写项目返回 `403 AGENT-4032`。
 - 智能体接入界面（图标栏 **🔌 智能体接入**）用于签发/吊销 API 密钥，
   与网页登录**完全分离**：人用会话，智能体用 `X-Agent-Key`。
+- **接入上手**：外部集成方（拿到 `pha_` 密钥的 AI / 自动化程序）请看
+  [`docs/PrivHub-AgentAPI-接入指南.md`](docs/PrivHub-AgentAPI-接入指南.md)——
+  一句话版：请求头带 `X-Agent-Key: pha_xxx`，端点前缀 `/privhub/api/agent/v1/`，
+  自检用 `GET /privhub/api/agent/v1/me`。
 
 > 完整的架构、插件全景、功能状态与安全模型见 [`docs/PrivHub-架构与功能说明.md`](docs/PrivHub-架构与功能说明.md)。
 
@@ -63,7 +79,7 @@
 
 #### 现状提示（2026-10-15 复核）
 
-- `privhub/` 为开发主目录（**62 个插件目录 / 148 条后端路由**，2026-10-15 实测复核）；`deploy/` 下两个独立部署包（`privhub-deploy/`、`privhub-prod/`）**均落后于开发源码**（七角度评审实测：包内版本号仍报 0.2.0、且缺会话校验，见 [`docs/reviews/07-delivery-and-runtime.md`](docs/reviews/07-delivery-and-runtime.md)），上线前必须重新同步。
+- `privhub/` 为开发主目录（**63 个插件目录 / 155 条后端路由**，2026-10-16 实测复核）；`deploy/` 下两个独立部署包（`privhub-deploy/`、`privhub-prod/`）**均落后于开发源码**（七角度评审实测：包内版本号仍报 0.2.0、且缺会话校验，见 [`docs/reviews/07-delivery-and-runtime.md`](docs/reviews/07-delivery-and-runtime.md)），上线前必须重新同步。
   **同步生产必须经显式授权**，并在同步后用 `node tests/integrity.mjs --release` 做发布闸门校验。
 - 回归测试：`cd privhub && node tests/run-all.mjs --spawn`（隔离实例，端口 3190，**不会触碰真实数据**）。
   v3.1.1 最终批次时点十套套件合计 **650 项断言全部通过**（personal-ui 279 / smoke 86 / 管理控制台 76 / file-exts 59 / 预览上限 42 / RAG 韧性 27 等，逐批数字见 CHANGELOG）。

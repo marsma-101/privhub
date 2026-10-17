@@ -997,6 +997,11 @@ export function apply(ctx: Context, config: Config): void {
       service: 'privhub',
       version,
       uptimeSeconds: Math.floor((Date.now() - started) / 1000),
+      /* JT-19：健康检查是匿名可达、且外部集成方最先 curl 的端点——
+       * 在这里给一行智能体接入指路，直接解决「拿到密钥却不知道请求头与前缀」的
+       * 发现困境（前缀与头字段本就不是秘密，README 公开写着）。
+       * 只加一个只读字符串字段，不暴露任何数据。 */
+      agent: { header: 'X-Agent-Key', base: '/privhub/api/agent/v1/', selfCheck: '/privhub/api/agent/v1/me' },
     })
   }, 'health')
 

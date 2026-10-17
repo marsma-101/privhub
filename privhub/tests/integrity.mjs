@@ -75,6 +75,7 @@ if (!existsSync(DEPLOY)) {
 
   // 关键源码逐字节比对：不一致即意味着线上跑的不是这套代码
   const critical = [
+    'package.json', // OPS-03：版本号是「代码 = 版本号」口径的锚点，必须纳入闸门
     'src/main.ts',
     'src/web-server.ts',
     'frontend/index.html',
@@ -104,6 +105,30 @@ if (!existsSync(DEPLOY)) {
       ? `  ✅ 部署包与开发源码一致（${critical.length} 个关键文件）`
       : `  ℹ️  部署包落后于开发源码 ${mismatch} 个文件（授权同步前属预期；发布时用 --release 强制校验）`)
     for (const d of drifted) console.log('       · ' + d)
+  }
+
+  /* OPS-03：版本号闸门。
+   * 旧闸门只看插件数 + 关键文件哈希，**不读 package.json** —— 于是「包内版本号
+   * 写着旧版本、实际跑着新代码（或反之）」这种谎报无人拦截（评审 05 P0-4 指出的
+   * 发布缺口）。这里显式比对开发与部署包的 version 字段；上面的逐字节比对虽已
+   * 覆盖 package.json，但分开报能让「版本号对不上」一眼可见，而不是淹没在
+   * 「落后 N 个文件」里。 */
+  const devPkg = join(ROOT, 'package.json')
+  const depPkg = join(DEPLOY, 'package.json')
+  const readVer = (p) => {
+    try { return String(JSON.parse(readFileSync(p, 'utf8')).version || '') } catch { return '' }
+  }
+  const devVer = readVer(devPkg)
+  const depVer = readVer(depPkg)
+  if (RELEASE_GATE) {
+    ok(devVer !== '' && depVer === devVer,
+      `[发布闸门] 部署包版本号与开发一致（开发 ${devVer || '?'} / 部署 ${depVer || '?'}）`)
+  } else if (depVer === devVer) {
+    console.log(`  ✅ 版本号一致（${devVer}）`)
+    pass++
+  } else {
+    console.log(`  ℹ️  部署包版本号与开发不一致（开发 ${devVer || '?'} / 部署 ${depVer || '?'}）—— 授权同步前属预期`)
+    pass++
   }
 
   // 部署包数据必须存在且密钥未被覆盖（覆盖 = 旧数据永久无法解密）
@@ -285,6 +310,46 @@ ok(/manifestsPartial/.test(feSrc), '骨架记录 manifest 是否为最小集合�
 ok(/bootTimedOut/.test(feSrc) && /登录界面加载失败/.test(feSrc),
   '首屏超时兜底：8 秒未渲染出界面时给出可见原因与重试（不再静默卡死）')
 
+/* ══════════ 选项目 = 进项目看板（2026-10-15） ══════════
+ * 需求：从工作台 / 左栏项目列表 / 顶栏「选择项目」下拉里选中一个项目，落地页应是**该项目的看板**，
+ * 而不是它的文件夹。守两道「容易被改回去」的线：
+ *   · 落地视图被硬编码回 'files'（或 PROJECT_LANDING 被删空）—— 又变回进文件夹；
+ *   · 视图内部的「切项目」写成默认落地 —— 在任务看板 / 日历里换项目会被弹去别的视图（原地不同步）。
+ */
+console.log('\n── 选项目落地页（项目看板） ──')
+
+ok(/const PROJECT_LANDING\s*=\s*\[[^\]]*'dashboard'/.test(feSrc),
+  '骨架定义 PROJECT_LANDING（选项目默认落到项目看板；换落地页只改这一行）')
+ok(/async openProject\(name,\s*opts\)/.test(feSrc) && /opts\.view/.test(feSrc),
+  'openProject 支持显式落地视图（opts.view），视图内切项目可原地停留')
+ok(/view:\s*'files'\s*\}/.test(feSrc),
+  '「文件」图标显式要求文件视图（否则点文件会被弹去看板）')
+
+const dashClientSrc = readFileSync(join(ROOT, 'plugins', 'privhub-project-dashboard', 'client', 'index.js'), 'utf8')
+const calClientSrc = readFileSync(join(ROOT, 'plugins', 'privhub-task-calendar', 'client', 'index.js'), 'utf8')
+ok(/openProject\(p,\s*\{\s*view:\s*'dashboard'\s*\}\)/.test(dashClientSrc),
+  '项目看板内切项目原地同步（view: dashboard，不被弹走）')
+ok(/openProject\(p,\s*\{\s*view:\s*'calendar'\s*\}\)/.test(calClientSrc),
+  '任务日历内切项目原地同步（view: calendar，不被弹走）')
+
+/* ══════════ 智能体接入的匿名面可发现性（JT-19，2026-10-15） ══════════
+ * 问题：外部集成方拿到密钥却联不通（不知请求头与前缀），误判「AI 链接是断的」。
+ * 运行时行为已由 agent-sandbox 的 K 用例覆盖（health 指路 + 带 hint 的 404）；
+ * 这里守前端两处「指路入口」别再被删掉——它们是登录前后各自的发现点。 */
+console.log('\n── 智能体接入匿名面可发现性（JT-19） ──')
+
+const authClientSrc = readFileSync(join(ROOT, 'plugins', 'privhub-auth', 'client', 'index.js'), 'utf8')
+ok(/X-Agent-Key/.test(authClientSrc) && /\/privhub\/api\/agent\/v1\//.test(authClientSrc),
+  '登录页给出智能体接入最小指路（请求头 + 端点前缀）')
+
+const agentConsoleSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell-agent-console', 'client', 'index.js'), 'utf8')
+ok(/selfCheckCmd\(\)/.test(agentConsoleSrc) && /agent\/v1\/me/.test(agentConsoleSrc),
+  '「🔌 智能体接入」面板提供可复制的自检命令（/agent/v1/me）')
+
+const readmeSrc = readFileSync(join(REPO, 'README.md'), 'utf8')
+ok(/PrivHub-AgentAPI-接入指南\.md/.test(readmeSrc),
+  'README 指向《PrivHub-AgentAPI-接入指南.md》')
+
 /* ══════════ 个人空间：隐私边界的静态契约 ══════════
  * 这些是「不能再被改回去」的安全性质。行为层面已由个人空间与智能体沙箱
  * 各套件覆盖，这里额外守一道：即使某个行为用例被误删，边界本身也不该被无声移除。
@@ -342,6 +407,95 @@ ok(/"taskboard-view"/.test(tbManifest), '看板插件声明 taskboard-view slot'
 ok(/"view":\s*"taskboard"/.test(tbManifest), '看板插件声明 taskboard 视图 barItem')
 ok(/slotComps\['taskboard-view'\]/.test(feSrc), '骨架模板挂载 taskboard-view（// [kanban] 挂载点，勿丢）')
 ok(/view === 'taskboard'/.test(feSrc), '骨架 barItem 分发包含 taskboard 视图')
+
+/* 审核流契约：内置「待审核」列 + R9 审核路由 + 前端两个审核按钮。
+ * 这四处分别落在服务端与客户端，任何一处被覆盖，审核流就静默失效（列不在、按钮没反应）。
+ * 注：任务看板的「数据契约 / 存储 / 汇总」已抽到同插件的 src/core.ts（项目看板复用同一个
+ * 加载器 —— 这是「任务看板为唯一信息源」的代码级保证），内置列定义与补齐逻辑随之落在那儿；
+ * 故扫描范围 = 该插件服务端两个源文件，断言本身一字未改，强度不变。 */
+const tbSrc = readFileSync(join(ROOT, 'plugins', 'privhub-task-board', 'src', 'index.ts'), 'utf8')
+  + '\n' + readFileSync(join(ROOT, 'plugins', 'privhub-task-board', 'src', 'core.ts'), 'utf8')
+const tbClient = readFileSync(join(ROOT, 'plugins', 'privhub-task-board', 'client', 'index.js'), 'utf8')
+ok(/REVIEW_COL = 'col_review'/.test(tbSrc), '服务端内置「待审核」列 id = col_review')
+ok(/\{ id: REVIEW_COL, title: '待审核'/.test(tbSrc), '默认看板含「待审核」列')
+ok(/'\/privhub\/api\/taskboard\/cards\/review'/.test(tbSrc), '注册审核流路由 /taskboard/cards/review')
+ok(/ensureReviewColumn\(b\)/.test(tbSrc), '读看板时补齐内置列（老看板自动获得「待审核」）')
+ok(/col_review'[\s\S]{0,80}内置列，不可删除|内置列，不可删除/.test(tbSrc), '内置「待审核」列拒绝删除')
+ok(/'\/privhub\/api\/taskboard\/cards\/review'/.test(tbClient), '前端调用审核流路由')
+ok(/review\(card, 'approve'\)/.test(tbClient) && /review\(card, 'reject'\)/.test(tbClient), '待审核卡片带「通过 / 退回重做」两个按钮')
+ok(/通过/.test(tbClient) && /退回重做/.test(tbClient), '按钮文案含「通过」「退回重做」')
+
+/* 主视图版式标准（2026-10-16 起）：整页铺满主区、工具条钉顶、内容在**有界滚动视口**里滚。
+ * 起因是任务看板的三连反馈：① 主区没用满、两侧留空带；② 右侧滚动条压住内容；③ 新建列后看不到
+ * 新列 —— 同一根因：没有拿到「有界高度的滚动视口」，横向滚动条被内容顶到屏幕外，而限宽外壳又留白。
+ * 任务看板已定为最终版式样板；此后新页面照抄：外壳不限宽 + 视口三件套（flex:1/min-height:0/overflow:auto）。 */
+const tbStyles = readFileSync(join(ROOT, 'plugins', 'privhub-task-board', 'client', 'styles.js'), 'utf8')
+const tbWrapRule = (/\.tb-wrap\s*\{[\s\S]*?\}/.exec(tbStyles) || [''])[0]
+ok(/import '\.\/styles\.js'/.test(tbClient), '任务看板 import 了自己的 styles.js（少了它整页版式不生效）')
+ok(tbWrapRule && !/max-width:\s*\d/.test(tbWrapRule),
+  '看板外壳不设限宽（限宽居中会在主区两侧留下两条空带）')
+const tbScrollRule = (/\.tb-scroll\s*\{[\s\S]*?\}/.exec(tbStyles) || [''])[0]
+ok(/flex:\s*1/.test(tbScrollRule) && /min-height:\s*0/.test(tbScrollRule) && /overflow:\s*auto/.test(tbScrollRule),
+  '看板视口 = flex:1 + min-height:0 + overflow:auto 三件套（缺 min-height:0 内容就把滚动条顶出屏幕）')
+ok(/this\.\$nextTick\([\s\S]{0,40}scrollBoardToEnd\(\)/.test(tbClient)
+  && /\$refs\.board/.test(tbClient) && /scrollLeft\s*=\s*el\.scrollWidth/.test(tbClient),
+  '新建列后自动把视口推到最右（光有方法不算，必须真的在看板视口上调用）')
+ok(/class="tb-scroll ph-scroll tb-cols"[\s\S]{0,40}ref="board"/.test(tbClient),
+  '看板视口挂了 ref + 全站滚动条类 ph-scroll（自动滚动要找得到它，滚动条要走全站标准）')
+
+/* 全站细滚动条 = 骨架里唯一的 .ph-scroll，页面只挂类名、不再各写一套。三处要害：
+ * ① 以 ::-webkit-scrollbar 为主路径（6px）；
+ * ② 标准属性 scrollbar-width/scrollbar-color 必须关进 @supports not selector(::-webkit-scrollbar)——
+ *    直接写在元素上会让 Chromium **整体忽略** webkit 样式、退回带箭头的经典滚动条（本仓.task-board 与
+ *    左栏 .abar-scroll 两处曾经中招，且 CSS.supports('selector(::-webkit-scrollbar)') 在 Chromium 恒为 true，
+ *    没法当开关使，只能靠 @supports 关）；
+ * ③ 滑块带右下 2px 小投影（用户要求：让 6px 细条从内容里「浮」出来一点）。 */
+const skelCss = (/<style>[\s\S]*<\/style>/.exec(feSrc) || [''])[0]
+ok(/\.ph-scroll[^{]*::-webkit-scrollbar\s*\{[^}]*width:\s*\d+px[^}]*height:\s*\d+px/.test(skelCss),
+  '骨架定义全站细滚动条 .ph-scroll（宽高都收成细条）')
+ok(/:is\(\.ph-scroll,\s*\.view-inner\)/.test(skelCss),
+  '面板页的 .view-inner 并入同一条细滚动条规则（否则设置/权限/审计等面板仍是粗滚动条，标准就分叉了）')
+ok(/@supports not selector\(::-webkit-scrollbar\)\s*\{[\s\S]{0,240}?scrollbar-width:\s*thin/.test(skelCss),
+  '标准属性 scrollbar-width 关在 @supports not selector(::-webkit-scrollbar) 里（写在元素上会让 Chromium 忽略 webkit 样式、退回经典滚动条）')
+ok(/\.ph-scroll[^{]*::-webkit-scrollbar-thumb\s*\{[\s\S]{0,200}?box-shadow:\s*2px\s+2px/.test(skelCss),
+  '细滚动条滑块带右下 2px 投影（让细条浮出来一点，用户明确要求）')
+/* 反例防护：回归成「裸 scrollbar-width」就变红 —— 左栏与看板都不许再自己声明标准属性 */
+ok(!/\.abar-scroll\s*\{[^}]*scrollbar-width/.test(skelCss), '左栏不再自己声明 scrollbar-width（改用全站 .ph-scroll）')
+
+/* 项目看板 = 第二个按标准改造的页面（用户点名先改它）。同样三件套 + 外壳不限宽 + 挂全站滚动条类。 */
+const dbStyles = readFileSync(join(ROOT, 'plugins', 'privhub-project-dashboard', 'client', 'styles.js'), 'utf8')
+const dbClient = readFileSync(join(ROOT, 'plugins', 'privhub-project-dashboard', 'client', 'index.js'), 'utf8')
+const dbWrapRule = (/\.db-wrap\s*\{[\s\S]*?\}/.exec(dbStyles) || [''])[0]
+ok(dbWrapRule && !/max-width:\s*\d/.test(dbWrapRule), '项目看板外壳不设限宽（与任务看板同一标准）')
+const dbBodyRule = (/\.db-body\s*\{[\s\S]*?\}/.exec(dbStyles) || [''])[0]
+ok(/flex:\s*1/.test(dbBodyRule) && /min-height:\s*0/.test(dbBodyRule) && /overflow:\s*auto/.test(dbBodyRule),
+  '项目看板内容区 = flex:1 + min-height:0 + overflow:auto 三件套（滚动落在视口上、不落整页）')
+ok(/display:\s*grid/.test(dbBodyRule) && /grid-auto-rows:\s*max-content/.test(dbBodyRule),
+  '项目看板「网格 + 定高滚动视口」必须显式 grid-auto-rows:max-content（否则 Chromium 把 auto 行轨按容器高度摊分，分区被压成 2px 行、内容互相重叠）')
+ok(/class="db-body ph-scroll"/.test(dbClient), '项目看板滚动视口挂全站滚动条类 ph-scroll')
+
+/* 同一标准推广到其余「主视图」：任务日历 / 引用检查 / 工作台。
+ * 每页都是「外壳不限宽 + 有界滚动视口（flex:1 / min-height:0 / overflow:auto）」，视口挂 ph-scroll。 */
+const mvRules = (dir, wrapCls, scrollCls) => {
+  const styles = readFileSync(join(ROOT, 'plugins', dir, 'client', 'styles.js'), 'utf8')
+  return {
+    styles,
+    client: readFileSync(join(ROOT, 'plugins', dir, 'client', 'index.js'), 'utf8'),
+    wrapRule: (new RegExp('\\.' + wrapCls + '\\s*\\{[\\s\\S]*?\\}').exec(styles) || [''])[0],
+    scrollRule: (new RegExp('\\.' + scrollCls + '\\s*\\{[\\s\\S]*?\\}').exec(styles) || [''])[0],
+  }
+}
+for (const [label, dir, wrapCls, scrollCls, scrollNeedle] of [
+  ['任务日历', 'privhub-task-calendar', 'cal-wrap', 'cal-body', 'class="cal-body ph-scroll"'],
+  ['引用检查', 'privhub-files-refcheck', 'rc-wrap', 'rc-body', 'class="rc-body ph-scroll"'],
+  ['工作台', 'privhub-shell-home', 'home-wrap', 'home-wrap', 'class="home-wrap ph-scroll"'],
+]) {
+  const m = mvRules(dir, wrapCls, scrollCls)
+  ok(m.wrapRule && !/max-width:\s*\d/.test(m.wrapRule), `${label}外壳不限宽（与任务看板同一标准，否则主区两侧留空带）`)
+  ok(/flex:\s*1/.test(m.scrollRule) && /min-height:\s*0/.test(m.scrollRule) && /overflow:\s*auto/.test(m.scrollRule),
+    `${label}滚动视口 = flex:1 + min-height:0 + overflow:auto 三件套`)
+  ok(m.client.includes(scrollNeedle), `${label}滚动视口挂全站滚动条类 ph-scroll`)
+}
 
 /* 项目看板（privhub-project-dashboard）与任务日历（privhub-task-calendar，client-only）
  * 同属「主视图」形态：manifest 声明 + 骨架两处挂载点，缺一即点开空白且不报错。 */
@@ -514,7 +668,9 @@ ok(/this\.open = this\.open === id \? null : id/.test(ixShellSrc), '类别按手
 ok(/\.abar-sub\s*\{[^}]*max-height:\s*0[^}]*transition:\s*max-height/.test(ixSkelSrc),
   '二级条目容器有折叠动画（max-height 过渡）')
 /* 只显示图标（2026-10-14 三版）：一级（类别）/ 二级（条目）都只渲染一个图标位，
- * 名称不再占版面，改走原生悬停提示（title）+ 无障碍名（aria-label）——窄栏也更简洁。 */
+ * 名称不再占版面，改走悬停说明 + 无障碍名（aria-label）——窄栏也更简洁。
+ * 悬停说明分两种：条目声明了 desc 时弹**自定义气泡**（标题 + 一句话简介 +
+ * 「查看完整说明」，导读站内《使用说明》）；没 desc 时退回原生 title。 */
 ok(/class="abar-ico"/.test(ixShellSrc), '图标栏只显示图标：一级 / 二级都用图标位渲染')
 ok(!/abar-item-label|abar-head-label/.test(ixShellSrc) && !/abar-item-label|abar-head-label/.test(ixSkelSrc),
   '图标栏不再渲染文字标签（含骨架上残留的旧样式）')
@@ -623,6 +779,83 @@ ok(!/\.ptab\.on\s*\{[^}]*background/.test(ixSkelSrc),
 
 
 
+/* ══════════ 使用说明：悬停气泡 → 站内说明文档（2026-10-16） ══════════
+ * 用户要两种说明：① 站内 md 说明文件（人和 AI 都能看）；② 界面内悬停简介，
+ * 篇幅过长时导读回 ①。这里只锁「接线」——气泡读 manifest 的 desc/doc，
+ * 「查看完整说明」跳站内只读说明路由；运行期交互（何时弹 / 怎么定位）由
+ * tests/iconbar.mjs 覆盖。 */
+console.log('\n── 使用说明（悬停气泡 + 站内文档路由） ──')
+
+const ixShellSrv = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'server', 'index.ts'), 'utf8')
+
+// 契约⑩a：shell 服务端注册只读说明路由，且要求登录（产品说明：登录即可读，但不裸奔）
+ok(/svc\.route\('\/privhub\/api\/help'/.test(ixShellSrv), 'shell 注册 /privhub/api/help 只读说明路由')
+ok(/svc\.me\(tokenOf\(req\)\)[\s\S]{0,220}?401/.test(ixShellSrv), '说明路由先校验登录（未登录 401），不是裸奔')
+ok(/\.md\$\/i\.test\(doc\)/.test(ixShellSrv), '说明文件名限 .md（禁单层以外的名字，防穿越）')
+ok(/realpath/.test(ixShellSrv), '说明路由用 realpath 复核落点（防 junction / symlink 逃逸）')
+
+// 契约⑩b：图标栏带 desc 的条目必须同时带 doc —— 否则气泡有简介却「无完整说明可跳」
+const missingDoc = []
+for (const dir of readdirSync(join(ROOT, 'plugins'))) {
+  if (dir.startsWith('_')) continue
+  const mf = join(ROOT, 'plugins', dir, 'client', 'manifest.json')
+  if (!existsSync(mf)) continue
+  let m
+  try { m = JSON.parse(readFileSync(mf, 'utf8')) } catch { continue }
+  for (const bi of (m.barItems || [])) {
+    if (bi.slot === 'admin-nav') continue
+    if (bi.desc && !/^\d{2}-.+\.md$/.test(bi.doc || '')) missingDoc.push(dir + ' → ' + (bi.view || bi.slot) + ' (doc=' + bi.doc + ')')
+  }
+}
+ok(missingDoc.length === 0,
+  `带 desc 的图标栏条目都指向一份说明文档（NN-标题.md）${missingDoc.length ? '，缺失：' + missingDoc.join(', ') : ''}`)
+
+// 契约⑩c：骨架提供说明弹层（nav.openHelp 拉取 + 极简 md 渲染 + 弹窗外壳）
+ok(/helpDoc:/.test(ixSkelSrc), '骨架 nav 有 helpDoc 状态（说明弹层数据源）')
+ok(/openHelp\s*\(/.test(ixSkelSrc), '骨架 nav.openHelp 拉取 /privhub/api/help 并展示')
+ok(/function mdToHtml\s*\(/.test(ixSkelSrc), '骨架自带极简 markdown 渲染（说明文档按 md 写）')
+ok(/class="ph-doc"/.test(ixSkelSrc), '骨架渲染说明弹窗正文（.ph-doc）')
+
+// 契约⑩d：插件侧气泡交互接线（悬停弹 / 点「查看完整说明」跳文档）
+ok(/showHelp\s*\(/.test(ixShellSrc), '图标栏定义 showHelp（悬停弹说明气泡）')
+ok(/openHelpDoc\s*\(/.test(ixShellSrc), '图标栏定义 openHelpDoc（点「查看完整说明」跳文档）')
+ok(/class="ph-help"/.test(ixShellSrc), '气泡样式类 ph-help 存在（teleport 到 body 的自定义气泡）')
+
+/* ══════════ 页内功能说明小标 <ph-help>（骨架级全局组件，2026-10-16） ══════════
+ * 图标栏气泡讲的是「这一整块功能」；页面里每个具体控件（新建列 / WIP 上限 / 审核流…）
+ * 另有一个贴在文字右侧的小标，点开是悬浮窗。两者共用同一套「查看完整说明」出口。
+ * 这里守两件事：组件确实注册了（否则各页的 <ph-help> 渲染成空标签、说明静默消失）；
+ * 每个用到的小标都指向一份命名合规的说明文档（否则点了「查看完整说明」落空）。 */
+console.log('\n── 页内功能说明小标 <ph-help> ──')
+ok(/app\.component\('ph-help'/.test(ixSkelSrc), '骨架注册了全局组件 ph-help（各页 <ph-help> 才有实体）')
+ok(/class="ph-hb"/.test(ixSkelSrc) && /\.ph-hb-pop\s*\{/.test(ixSkelSrc),
+  '小标与悬浮窗样式齐全（.ph-hb / .ph-hb-pop）')
+ok(/title:\s*\{\s*type:\s*String/.test(ixSkelSrc) && /doc:\s*\{\s*type:\s*String/.test(ixSkelSrc),
+  '组件 props 含 title / doc（点开有标题，能跳说明文档）')
+
+{
+  const badBadge = []
+  const used = []
+  for (const dir of readdirSync(join(ROOT, 'plugins'))) {
+    if (dir.startsWith('_')) continue
+    const cdir = join(ROOT, 'plugins', dir, 'client')
+    if (!existsSync(cdir)) continue
+    for (const f of readdirSync(cdir)) {
+      if (!f.endsWith('.js')) continue
+      const src = readFileSync(join(cdir, f), 'utf8')
+      for (const m of src.matchAll(/<ph-help\b([\s\S]*?)\/>/g)) {
+        const attrs = m[1]
+        const doc = (/\bdoc="([^"]*)"/.exec(attrs) || [])[1] || ''
+        used.push(dir)
+        if (!/^\d{2}-.+\.md$/.test(doc)) badBadge.push(dir + '/' + f + ' (doc=' + (doc || '缺失') + ')')
+      }
+    }
+  }
+  ok(used.length > 0, `有页面用上了功能说明小标（${[...new Set(used)].join(', ')}）`)
+  ok(badBadge.length === 0,
+    `每个 <ph-help> 都指向一份命名合规的说明文档（NN-标题.md）${badBadge.length ? '，问题：' + badBadge.slice(0, 8).join(', ') : ''}`)
+}
+
 /* ══════════ 前端模块化契约（插件内按职责拆分） ══════════
  * 用户要求：前端保持一个主界面（骨架只做容器与总线），每个插件的界面实现
  * 拆成若干职责单一的文件，且【全部留在该插件目录内】——卸载插件时它的前端
@@ -709,6 +942,45 @@ for (const d of readdirSync(join(ROOT, 'plugins'), { withFileTypes: true })) {
   }
 }
 ok(pageHtml.length === 0, `插件目录内无自建整页 HTML（骨架是唯一主界面）${pageHtml.length ? '：' + pageHtml.join(', ') : ''}`)
+
+/* ══════════ FE-06：插件之间不得借用对方的 DOM 类名 ══════════
+ * 跨插件耦合的老账：comments / edit-md / office2 曾直接 querySelector 宿主
+ * explorer-v3 的内部类名，第 4 处是 shell-agent-console 借用 `.v3-loading`。
+ * 宿主一改类名，借用方**静默**失效（样式没了、节点找不到了，不报错）。
+ * 前三处已在迁移中解耦（见各文件头注释），这里把「不要再出现第 5 处」变成机器可查：
+ * 除 explorer-v3 自己外，任何插件 client 都不得把 v3-* 命名空间当作自己的类名使用。 */
+const V3_OWNED = ['v3-loading', 'v3-content', 'v3-md', 'v3-text', 'v3-tabs', 'v3-menu', 'v3-detail', 'v3-tab']
+const borrow = []
+for (const d of readdirSync(join(ROOT, 'plugins'), { withFileTypes: true })) {
+  if (!d.isDirectory() || d.name.startsWith('_') || d.name === 'privhub-files-explorer-v3') continue
+  const cdir = join(ROOT, 'plugins', d.name, 'client')
+  if (!existsSync(cdir)) continue
+  for (const f of readdirSync(cdir)) {
+    if (!f.endsWith('.js')) continue
+    const src = readFileSync(join(cdir, f), 'utf8')
+    for (const c of V3_OWNED) {
+      if (new RegExp('class="[^"]*\\b' + c + '\\b').test(src)) borrow.push(d.name + '/' + f + ' → .' + c)
+    }
+  }
+}
+ok(borrow.length === 0,
+  `插件不再借用 explorer-v3 的 DOM 类名（FE-06）${borrow.length ? '：' + borrow.join(', ') : ''}`)
+
+/* ══════════ S15：office2 预览 iframe 的 sandbox 约束 ══════════
+ * 这是全站唯一「在同源下渲染用户上传文档」的面（docx/xlsx），必须有 sandbox。
+ * 同时钉住三件容易在后续改动中被顺手删掉的事：下载、模态、且不得放行表单/顶层导航。 */
+const office2Src = readFileSync(join(ROOT, 'plugins', 'privhub-files-office2', 'client', 'index.js'), 'utf8')
+const sandboxAttr = /setAttribute\('sandbox',\s*'([^']*)'\)/.exec(office2Src)
+ok(!!sandboxAttr, 'office2 预览 iframe 带 sandbox 属性（S15）')
+if (sandboxAttr) {
+  const flags = sandboxAttr[1]
+  ok(/allow-scripts/.test(flags) && /allow-same-origin/.test(flags),
+    'S15：sandbox 保留渲染与本文件读取所需能力（allow-scripts / allow-same-origin）')
+  ok(/allow-downloads/.test(flags) && /allow-modals/.test(flags),
+    'S15：sandbox 未误伤工具条下载与 confirm（缺一即静默坏功能）')
+  ok(!/allow-forms/.test(flags) && !/allow-top-navigation/.test(flags),
+    'S15：sandbox 不放行表单外提与顶层导航（恶意文档最实用的外泄/劫持路径）')
+}
 
 /* ══════════ Q4 双链 ID 化契约（§2.6） ══════════
  * `[[…]]` 的口径过去在 5 个文件里各写一份，只要有人改一处忘改另一处，
@@ -840,6 +1112,25 @@ ok(mcpToolNames.length >= 3, `MCP 转接器暴露了工具清单（${mcpToolName
 ok(mcpToolNames.every((n) => n.startsWith('privhub_')), 'MCP 工具名统一 privhub_ 前缀（避免与客户端自带工具重名）')
 ok(/privhub_butler_status/.test(mcpShimSrc) && /butler_status/.test(agentButlerSrc),
   'MCP 与 /schema 两条腿都登记了管家自检（防两处漂移）')
+
+/* ---------- §1.8 AI 写作助手动作组：动作表只定义一处 + 那条通道被开关守着 ---------- */
+const modelSrc = readFileSync(join(ROOT, 'plugins', 'privhub-svc-model', 'src', 'index.ts'), 'utf8')
+ok(/export const WRITE_ACTIONS/.test(modelSrc) && /export function buildWriteMessages/.test(modelSrc),
+  '动作表与提示词拼装定义在 svc-model 一处（WRITE_ACTIONS / buildWriteMessages）')
+ok(/export function stripWriteResult/.test(modelSrc), '写作结果有兜底清理（stripWriteResult 去围栏）')
+const ragSrc = readFileSync(join(ROOT, 'plugins', 'privhub-svc-rag', 'src', 'index.ts'), 'utf8')
+ok(/svc\.route\('\/privhub\/api\/model\/write'/.test(ragSrc),
+  'svc-rag 注册了 /privhub/api/model/write（GET 动作清单 + POST 执行）')
+ok(/WRITE_ACTIONS\b/.test(ragSrc) && /WRITE_ACTION_BY_ID\b/.test(ragSrc),
+  '路由从 svc-model 的动作表取清单与校验动作 id（不在路由里另抄一份）')
+ok(/ctx\.cap\.can\(u, 'ai\.write'\)/.test(ragSrc), '写作路由被功能开关 ai.write 守着（服务端真拦）')
+ok(/id: 'ai\.write'[\s\S]{0,200}userDefault: 'read'/.test(capCoreSrc),
+  'ai.write 登记在功能表且默认 read（新增用户侧功能，可关）')
+const editMdClient = readFileSync(join(ROOT, 'plugins', 'privhub-files-edit-md', 'client', 'index.js'), 'utf8')
+ok(/\/privhub\/api\/model\/write/.test(editMdClient), '编辑器客户端调用写作接口')
+ok(/capCan\('ai\.write'\)/.test(editMdClient), '编辑器按 ai.write 开关决定 AI 按钮是否出现')
+ok(/replaceSelection/.test(editMdClient) && /insertText/.test(editMdClient),
+  '结果写回走原生撤销栈（CodeMirror replaceSelection / textarea insertText）—— Ctrl+Z 可撤')
 
 console.log(`\n${'='.repeat(56)}`)
 console.log(`  交付完整性：${pass} 通过 / ${fail} 失败${RELEASE_GATE ? '（含发布闸门）' : ''}`)

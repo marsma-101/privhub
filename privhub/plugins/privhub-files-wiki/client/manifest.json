@@ -3,8 +3,19 @@
   "title": "知识库",
   "icon": "📚",
   "description": "知识库视图（F22）：当前目录 README.md/index.md 渲染为 Wiki 页面，双链可点击定位",
-  "slots": ["wiki"],
+  "slots": [
+    "wiki"
+  ],
   "barItems": [
-    { "icon": "📚", "title": "知识库", "slot": "panel", "view": "wiki", "group": "knowledge", "capFeature": "nav.wiki" }
+    {
+      "icon": "📚",
+      "title": "知识库",
+      "slot": "panel",
+      "view": "wiki",
+      "group": "knowledge",
+      "capFeature": "nav.wiki",
+      "desc": "把当前目录的 README.md 渲染成 Wiki 页，页面里的双链可点击定位。",
+      "doc": "02-知识组织.md"
+    }
   ]
 }

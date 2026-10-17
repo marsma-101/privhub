@@ -29,7 +29,7 @@ import { networkInterfaces } from 'node:os'
 import { VectorStore, docKeyOf } from './vec'
 // 错误文案脱敏：本插件的 catch 把 e.message 原样回给前端（toast / SSE error 帧），
 // 是密钥可能外泄的最后一道边界，与 svc-model 内部同一套规则（W-B/§1.5）。
-import { sanitizeError, sanitizeParams } from '../../privhub-svc-model/src/index'
+import { sanitizeError, sanitizeParams, buildWriteMessages, stripWriteResult, WRITE_ACTIONS, WRITE_ACTION_BY_ID } from '../../privhub-svc-model/src/index'
 import type { ModelParams } from '../../privhub-svc-model/src/index'
 
 export const name = 'privhub-svc-rag'
@@ -1608,6 +1608,41 @@ export function apply(ctx: Context): void {
     const deep = req.url?.includes('deep=1') ?? false
     json(res, 200, { ok: true, ...await ctx.model.check(ctx, force, deep) })
   }, 'model-status')
+
+  /* AI 写作助手动作组（§1.8）
+   *
+   *   GET  /privhub/api/model/write  → 动作清单（{ id, group, title }[]），供编辑器下拉渲染；
+   *   POST /privhub/api/model/write  → 执行一次动作，{ action, text, instruction? } → { text }。
+   *
+   * 为什么 GET/POST 同一条路由：**动作表只定义一处**（svc-model 的 WRITE_ACTIONS）。
+   * 前端不内联一份标题表，就不会出现「下拉里有个动作、后端不认识它」的漂移。
+   * 为什么端点是 "read" 级能力：本路由**不碰文件、不落盘**，只把「一段文字 → 改过的文字」
+   * 交回给**客户端**；落盘仍走既有的 ACL 守卫文件写路由。能力开关 `ai.write`（用户侧默认
+   * 开，可关）管的是「这条通道给不给这个用户用」，与文件权限无关。 */
+  svc.route('/privhub/api/model/write', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (!ctx.cap.can(u, 'ai.write')) return json(res, 403, { ok: false, error: '未开放「AI 写作助手」（可联系管理员开启）' })
+    if (req.method === 'GET') return json(res, 200, { ok: true, actions: WRITE_ACTIONS.map((a) => ({ id: a.id, group: a.group, title: a.title })) })
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req, 512 * 1024)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const action = String(body.action ?? '')
+    const text = String(body.text ?? '')
+    const instruction = typeof body.instruction === 'string' ? body.instruction : ''
+    if (!WRITE_ACTION_BY_ID.has(action)) return json(res, 400, { ok: false, error: '未知的写作动作：' + action })
+    if (!text.trim()) return json(res, 400, { ok: false, error: '请先选中要处理的文字' })
+    /* 单次上限：写作助手是"选中一段"的场景，20k 字符远超实际（也挡住"把整篇丢进来"的滥用）。 */
+    const WRITE_MAX = 20000
+    if (text.length > WRITE_MAX) return json(res, 400, { ok: false, error: '选中内容过长（上限 ' + WRITE_MAX + ' 字符），请分段处理' })
+    try {
+      const out = await ctx.model.chat(ctx, buildWriteMessages(action, text, instruction))
+      void audit(ctx, u.username, 'model-write', '', 'action=' + action + ' in=' + text.length + ' out=' + out.length)
+      json(res, 200, { ok: true, text: stripWriteResult(out) })
+    } catch (e) {
+      json(res, 400, { ok: false, error: sanitizeError(e instanceof Error ? e.message : '模型调用失败') })
+    }
+  }, 'model-write')
 
   /* RAG 总览状态（admin） */
   svc.route('/privhub/api/rag/status', async (req, res) => {

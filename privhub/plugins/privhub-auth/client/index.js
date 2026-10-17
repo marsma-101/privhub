@@ -61,6 +61,13 @@ const AuthView = {
             已有账号？<a @click="mode='login'; err=''">返回登录</a>
           </template>
         </div>
+        <!-- JT-19：匿名面最小可发现信息。
+             外部集成方常拿到密钥却联不通（不知请求头与前缀），这里给一句指路，
+             详细接入说明在登录后的「🔌 智能体接入」面板。按展示权重规则收成一行小字。 -->
+        <div class="auth-hint">
+          智能体 / 自动化接入：请求头带 <code>X-Agent-Key</code>，端点前缀 <code>/privhub/api/agent/v1/</code>。
+          密钥由登录后「🔌 智能体接入」面板签发。
+        </div>
       </div>
     </div>
   `,

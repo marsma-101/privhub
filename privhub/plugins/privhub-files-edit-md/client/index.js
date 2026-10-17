@@ -29,6 +29,26 @@
 
 const { api, bus, nav, AUTH } = window.PrivHub
 
+/* ============ §1.8 AI 写作助手：下拉菜单样式 ============
+ * 组件模板只能用内联 style，下拉菜单需要 :hover / 绝对定位这类规则，所以这里注入一小段
+ * 带前缀的样式。**构造性判断在先**：单测 / 非浏览器环境没有 document.head 时静默跳过，
+ * 绝不因为「注入样式」把整个模块 import 弄炸（本项目的头号事故类型）。 */
+if (typeof document !== 'undefined' && document.head && typeof document.createElement === 'function') {
+  const aiStyle = document.createElement('style')
+  aiStyle.textContent = `
+.ai-dd { position:relative; display:inline-flex; }
+.ai-menu { position:absolute; top:calc(100% + 4px); right:0; min-width:180px; z-index:var(--z-menu,120);
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--r-2,8px);
+  box-shadow:0 8px 24px rgba(0,0,0,.28); padding:4px; max-height:60vh; overflow:auto; }
+.ai-menu-g { padding:5px 10px 2px; font-size:11px; color:var(--muted); letter-spacing:.04em; }
+.ai-menu-i { display:block; width:100%; text-align:left; padding:6px 10px; border:none; border-radius:6px;
+  background:transparent; color:var(--text); font-size:13px; cursor:pointer; }
+.ai-menu-i:hover { background:var(--accent-soft, rgba(127,127,127,.14)); }
+.ai-menu-i:disabled { color:var(--muted); cursor:default; }
+`.trim()
+  try { document.head.appendChild(aiStyle) } catch { /* 注入失败：功能仍在，只是菜单没样式 */ }
+}
+
 /* ============ 宿主契约：编辑舱位 + 「能不能内嵌」（第二步 c） ============
  * 编辑器的落点是宿主的**编辑舱位** `.v3-editor-host`（与按扩展名上场的 viewer 用的
  * `.v3-viewer-host` 不是一回事：编辑态不是某个 viewer 的能力）。舱位由宿主创建/销毁；
@@ -222,11 +242,30 @@ const MdEditor = {
        *   迁前这里是 `previewOpen: true`，且 `openEditor()` 里 `= this.isMd`
        *   ⇒ md 一打开就是「编辑 + 预览」双栏，没有纯编辑态可言。 */
       viewMode: 'edit',
+      /* §1.8 AI 写作助手：动作清单来自服务端动作表（GET /privhub/api/model/write），
+       * 前端**不内联**一份标题 —— 免得出现「下拉里有、后端不认」的漂移。
+       * aiLoaded 区分「没拉过」与「拉过但为空（省一次往返）」；开关关掉时按钮整个不出现。 */
+      aiActions: [],
+      aiLoaded: false,
+      aiMenuOpen: false,
+      aiBusy: false,
     }
   },
   computed: {
     canEdit() {
       return this.canEditProject(this.project)
+    },
+    /* 用户侧开关（svc-cap 的 ai.write，默认开）：关成 none 即把 AI 按钮整个摘掉。
+     * 与服务端 `ctx.cap.can(u, 'ai.write')` 同一判据 —— 界面藏了、服务端也拦。 */
+    aiCan() {
+      const P = window.PrivHub
+      return !!(P && typeof P.capCan === 'function' && P.capCan('ai.write'))
+    },
+    /* 动作表按 group 分栏（保持服务端给的顺序，不重排）。 */
+    aiGroups() {
+      const seen = []
+      for (const a of this.aiActions) if (!seen.includes(a.group)) seen.push(a.group)
+      return seen
     },
     /* 三态的显隐口径（模板只认这两个 computed，不把三元表达式散进模板）：
      * 纯编辑 = 只有编辑栏；纯预览 = 只有预览栏；分屏 = 两栏并排。
@@ -477,6 +516,107 @@ const MdEditor = {
     onSrcKeydown(ev) {
       if (!ev) return
       if ((ev.ctrlKey || ev.metaKey) && String(ev.key || '').toLowerCase() === 's') { ev.preventDefault(); void this.save() }
+    },
+    /* ---- §1.8 AI 写作助手 ----
+     * 「选中一段文字 → 一个动作 → 原位替换」，可撤销。三条设计要点：
+     *
+     *  1. **取/换选区按形态分开写**（内嵌是原生 textarea，浮层是 EasyMDE 的 CodeMirror）：
+     *     两态的选区模型不同，硬凑一个抽象只会两头都不对。
+     *  2. **只换选区、绝不整篇重写**：整篇重写会把光标、滚动位置与撤销栈一起丢掉，
+     *     而且脏标记会显示成「整篇都被改过」。替换进原生/CodeMirror 的撤销栈 → Ctrl+Z 可撤。
+     *  3. **首尾空白原样保留**：送给模型的是 trim 过的正文，写回时把选区原有的前后换行/缩进
+     *     补回去，否则在列表项里做「润色」会把缩进吃掉。 */
+    async loadAiActions() {
+      if (this.aiLoaded) return
+      this.aiLoaded = true
+      try {
+        const r = await api('/privhub/api/model/write')
+        this.aiActions = (r && r.ok && Array.isArray(r.actions)) ? r.actions : []
+      } catch { this.aiActions = [] }
+    },
+    async toggleAi() {
+      if (this.aiMenuOpen) { this.aiMenuOpen = false; return }
+      await this.loadAiActions()
+      if (!this.aiActions.length) { window.PrivHub.toast('未能取得 AI 动作清单（模型未配置或功能未开放）', 'warn'); return }
+      this.aiMenuOpen = true
+    },
+    aiActionsByGroup(group) {
+      return this.aiActions.filter((a) => a.group === group)
+    },
+    /* 点菜单项：自定义动作先问一句指令，其余直接跑。 */
+    pickAi(a) {
+      this.aiMenuOpen = false
+      if (a && a.custom) {
+        const instruction = (typeof window.prompt === 'function') ? window.prompt('自定义指令（将连同选中文字一起交给模型）：', '') : ''
+        if (instruction === null) return                 // 取消
+        if (!String(instruction).trim()) { window.PrivHub.toast('未填写指令，已取消', 'warn'); return }
+        void this.runAi(a.id, String(instruction))
+        return
+      }
+      void this.runAi(a.id)
+    },
+    /** 取当前选区（两态各一条路）。 */
+    aiSelection() {
+      if (this.mode === 'float' && this.mde) {
+        const cm = this.mde.codemirror
+        return { text: (cm && cm.getSelection()) ? cm.getSelection() : '' }
+      }
+      const ta = this.$refs.src
+      if (!ta) return { text: '' }
+      const s = typeof ta.selectionStart === 'number' ? ta.selectionStart : 0
+      const e = typeof ta.selectionEnd === 'number' ? ta.selectionEnd : 0
+      return { text: String(ta.value || '').slice(s, e) }
+    },
+    /* 把结果写回**原选区**。两条路都进各自的原生撤销栈（CodeMirror 自带 undo / 浏览器 undo）。 */
+    aiReplace(text) {
+      if (this.mode === 'float' && this.mde) {
+        const cm = this.mde.codemirror
+        if (cm) { cm.replaceSelection(text); cm.focus() }
+        return
+      }
+      const ta = this.$refs.src
+      if (!ta) return
+      ta.focus()
+      /* 内嵌 textarea 走 execCommand('insertText')：它会替换当前选区、并**进浏览器原生撤销栈**。
+       * 它同时会触发一个 input 事件 ⇒ v-model 更新 doc、本组件的 onSrcInput 置脏标记，无需再手动同步。 */
+      let okIns = false
+      try { okIns = !!(document.execCommand && document.execCommand('insertText', false, text)) } catch { okIns = false }
+      if (okIns) return
+      /* 兜底（环境禁用了 execCommand）：整段替换 —— 没有原生撤销可依赖，如实提示用户改用 Ctrl+Z 无效。 */
+      const s = typeof ta.selectionStart === 'number' ? ta.selectionStart : ta.value.length
+      const e = typeof ta.selectionEnd === 'number' ? ta.selectionEnd : ta.value.length
+      this.doc = ta.value.slice(0, s) + text + ta.value.slice(e)
+      const pos = s + text.length
+      this.$nextTick(() => { ta.focus(); if (ta.setSelectionRange) ta.setSelectionRange(pos, pos) })
+    },
+    async runAi(actionId, instruction) {
+      if (this.aiBusy) return
+      const sel = this.aiSelection()
+      const raw = String(sel.text || '')
+      const core = raw.trim()
+      if (!core) { window.PrivHub.toast('请先在编辑区选中要处理的文字', 'warn'); return }
+      const meta = this.aiActions.find((a) => a.id === actionId)
+      const label = (meta && meta.title) || actionId
+      this.aiBusy = true
+      this.status = '✨ AI「' + label + '」处理中…'
+      try {
+        const r = await api('/privhub/api/model/write', {
+          method: 'POST',
+          body: JSON.stringify({ action: actionId, text: core, instruction: instruction || '' }),
+        })
+        if (!r || !r.ok) { this.status = 'AI 处理失败：' + ((r && r.error) || '未知错误'); window.PrivHub.toast((r && r.error) || 'AI 处理失败', 'error'); return }
+        const out = String(r.text || '')
+        if (!out.trim()) { this.status = 'AI 返回为空，未改动原文'; window.PrivHub.toast('AI 返回为空，未改动原文', 'warn'); return }
+        const lead = raw.match(/^\s*/)[0]
+        const trail = raw.match(/\s*$/)[0]
+        this.aiReplace(lead + out.trim() + trail)
+        this.status = '✅ AI「' + label + '」完成（Ctrl+Z 可撤销）'
+      } catch {
+        this.status = 'AI 处理失败（网络错误）'
+        window.PrivHub.toast('AI 处理失败（网络错误）', 'error')
+      } finally {
+        this.aiBusy = false
+      }
     },
     /* ---- Ctrl+S：三态（纯编辑 / 纯预览 / 分屏）都必须能保存（本批第二号坑） ----
      *
@@ -848,6 +988,17 @@ const MdEditor = {
           <!-- Y 批：他人持锁 → 明确只读提示（status 里也有同一句，这里常驻不随其它提示被覆盖） -->
           <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
           <span style="flex:1"></span>
+          <!-- §1.8 AI 写作助手：先选中一段文字，再点动作 → 原位替换（Ctrl+Z 可撤销）。
+               动作清单来自服务端动作表，前端不内联；开关（ai.write）关掉则整块不出现。 -->
+          <div v-if="aiCan" class="ai-dd">
+            <button class="icon-btn" :disabled="aiBusy" :title="aiBusy ? 'AI 处理中…' : 'AI 写作助手（先选中一段文字）'" @click="toggleAi()">{{ aiBusy ? '✨ …' : '✨ AI ▾' }}</button>
+            <div v-if="aiMenuOpen" class="ai-menu" @mouseleave="aiMenuOpen = false">
+              <template v-for="g in aiGroups" :key="g">
+                <div class="ai-menu-g">{{ g }}</div>
+                <button v-for="a in aiActionsByGroup(g)" :key="a.id" class="ai-menu-i" @click="pickAi(a)">{{ a.title }}</button>
+              </template>
+            </div>
+          </div>
           <!-- 三态按钮排：保存 ｜ 预览 ｜ 分屏 ｜ 只读。选中样式复用骨架既有的 .icon-btn.on
                （index.html 里就有：color/border=var(--accent)、底色 var(--accent-soft)）——
                不新增 CSS、不引入新主题。再点一次选中态即回「纯编辑」。 -->
@@ -926,6 +1077,16 @@ const MdEditor = {
           <span style="color:var(--muted);font-size:12px">{{ project }}/{{ path }}</span>
           <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
           <span style="flex:1"></span>
+          <!-- §1.8 AI 写作助手（浮层形态同一套动作；选区走 EasyMDE 的 CodeMirror）。 -->
+          <div v-if="aiCan" class="ai-dd">
+            <button class="icon-btn" :disabled="aiBusy" :title="aiBusy ? 'AI 处理中…' : 'AI 写作助手（先选中一段文字）'" @click="toggleAi()">{{ aiBusy ? '✨ …' : '✨ AI ▾' }}</button>
+            <div v-if="aiMenuOpen" class="ai-menu" @mouseleave="aiMenuOpen = false">
+              <template v-for="g in aiGroups" :key="g">
+                <div class="ai-menu-g">{{ g }}</div>
+                <button v-for="a in aiActionsByGroup(g)" :key="a.id" class="ai-menu-i" @click="pickAi(a)">{{ a.title }}</button>
+              </template>
+            </div>
+          </div>
           <!-- 浮层与内嵌同一套三态按钮排（同一批语义、同一个 viewMode）。 -->
           <button class="icon-btn" :disabled="saving || !!lockedBy" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
           <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>

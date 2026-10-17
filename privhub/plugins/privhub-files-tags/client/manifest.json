@@ -3,9 +3,28 @@
   "title": "标签",
   "icon": "🏷️",
   "description": "文件标签（F19）：为选中文件打标签（联想已有标签），按标签筛选定位文件",
-  "slots": ["tags", "admin-tags"],
+  "slots": [
+    "tags",
+    "admin-tags"
+  ],
   "barItems": [
-    { "icon": "🏷️", "title": "标签", "slot": "panel", "view": "tags", "group": "knowledge", "capFeature": "nav.tags" },
-    { "icon": "🏷️", "title": "标签管理", "slot": "admin-nav", "view": "tags" }
+    {
+      "icon": "🏷️",
+      "title": "标签",
+      "slot": "panel",
+      "view": "tags",
+      "group": "knowledge",
+      "capFeature": "nav.tags",
+      "desc": "给选中文件打标签（联想已有标签），并按标签筛选定位。",
+      "doc": "02-知识组织.md"
+    },
+    {
+      "icon": "🏷️",
+      "title": "标签管理",
+      "slot": "admin-nav",
+      "view": "tags",
+      "desc": "新建 / 编辑 / 删除标签（标签读取对所有人开放）。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

@@ -10,6 +10,7 @@
  *   PATCH  /privhub/api/taskboard/cards        {project,id,...}     改卡
  *   DELETE /privhub/api/taskboard/cards        ?project=&id=        删卡
  *   POST   /privhub/api/taskboard/cards/move   {project,id,toColumnId,order}  拖拽
+ *   POST   /privhub/api/taskboard/cards/review {project,id,action}            审核流（提交/通过/退回）
  *   POST   /privhub/api/taskboard/columns      {project,title,order?}         建列
  *   PATCH  /privhub/api/taskboard/columns      {project,id,title?,order?,wipLimit?} 改列
  *   DELETE /privhub/api/taskboard/columns      ?project=&id=        删列（卡片迁移到首列）
@@ -21,41 +22,22 @@
  * 鉴权串联：requireUser(401) → 项目名合法(400) → canAccess(403) → 加锁读写。
  * （先判项目名再判权限：非法项目名 canAccess 恒 false，不能让它被误报成「无权限」。）
  *
+ * 契约 / 存储 / 汇总都在 `./core`（纯逻辑）—— 项目看板的「任务进度」组件也用同一个
+ * 加载器读同一份文件，所以两边的进度不可能各说各话。
+ *
  * @module privhub-task-board
  */
 
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
+import { json, readBody } from '../../privhub-core/src/index'
+import {
+  DONE_COL, REJECT_LABEL, REVIEW_COL,
+  boardFile, loadBoard, saveBoard,
+  type Board, type Card, type Column, type Priority, type RelatedFile,
+} from './core'
 
 export const name = 'privhub-task-board'
 export const inject = ['storage', 'privhub', 'audit', 'eventBus', 'cap']
-
-type Priority = 'low' | 'normal' | 'high' | 'urgent'
-
-interface Column { id: string; title: string; order: number; wipLimit: number | null }
-interface RelatedFile { project: string; path: string }
-interface Card {
-  id: string
-  title: string
-  desc: string
-  assignee: string
-  priority: Priority
-  dueDate: number | null
-  columnId: string
-  order: number
-  labels: string[]
-  relatedFiles: RelatedFile[]
-  createdBy: string
-  createdAt: number
-  updatedAt: number
-  source: 'human'
-}
-interface Board { project: string; columns: Column[]; cards: Card[]; updatedAt: number }
-
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const BOARDS_DIR = join(rootDir, 'data', 'taskboards')
 
 /**
  * 优先级取值表。刻意用对象而非字面量数组：`tests/file-exts.mjs` 的反漂移扫描
@@ -63,59 +45,13 @@ const BOARDS_DIR = join(rootDir, 'data', 'taskboards')
  * 不该进那张备案表，故此处不写成数组形态。
  */
 const PRIORITIES: Record<Priority, true> = { low: true, normal: true, high: true, urgent: true }
+
 const TITLE_MAX = 200
 const DESC_MAX = 20000
 const ASSIGNEE_MAX = 64
 const LABEL_MAX = 40
 const LABELS_MAX = 20
 const RELATED_MAX = 50
-
-/** 存储只用到这两个方法；用最小结构类型，避免把 Service 形状写进函数签名。 */
-interface StorageLike {
-  readText: (file: string) => Promise<string>
-  writeText: (file: string, data: string) => Promise<void>
-}
-
-function boardFile(project: string): string {
-  return join(BOARDS_DIR, project + '.json')
-}
-
-function defaultBoard(project: string): Board {
-  return {
-    project,
-    columns: [
-      { id: 'col_todo', title: '待办', order: 0, wipLimit: null },
-      { id: 'col_doing', title: '进行中', order: 1, wipLimit: null },
-      { id: 'col_done', title: '已完成', order: 2, wipLimit: null },
-    ],
-    cards: [],
-    updatedAt: Date.now(),
-  }
-}
-
-/** 一份看板文件该有的样子（列必须是数组且非空，卡片必须是数组）。 */
-function looksLikeBoard(v: unknown): boolean {
-  const b = v as Board
-  return !!b && typeof b === 'object' && Array.isArray(b.columns) && b.columns.length > 0 && Array.isArray(b.cards)
-}
-
-/**
- * 读看板。
- *
- * D4：**文件不存在**才是「还没有看板」→ 回退默认三列；**文件存在但读不出来 / 形状不对**
- * 是损坏 → 隔离存证并抛错。此前后者也回退默认空看板，于是一次「加卡片」就把整板卡片
- * （用户的真实工作内容）覆盖成只剩这一张 —— 这属于静默数据丢失，不能只图不报错。
- */
-async function loadBoard(storage: StorageLike, file: string, project: string): Promise<Board> {
-  const b = await readJsonStore<Board>(storage, file, defaultBoard(project), looksLikeBoard)
-  b.project = project
-  return b
-}
-
-async function saveBoard(storage: StorageLike, file: string, board: Board): Promise<void> {
-  board.updatedAt = Date.now()
-  await storage.writeText(file, JSON.stringify(board, null, 2))
-}
 
 /* ---------- 入参清洗 ---------- */
 
@@ -353,6 +289,62 @@ export function apply(ctx: Context): void {
     void audit(u, 'taskboard-card-move', project, `id=${id} → ${toColumnId}`)
   }, 'taskboard-cards-move')
 
+  /* ---------- R9 审核流：提交审核 / 通过 / 退回重做 ----------
+   * 三个动作归一条路由：它们都是「把卡片按审核语义挪到某一列」，差别只在目标列与标签处理。
+   * 单独一条而非复用 move，是为了让审计与领域事件能如实记「审核」这件事
+   * （move 只知道「从 A 列到 B 列」，说不出这是「通过」还是「退回」）。
+   *
+   *   submit → 待审核（清掉「退回重做」标签：重新送审即不再是退回态）
+   *   approve → 已完成（同上清标签）
+   *   reject  → 待办 + 打「退回重做」标签（在待办列一眼可见是被打回的活）
+   */
+  svc.route('/privhub/api/taskboard/cards/review', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (!ctx.cap.can(u, 'task.write', 'write')) return json(res, 403, { ok: false, error: '任务写入功能已关闭' })
+    let body: Record<string, unknown>
+    try { body = JSON.parse(await readBody(req)) as Record<string, unknown> } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const project = str(body.project, 200)
+    if (!svc.isValidProjectName(project)) return json(res, 400, { ok: false, error: '项目名无效' })
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
+    const id = str(body.id, 64)
+    const action = str(body.action, 16)
+    const targetId = action === 'approve' ? DONE_COL : action === 'reject' ? 'col_todo' : action === 'submit' ? REVIEW_COL : ''
+    if (!targetId) return json(res, 400, { ok: false, error: 'action 需为 submit / approve / reject' })
+
+    const file = boardFile(project)
+    let failed = ''
+    let fromCol = ''
+    const done = await svc.withFileLock(file, async () => {
+      const board = await loadBoard(ctx.storage, file, project)
+      const card = board.cards.find((c) => c.id === id)
+      if (!card) { failed = '卡片不存在'; return false }
+      const to = board.columns.find((c) => c.id === targetId)
+      if (!to) { failed = '目标列不存在'; return false }
+      fromCol = card.columnId
+      const others = board.cards.filter((c) => c.columnId === to.id && c.id !== id).sort((a, b) => a.order - b.order)
+      card.columnId = to.id
+      card.order = others.length          // 审核动作一律排到目标列末尾（新送审的活排后面，不插队）
+      card.updatedAt = Date.now()
+      if (action === 'reject') {
+        if (!card.labels.includes(REJECT_LABEL)) card.labels = [...card.labels, REJECT_LABEL].slice(0, LABELS_MAX)
+      } else {
+        card.labels = card.labels.filter((l) => l !== REJECT_LABEL)
+      }
+      normalizeColumn(board, card.columnId)
+      if (fromCol !== to.id) normalizeColumn(board, fromCol)
+      await saveBoard(ctx.storage, file, board)
+      return true
+    })
+    if (!done) return json(res, 404, { ok: false, error: failed || '操作失败' })
+    json(res, 200, { ok: true, columnId: targetId })
+    ctx.emit('task:changed', {
+      project, action: 'card-review', cardId: id, review: action, columnId: targetId,
+      ...(fromCol && fromCol !== targetId ? { fromColumnId: fromCol } : {}),
+    })
+    void audit(u, 'taskboard-card-review', project, `id=${id} ${action} → ${targetId}`)
+  }, 'taskboard-cards-review')
+
   /* ---------- R6/R7/R8 列 ---------- */
   svc.route('/privhub/api/taskboard/columns', async (req, res) => {
     const u = svc.requireUser(req, res)
@@ -371,6 +363,9 @@ export function apply(ctx: Context): void {
         if (board.columns.length <= 1) { failed = '至少保留一列'; return false }
         const col = board.columns.find((c) => c.id === id)
         if (!col) { failed = '列不存在'; return false }
+        // 内置「待审核」列由服务端保证存在（审核流挂在其上），删除只在内存里生效、下次读即回来，
+        // 与其让用户删了又见、徒增困惑，不如直接拒绝并说明原因。
+        if (id === REVIEW_COL) { failed = '「待审核」是内置列，不可删除'; return false }
         board.columns = board.columns.filter((c) => c.id !== id)
         // 卡片迁移到剩余的第一列（不静默丢卡）
         const target = [...board.columns].sort((a, b) => a.order - b.order)[0]

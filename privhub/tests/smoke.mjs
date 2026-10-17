@@ -156,6 +156,21 @@ export function build() {
     eq((r.json.entries || []).length, 0, '穿越路径不应列出内容')
   })
 
+  s.test('使用说明路由：未登录 401，登录可读', async () => {
+    const anon = await GET('/privhub/api/help')
+    eq(anon.status, 401, '未登录读说明应 401')
+    const r = await GET('/privhub/api/help', { token: admin })
+    ok(r.json && r.json.ok, '登录后可读说明列表：' + r.text.slice(0, 120))
+    ok(Array.isArray(r.json.docs), 'docs 应为数组')
+  })
+
+  s.test('使用说明路由：拒绝路径穿越与不存在的文件', async () => {
+    const bad = await GET('/privhub/api/help?doc=' + encodeURIComponent('../secret.md'), { token: admin })
+    eq(bad.status, 400, '含路径分隔的文件名应 400')
+    const none = await GET('/privhub/api/help?doc=__no_such__.md', { token: admin })
+    eq(none.status, 404, '不存在的说明文件应 404')
+  })
+
   s.test('管理员可查询审计日志', async () => {
     const r = await GET('/privhub/api/audit?limit=50', { token: admin })
     ok(r.json && r.json.ok, 'audit 失败：' + r.text.slice(0, 120))

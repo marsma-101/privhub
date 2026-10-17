@@ -10,9 +10,10 @@
  * 设计：只做「声明 + 可见性」，不包裹 ctx.emit/ctx.on（零侵入、零风险）；
  * 注册表为内存态（M3 控制台经管理端点暴露）。
  *
- * 事件契约（2026-09-05 治理基线；2026-10-12 并入 task/dashboard 两个领域事件）：
+ * 事件契约（2026-09-05 治理基线；2026-10-12 并入 task/dashboard 两个领域事件；
+ *            2026-10-16 并入 roster 领域事件）：
  *   audit:logged  ── 写操作成功审计广播（S1 闭环）。emit: auth/admin/files/trash/edit-md/
- *                    office-ui/office-ai/agent/task-board/project-dashboard/webhook ·
+ *                    office-ui/office-ai/agent/task-board/project-dashboard/roster/webhook ·
  *                    listen: admin-audit（面板实时刷新）、webhook
  *   file:changed  ── 文件系统变更专用事件（创建/保存/删除/重命名/移动/恢复/清空）。
  *                    payload { project, path, action: created|saved|deleted|renamed|moved|
@@ -24,6 +25,8 @@
  *   personal:renamed ── 用户改名（个人空间目录迁移）。emit: admin · listen: webhook
  *   task:changed  ── 任务看板变更（卡片/列增删改、拖拽）。emit: task-board · listen: webhook
  *   dashboard:changed ── 项目看板（纵向分区页）变更。emit: project-dashboard · listen: webhook
+ *   roster:changed ── 智能体名册变更（人工登记 / 智能体自注册 / 编辑 / 删除）。
+ *                    payload { action, id, name, total }。emit: roster/agent · listen: webhook
  *   dispose       ── cordis 内置清理通知（各插件 effect 清理任务）
  *
  * @module privhub-svc-events

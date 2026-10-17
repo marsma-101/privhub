@@ -8,6 +8,8 @@
  * @module privhub-task-board/client
  */
 
+import './styles.js'
+
 const { api, nav, bus, toast, AUTH } = window.PrivHub
 
 const PRIORITY = {
@@ -57,6 +59,7 @@ const TaskBoardView = {
       lastFile: null,     // { project, path, name } 视频视图最近打开的文件
       dragId: '',
       dragOverCol: '',
+      agents: [],         // 智能体名册（填「负责人」时给候选，见 agentOptions）
     }
   },
   computed: {
@@ -66,6 +69,20 @@ const TaskBoardView = {
     },
     priorities() { return PRIORITY },
     canCreateFromFile() { return !!(this.lastFile && this.lastFile.project === this.project) },
+    /**
+     * 「负责人」的智能体候选：只列**服务本项目**的条目（服务范围自述在名册里），
+     * 退役的一律不列。人类用户名仍可自由输入 —— 这是 datalist（建议），不是下拉（限定）。
+     */
+    agentOptions() {
+      const p = this.project
+      return (this.agents || []).filter((a) =>
+        a.status !== 'retired' && (!p || a.scope === 'all' || (a.projects || []).includes(p)))
+    },
+    /** 内置「待审核」列 id（服务端保证存在）。找不到时不渲染审核按钮，不硬编码假列。 */
+    reviewColId() {
+      const c = this.columns.find((x) => x.id === 'col_review')
+      return c ? c.id : ''
+    },
   },
   methods: {
     pri(p) { return PRIORITY[p] || PRIORITY.normal },
@@ -89,6 +106,11 @@ const TaskBoardView = {
       const r = await api('/privhub/api/projects')
       if (r.ok) this.projects = r.projects || []
     },
+    /** 拉智能体名册（填「负责人」时给候选）。读失败静默 —— 只是没有建议，不影响建卡。 */
+    async loadRoster() {
+      const r = await api('/privhub/api/roster').catch(() => null)
+      if (r && r.ok && Array.isArray(r.entries)) this.agents = r.entries
+    },
     async load() {
       if (!this.project) { this.board = null; return }
       this.loading = true
@@ -102,7 +124,8 @@ const TaskBoardView = {
         this.error = (e && e.message) || '看板加载失败'
       } finally { this.loading = false }
     },
-    switchProject(p) { this.project = p; this.load() },
+    /* 切项目：同时同步骨架的 nav.project —— 否则顶栏项目名与「文件」图标会留着上一个项目 */
+    switchProject(p) { this.project = p; nav.project = p; this.load() },
     /* ---------- 卡片 ---------- */
     addCardTo(colId) {
       this.editing = {
@@ -135,6 +158,7 @@ const TaskBoardView = {
         columnId: card.columnId, labels: [...card.labels],
         relatedFiles: card.relatedFiles.map((f) => ({ ...f })),
         _labelsText: card.labels.join(', '),
+        createdBy: card.createdBy || '',   // 只读展示（创建人不可改）
       }
     },
     async saveCard() {
@@ -178,6 +202,19 @@ const TaskBoardView = {
       toast('已删除')
     },
     removeRelated(i) { this.editing.relatedFiles.splice(i, 1) },
+    /* ---------- 审核流 ---------- */
+    async review(card, action) {
+      const r = await api('/privhub/api/taskboard/cards/review', {
+        method: 'POST',
+        body: JSON.stringify({ project: this.project, id: card.id, action }),
+      }).catch(() => ({ ok: false, error: '网络错误' }))
+      if (!r.ok) return toast(r.error || '操作失败', 'error')
+      await this.load()
+      toast(action === 'approve' ? '已通过 ✅' : action === 'reject' ? '已退回待办 ↩' : '已提交审核')
+    },
+    reviewHint(action) {
+      return action === 'approve' ? '通过：移到「已完成」' : action === 'reject' ? '退回重做：移回「待办」并打标签' : '提交审核：移到「待审核」'
+    },
     /* ---------- 拖拽 ---------- */
     onDragStart(card, ev) {
       this.dragId = card.id
@@ -259,6 +296,13 @@ const TaskBoardView = {
       this.newColTitle = ''
       this.showNewCol = false
       await this.load()
+      // 新列排在最后一列之后（最右）。顺势把视口推到最右，否则「加了列却看不见」。
+      this.$nextTick(() => this.scrollBoardToEnd())
+    },
+    /** 把看板视口横向推到最右（新建列后自动调用）。 */
+    scrollBoardToEnd() {
+      const el = this.$refs.board
+      if (el) el.scrollLeft = el.scrollWidth
     },
     /* ---------- 关联文件 ---------- */
     async openFile(f) {
@@ -278,6 +322,7 @@ const TaskBoardView = {
     }
     bus.on('entry:open', this._onFile)
     await this.loadProjects()
+    await this.loadRoster()
     this.project = nav.project || (this.projects[0] || '')
     if (this.project) await this.load()
   },
@@ -285,38 +330,53 @@ const TaskBoardView = {
     if (this._onFile) bus.off('entry:open', this._onFile)
   },
   template: `
-    <div class="view-page">
-      <div class="view-inner">
-        <h2>📋 任务看板</h2>
-        <div class="modal-body">
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <div class="tb-wrap">
+        <h2 class="tb-h2">📋 任务看板<ph-help title="任务看板" doc="03-协作与看板.md"
+          desc="每个项目一块看板：列（可增 / 删 / 改名 / 排序 / 设 WIP 上限）+ 卡片（建 / 改 / 删 / 拖拽）。数据存服务端，项目成员共享。"
+          :steps="['① 左上选项目 —— 看板自动加载该项目', '② 「＋ 添加卡片」建卡，或拖拽卡片在列间移动', '③ 点卡片编辑标题 / 负责人 / 优先级 / 截止日期 / 标签 / 关联文件', '④ 卡片可在「待审核」列通过或退回重做（见右侧「审核流」说明）']"
+          tips="拖拽是即时保存的：松手即写服务端，失败会自动还原并提示。" /></h2>
+          <div class="tb-bar">
             <select :value="project" @change="switchProject($event.target.value)"
               style="padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)">
               <option value="" disabled>选择项目…</option>
               <option v-for="p in projects" :key="p" :value="p">{{ p }}</option>
             </select>
             <button class="small-btn" :disabled="!canCreateFromFile" @click="addCardFromFile"
-              :title="canCreateFromFile ? '用文件视图最近打开的文件建卡' : '先在文件视图打开一个文件'">＋ 用当前文件建卡</button>
-            <button class="small-btn" @click="showNewCol = !showNewCol">＋ 新建列</button>
+              :title="canCreateFromFile ? '用文件视图最近打开的文件建卡' : '先在文件视图打开一个文件'">＋ 用当前文件建卡</button><ph-help
+              title="用当前文件建卡" doc="03-协作与看板.md"
+              desc="把【文件】视图里最近打开的那个文件直接变成一张卡片，自动预填标题与「关联文件」。"
+              tips="需先在文件视图打开一个文件；按钮是灰的，就说明还没打开文件。" />
+            <button class="small-btn" @click="showNewCol = !showNewCol">＋ 新建列</button><ph-help
+              title="新建列" doc="03-协作与看板.md"
+              desc="给看板加一个自定义列（如「测试中」）。列可双击改名、设 WIP 上限、删除。"
+              :steps="['① 点「＋ 新建列」→ 输入列名，回车创建', '② 拖动卡片在该列进出']"
+              tips="列头那个「W」是 WIP 上限：这一列同时最多放几张卡片（在制品限制），留空 = 不限，不设也能用。" />
             <button class="small-btn" @click="load">🔄 刷新</button>
-            <span style="font-size:12px;color:var(--muted)">拖拽卡片可在列间移动 · 点击卡片编辑</span>
+            <span style="font-size:12px;color:var(--muted)">拖拽卡片可在列间移动 · 点击卡片编辑</span><ph-help
+              title="审核流（待审核列）" doc="03-协作与看板.md"
+              desc="看板内置一个「待审核」列，在「做完」和「验收」之间加一道确认。"
+              :steps="['① 卡片做完 → 点「提交审核 →」移入待审核列', '② 审核者点「✅ 通过」→ 移到已完成', '③ 不合格点「↩ 退回重做」→ 移回待办并打上标签']"
+              tips="「待审核」列是内置的，不可删除——保证流程闭环。" />
           </div>
 
-          <div v-if="showNewCol" style="display:flex;gap:8px;margin-bottom:12px">
+          <div v-if="showNewCol" class="tb-bar">
             <input v-model="newColTitle" @keyup.enter="addColumn" placeholder="新列名称，回车确认"
               style="padding:7px 10px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:13px" />
             <button class="small-btn" @click="addColumn">创建</button>
           </div>
 
-          <div v-if="!project" class="empty" style="padding:60px">
+          <div v-if="!project" class="empty tb-empty">
             请先在左侧选择一个项目，或在上方下拉框选择项目。
           </div>
-          <div v-else-if="loading" class="empty" style="padding:60px">看板加载中…</div>
-          <div v-else-if="error" class="empty" style="padding:60px">
+          <div v-else-if="loading" class="empty tb-empty">看板加载中…</div>
+          <div v-else-if="error" class="empty tb-empty">
             ⚠️ {{ error }}<br /><br />
             <button class="small-btn" @click="load">重试</button>
           </div>
-          <div v-else-if="board" style="display:flex;gap:12px;align-items:flex-start;overflow-x:auto;padding-bottom:8px;min-height:320px">
+          <!-- 看板视口：自己吃满剩余高度并同时管住两根滚动条（列宽超出即横向滚，
+               列变高即纵向滚）。因为视口高度有界，横向条永远贴在可见区域底边 ——
+               新建列后立刻看得见，不必先把页面滚到最下面。 -->
+          <div v-else-if="board" class="tb-scroll ph-scroll tb-cols" ref="board">
             <div v-for="col in columns" :key="col.id"
               @dragover.prevent="dragOverCol = col.id" @dragleave="dragOverCol = (dragOverCol === col.id ? '' : dragOverCol)"
               @drop.prevent="onDrop(col.id, null)"
@@ -328,7 +388,8 @@ const TaskBoardView = {
                   :title="col.wipLimit ? 'WIP 上限 ' + col.wipLimit : '未设 WIP 上限'">{{ cardsOf(col.id).length }}<template v-if="col.wipLimit">/{{ col.wipLimit }}</template></span>
                 <button class="small-btn" title="WIP 上限" @click="setWip(col)">W</button>
                 <button class="small-btn" title="重命名列" @click="renameColumn(col)">✎</button>
-                <button class="small-btn" title="删除列" @click="deleteColumn(col)">🗑</button>
+                <button v-if="col.id !== 'col_review'" class="small-btn" title="删除列" @click="deleteColumn(col)">🗑</button>
+                <span v-else style="font-size:10.5px;color:var(--muted)" title="内置审核列，不可删除">内置</span>
               </div>
 
               <div v-if="cardsOf(col.id).length === 0" class="empty" style="padding:14px 0;font-size:12px">暂无卡片</div>
@@ -339,18 +400,38 @@ const TaskBoardView = {
                 @click="startEdit(card)"
                 :style="{ background:'var(--panel)', border:'1px solid var(--line)', borderLeft:'3px solid ' + pri(card.priority).color, borderRadius:'8px', padding:'8px 10px', marginBottom:'8px', cursor:'grab', opacity: dragId === card.id ? 0.5 : 1 }">
                 <div style="font-size:13px;color:var(--text);word-break:break-word">{{ card.title }}</div>
-                <div v-if="card.labels.length" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">
+
+                <!-- 卡片最要紧的「两个人」：谁创建 / 目标（写给谁）。目标可填
+                     自己（纯记录，下一步该干什么）/ 同事用户名 / 名册里的智能体。 -->
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:5px;font-size:11px;color:var(--muted)">
+                  <span :title="'创建人：' + (card.createdBy || '未知')">✍️ {{ card.createdBy || '未知' }}</span>
+                  <span :title="card.assignee ? '目标（写给谁）：' + card.assignee : '未指派目标'">🎯 {{ card.assignee || '未指派' }}</span>
+                </div>
+
+                <!-- 其余要点：优先级 / 截止日期 / 标签 -->
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:5px;font-size:11px;color:var(--muted)">
+                  <span :style="{ color: pri(card.priority).color, fontWeight: 600 }" :title="'优先级：' + pri(card.priority).label">● {{ pri(card.priority).label }}</span>
+                  <span v-if="card.dueDate" :style="{ color: dueColor(card.dueDate) }">📅 {{ dueText(card.dueDate) }}</span>
                   <span v-for="l in card.labels" :key="l" style="font-size:10.5px;padding:1px 6px;border-radius:10px;background:var(--accent-soft, rgba(90,130,200,.15));color:var(--accent)">{{ l }}</span>
                 </div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:11px;color:var(--muted)">
-                  <span v-if="card.assignee">👤 {{ card.assignee }}</span>
-                  <span v-if="card.dueDate" :style="{ color: dueColor(card.dueDate) }">📅 {{ dueText(card.dueDate) }}</span>
-                  <span v-if="card.relatedFiles && card.relatedFiles.length">📎 {{ card.relatedFiles.length }}</span>
-                </div>
+
+                <!-- 备注：卡片上给可读预览（最多 6 行，超出 ….）；点卡片进编辑看全文 -->
+                <div v-if="card.desc" :title="card.desc"
+                  style="margin-top:6px;font-size:11.5px;color:var(--muted);line-height:1.5;white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden">{{ card.desc }}</div>
+
                 <div v-if="card.relatedFiles && card.relatedFiles.length" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">
                   <a v-for="f in card.relatedFiles" :key="f.project + '|' + f.path" href="#" @click.prevent.stop="openFile(f)"
                     style="font-size:11px;color:var(--accent);text-decoration:none;background:var(--accent-soft, rgba(90,130,200,.1));border-radius:6px;padding:1px 6px">{{ f.path.split('/').pop() }}</a>
                 </div>
+                <!-- 审核流：待审核列里给「通过 / 退回重做」；其余未完成的列给「提交审核」 -->
+                <div v-if="reviewColId && card.columnId === reviewColId" style="display:flex;gap:6px;margin-top:7px">
+                  <button class="small-btn" style="flex:1;border-color:var(--accent);color:var(--accent)"
+                    :title="reviewHint('approve')" @click.stop="review(card, 'approve')">✅ 通过</button>
+                  <button class="small-btn" style="flex:1;border-color:var(--warn);color:var(--warn)"
+                    :title="reviewHint('reject')" @click.stop="review(card, 'reject')">↩ 退回重做</button>
+                </div>
+                <button v-else-if="reviewColId && card.columnId !== 'col_done'" class="small-btn"
+                  style="width:100%;margin-top:7px" :title="reviewHint('submit')" @click.stop="review(card, 'submit')">提交审核 →</button>
               </div>
 
               <button class="small-btn" style="width:100%;margin-top:2px" @click="addCardTo(col.id)">＋ 添加卡片</button>
@@ -360,29 +441,30 @@ const TaskBoardView = {
               共 {{ board.cards.length }} 张卡片 · {{ columns.length }} 列
             </div>
           </div>
-        </div>
-        <div class="modal-foot">
+        <div class="tb-foot">
           <button class="btn btn-ghost" @click="$emit('close')">关 闭</button>
         </div>
-      </div>
 
       <!-- 卡片编辑/新建 -->
       <div v-if="editing" class="modal-mask" @click.self="editing = null">
-        <div class="modal" style="width:520px;max-width:92vw">
-          <h2>{{ editing._isNew ? '＋ 新建卡片' : '✎ 编辑卡片' }}</h2>
+        <div class="modal" style="width:640px;max-width:94vw">
+          <h2>{{ editing._isNew ? '＋ 新建卡片' : '✎ 编辑卡片' }}<span v-if="editing.createdBy" style="font-size:12px;font-weight:400;color:var(--muted);margin-left:8px">✍️ 创建人：{{ editing.createdBy }}</span></h2>
           <div class="modal-body">
             <div class="field">
               <label>标题</label>
               <input v-model="editing.title" maxlength="200" @keyup.enter="saveCard" />
             </div>
-            <div class="field">
-              <label>备注（Markdown 文本）</label>
-              <textarea v-model="editing.desc" rows="5" style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font-size:13px;resize:vertical"></textarea>
-            </div>
             <div style="display:flex;gap:10px">
               <div class="field" style="flex:1">
-                <label>负责人</label>
-                <input v-model="editing.assignee" placeholder="username，留空=未指派" maxlength="64" />
+                <label>指派给（目标）</label>
+                <input v-model="editing.assignee" list="tb-agent-list"
+                  placeholder="自己 / 同事用户名 / 名册里的智能体名；留空=未指派" maxlength="64" />
+                <div style="font-size:11px;color:var(--muted);margin-top:4px">写给谁：可填你自己（当作「下一步做什么」的记录），后期也可派给名册里的智能体。</div>
+                <!-- 候选 = 我自己 + 智能体名册；人类用户名照旧可直接输入（datalist 只是建议，不限定） -->
+                <datalist id="tb-agent-list">
+                  <option v-if="me" :value="me.username">我自己（{{ me.displayName || me.username }}）</option>
+                  <option v-for="a in agentOptions" :key="a.id" :value="a.name">{{ a.kind }}<template v-if="a.skills && a.skills.length"> · {{ a.skills.join('、') }}</template></option>
+                </datalist>
               </div>
               <div class="field" style="flex:1">
                 <label>优先级</label>
@@ -418,6 +500,12 @@ const TaskBoardView = {
                 </div>
               </div>
               <div v-else style="font-size:12px;color:var(--muted)">暂无。可在文件视图选中文件后，用「＋ 用当前文件建卡」预填。</div>
+            </div>
+            <!-- 备注放最后、给足高度：长文本一次性看全，不必在窄框里来回滚（用户反馈的「行数一多就看不全」） -->
+            <div class="field">
+              <label>备注</label>
+              <textarea v-model="editing.desc" rows="14"
+                style="width:100%;min-height:300px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font-size:13px;line-height:1.6;resize:vertical"></textarea>
             </div>
           </div>
           <div class="modal-foot">

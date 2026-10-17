@@ -135,6 +135,13 @@ export const TEXT_EXTS: readonly string[] = Object.freeze([
   'txt', 'md', 'markdown', 'json', 'jsonl', 'js', 'ts', 'tsx', 'html', 'htm', 'css', 'xml',
   'yaml', 'yml', 'toml', 'ini', 'conf', 'csv', 'tsv', 'log', 'sql',
   'py', 'java', 'c', 'cpp', 'go', 'rs', 'sh', 'bat', 'ps1', 'vue', 'ipynb', 'env',
+  /* `.mindmap`（思维导图，2026-10-17 新功能）：**就是一份 Markdown 风格缩进大纲**的纯文本，
+   * 加进来的理由与上面那批「纯文本却打不开」的完全相同 —— 不加它 `/api/preview` 会回
+   * `type:'unknown'`，查看器拿不到正文、人也读不了。格式与解析规则见
+   * `plugins/privhub-mindmap/client/outline.js` 与 `docs/PrivHub-思维导图-规划-2026-10-17.md` §1。
+   * ⚠ 它**不进** `EDITABLE_TEXT_EXTS`：本插件的编辑走自己的大纲编辑器 + `/api/text/save`，
+   *   不走 edit-md 的内嵌编辑器（那条链的闸是 `isEditableText`，`.mindmap` 不在其中是**有意**的）。 */
+  'mindmap',
 ])
 
 /** 图片扩展名 —— 后端 `preview-raw` 的 mime 表、界面 `kindOf` 的『图片』分支共用同一份取值。 */

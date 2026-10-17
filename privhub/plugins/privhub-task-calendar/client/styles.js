@@ -10,9 +10,15 @@
 
 const CSS = `
 /* ============ 任务日历 ============ */
-/* 竖版长页面，直接挂在骨架 .main（overflow:hidden）下：必须自带滚动条（同 project-dashboard 的 .db-wrap）。 */
-.cal-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1280px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
+/* 版式与任务看板/项目看板同一标准：整页铺满主区（不限宽、不居中），工具条钉顶、
+ * 月/周/日视图落在有界滚动视口里、页脚贴底。直接挂在骨架 .main（flex column / overflow:hidden）下。 */
+.cal-wrap {
+  flex: 1 1 auto; min-height: 0; width: 100%;
+  display: flex; flex-direction: column;
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+}
 
+/* 工具条：钉在日历上方，切月/周/日、换项目时不必回到顶部 */
 .cal-bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: 4px 0 var(--sp-3); border-bottom: 1px solid var(--line); margin-bottom: var(--sp-3); }
 .cal-nav { display: flex; align-items: center; gap: 6px; }
 .cal-title { margin-left: 4px; font-size: var(--fs-lg); font-weight: 600; }
@@ -28,6 +34,12 @@ const CSS = `
 
 .cal-empty, .cal-err { padding: var(--sp-5); text-align: center; color: var(--muted); }
 .cal-err { color: var(--danger); }
+/* 空/错/加载态是 .cal-wrap 的直系子元素：吃掉工具条与页脚之外的高度（页脚才始终贴底） */
+.cal-wrap > .cal-empty, .cal-wrap > .cal-err { flex: 1; display: grid; place-content: center; }
+
+/* 月/周/日视图 = 本页唯一的滚动视口（工具条与页脚在它之外，不随滚动消失）。
+ * flex:1 吃掉剩余高度；min-height:0 是关键 —— 缺了它 flex 项不肯比内容矮、滚动条被顶出屏幕。 */
+.cal-body { flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--sp-1); }
 
 /* ---- 月视图 ---- */
 .cal-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
@@ -85,6 +97,7 @@ const CSS = `
 .cal-desc { margin-top: 8px; font-size: var(--fs-sm); white-space: pre-wrap; line-height: 1.6; }
 .cal-detail-actions { margin-top: 10px; display: flex; gap: var(--sp-2); }
 
+/* 页脚：钉在 .cal-wrap 底部（在滚动视口之外），不随内容滚走 */
 .cal-foot { margin-top: var(--sp-3); color: var(--muted); font-size: var(--fs-xs); }
 `
 

@@ -3,8 +3,19 @@
   "title": "任务看板",
   "icon": "📋",
   "description": "每个项目一个任务看板：列/卡片/拖拽，支持用当前文件建卡（PLAN-01 第 1 期）",
-  "slots": ["taskboard-view"],
+  "slots": [
+    "taskboard-view"
+  ],
   "barItems": [
-    { "icon": "📋", "title": "任务看板", "slot": "app-iconbar", "view": "taskboard", "group": "collab", "capFeature": "task.write" }
+    {
+      "icon": "📋",
+      "title": "任务看板",
+      "slot": "app-iconbar",
+      "view": "taskboard",
+      "group": "collab",
+      "capFeature": "task.write",
+      "desc": "每项目一块板：待办/进行中/待审核/已完成；拖拽改列，负责人可联想名册。",
+      "doc": "03-协作与看板.md"
+    }
   ]
 }

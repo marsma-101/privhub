@@ -166,13 +166,23 @@ const AgentConsole = {
       const base = location.origin
       return 'curl -H "X-Agent-Key: ' + (k ? '<你的密钥>' : 'pha_xxx') + '" ' + base + '/privhub/api/agent/v1/me'
     },
+    /* JT-19：拿到密钥后的**第一条自检命令**——照抄即可验证「密钥 + 头字段 + 端点前缀」三件套，
+     * 把「联不通」当场变成「通/不通」的二值信号。
+     * 明文密钥就在同一个数据里（freshKey），刚签发时把它直接填进去，省掉一次手抄。 */
+    selfCheckCmd() {
+      const k = this.freshKey || '<你的密钥>'
+      return 'curl -H "X-Agent-Key: ' + k + '" ' + location.origin + '/privhub/api/agent/v1/me'
+    },
+    async copyText(t) {
+      try { await navigator.clipboard.writeText(t); toast('已复制到剪贴板') } catch { toast('复制失败，请手动选中复制', 'warn') }
+    },
   },
   template: `
     <div class="view-page">
       <div class="view-inner">
         <h2>🔌 智能体接入</h2>
-        <div v-if="loading" class="v3-loading">正在加载…</div>
-        <div v-else-if="err" class="v3-loading">{{ err }}</div>
+        <div v-if="loading" class="ac-loading">正在加载…</div>
+        <div v-else-if="err" class="ac-loading">{{ err }}</div>
         <template v-else>
           <div class="modal-body">
 
@@ -192,6 +202,16 @@ const AgentConsole = {
                 </div>
               </div>
               <div v-if="info.sandboxHint" class="ac-warn">{{ info.sandboxHint }}</div>
+              <!-- JT-19：自检命令直接放在接入信息里（拿到密钥的第一件事），一手可复制 -->
+              <div class="ac-cmdrow">
+                <code class="ac-cmd">{{ selfCheckCmd() }}</code>
+                <button class="small-btn" @click="copyText(selfCheckCmd())">复制</button>
+              </div>
+              <div class="ac-hint">
+                上面这条命令用你签发的密钥自检通路：返回<b>绑定账号与可见项目</b>即接入成功；
+                返回 <code>401</code> 说明密钥无效/过期/来源 IP 不在白名单。完整接入见
+                <code>docs/PrivHub-AgentAPI-接入指南.md</code>。
+              </div>
               <div class="ac-hint">
                 智能体只能经 <code>/privhub/api/agent/v1/*</code> 携带密钥读取<b>授权范围内</b>的信息；
                 它无法用网页地址读取页面或越权访问其他项目——所有请求都会在服务端逐次校验密钥范围、
@@ -290,7 +310,7 @@ const AgentConsole = {
                 <pre class="ac-pre">{{ curlSample() }}</pre>
                 <div class="ac-hint">把 <code>pha_xxx</code> 换成你在「我的密钥」里签发的明文密钥。</div>
               </div>
-              <div v-else class="v3-loading">正在加载接口文档…</div>
+              <div v-else class="ac-loading">正在加载接口文档…</div>
             </template>
 
             <!-- 全部密钥（管理员） -->

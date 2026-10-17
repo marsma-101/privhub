@@ -78,11 +78,14 @@ const TEXT_EDIT_EXTS = ['md', 'txt', 'json', 'csv', 'log', 'yaml', 'yml', 'ini',
  * 派生：**可预览为文本**的扩展名（= 可编辑 ∪ md 家族 ∪ 本批补的纯文本类）。
  * 语义与后端 `readFileForPreview` 的文本分支一致 —— 判定「这个文件到底怎么打开」的始终是
  * **接口回带的 type**，这份清单只用于界面分类与断言比对，不替代接口结论。
+ *
+ * `mindmap`（思维导图，2026-10-17）与后端 `file-exts.ts` 的 `TEXT_EXTS` 末尾那一项同源：
+ * 它是一份纯文本缩进大纲，必须能预览才有正文可渲染（`tests/file-exts.mjs` 逐项同值守着）。
  */
 const PREVIEW_TEXT_EXTS = [
   ...TEXT_EDIT_EXTS, ...MARKDOWN_EXTS,
   'html', 'htm', 'toml', 'java', 'c', 'cpp', 'tsx', 'ps1', 'conf', 'vue', 'go', 'rs',
-  'env', 'jsonl', 'tsv', 'ipynb',
+  'env', 'jsonl', 'tsv', 'ipynb', 'mindmap',
 ]
 
 /**

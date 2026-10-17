@@ -65,7 +65,17 @@ const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 async function discoverL3(): Promise<Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }>> {
   const pluginsDir = join(rootDir, 'plugins')
   const out: Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }> = []
-  if (!existsSync(pluginsDir)) return out
+  /* GC-01：扫描根不对时旧行为是「一个 L3 都不装、且零日志零报错」—— 装配静默失败最难查
+   * （界面只剩骨架，服务端一条线索都没有）。这里把「根不存在」直接吼出来，并回显实际用的根，
+   * 好让 PRIVHUB_ROOT 设错一眼可见。 */
+  if (!existsSync(pluginsDir)) {
+    const via = process.env.PRIVHUB_ROOT?.trim()
+      ? 'PRIVHUB_ROOT=' + process.env.PRIVHUB_ROOT.trim()
+      : 'PRIVHUB_ROOT 未设置 → 回落到 cwd=' + process.cwd()
+    console.error('[assembly] 未找到插件目录：' + pluginsDir + '（' + via + '）'
+      + ' —— L3 功能插件将全部不装配（只剩骨架）。请检查 PRIVHUB_ROOT 是否指向应用根。')
+    return out
+  }
   const entries = await readdir(pluginsDir, { withFileTypes: true })
   entries.sort((a, b) => a.name.localeCompare(b.name))
   for (const ent of entries) {
@@ -89,6 +99,12 @@ async function discoverL3(): Promise<Array<{ name: string; inject?: string[]; ap
     } catch (e) {
       console.error('[assembly] 插件加载失败: ' + ent.name + ' → ' + (e instanceof Error ? e.message : String(e)))
     }
+  }
+  /* GC-01（后半）：根在、但一个也没装上（目录空 / 全被 CORE_PLUGINS 排除 / 都没有 src/index.ts）
+   * 同样要留痕 —— 否则「装成功但零功能」和「装配正常」在日志里长得一样。 */
+  if (out.length === 0) {
+    console.warn('[assembly] 未发现任何可装配的 L3 插件（扫描根：' + pluginsDir + '）'
+      + ' —— 请确认该目录下存在 <插件名>/src/index.ts。')
   }
   return out
 }

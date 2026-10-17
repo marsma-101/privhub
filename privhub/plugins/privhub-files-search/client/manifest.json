@@ -3,8 +3,19 @@
   "title": "搜索",
   "icon": "🔍",
   "description": "文件名搜索（B8）：全项目递归匹配，点击结果跳转",
-  "slots": ["search-view"],
+  "slots": [
+    "search-view"
+  ],
   "barItems": [
-    { "icon": "🔍", "title": "搜索", "slot": "panel", "view": "search", "group": "files", "capFeature": "nav.search" }
+    {
+      "icon": "🔍",
+      "title": "搜索",
+      "slot": "panel",
+      "view": "search",
+      "group": "files",
+      "capFeature": "nav.search",
+      "desc": "按文件名在当前项目内递归匹配，点结果直接跳转。",
+      "doc": "01-文件与目录.md"
+    }
   ]
 }

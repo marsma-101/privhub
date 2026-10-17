@@ -56,7 +56,7 @@ const RefCheckView = {
         <p class="rc-muted">只统计 Markdown 文档（<code>.md</code>）里写的引用，以及任务卡的文件关联；带 <code>http:</code> 的外链不参与统计。</p>
       </div>
 
-      <div v-else class="rc-body">
+      <div v-else class="rc-body ph-scroll">
         <div class="rc-stats">
           <span class="rc-chip">文件 <b>{{ report.totals.files }}</b></span>
           <span class="rc-chip">目录 <b>{{ report.totals.dirs }}</b></span>
@@ -133,7 +133,8 @@ const RefCheckView = {
         </div>
       </div>
 
-      <div class="rc-foot">本页只报告，不会删除或改动任何文件。删除请在文件视图中人工确认后执行。</div>
+      <!-- 页脚钉在滚动视口之外（.rc-wrap 底部），结果表再长也不随滚动消失 -->
+      <div v-if="report && !error" class="rc-foot">本页只报告，不会删除或改动任何文件。删除请在文件视图中人工确认后执行。</div>
     </div>
   `,
 

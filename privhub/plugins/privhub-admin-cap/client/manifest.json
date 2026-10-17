@@ -3,8 +3,18 @@
   "title": "功能权限",
   "icon": "🔐",
   "description": "功能权限开关：把系统功能对普通用户开 / 关（管理员始终全部开放）",
-  "slots": ["admin-cap"],
+  "slots": [
+    "admin-cap"
+  ],
   "barItems": [
-    { "icon": "🔐", "title": "功能权限", "slot": "admin-nav", "view": "admin-cap", "capFeature": "admin.console" }
+    {
+      "icon": "🔐",
+      "title": "功能权限",
+      "slot": "admin-nav",
+      "view": "admin-cap",
+      "capFeature": "admin.console",
+      "desc": "把系统功能对普通用户逐项开/关（管理员始终全部开放）。",
+      "doc": "05-管理与运维.md"
+    }
   ]
 }

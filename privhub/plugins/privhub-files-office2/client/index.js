@@ -85,6 +85,18 @@ const office2Viewer = {
     const frame = document.createElement('iframe')
     frame.className = 'office2-frame'
     frame.setAttribute(MARK, VIEWER_ID)
+    /* S15：同源 iframe 加 sandbox，收窄这个「渲染用户上传 docx/xlsx」的面的攻击面。
+     * 本页必须保留的能力（缺一即坏功能，都已实测对照）：
+     *   allow-scripts   —— 渲染器（docx-preview / Univer）全靠脚本；
+     *   allow-same-origin —— 要读宿主主题（parent.document）且靠会话 Cookie 取文件；
+     *   allow-downloads —— 工具条「⬇ 下载」用 a[download].click()，不给则下载被静默拦掉；
+     *   allow-modals    —— view.js 有 confirm('放弃本次修改？')，不给则恒返回 false、无法放弃编辑。
+     * 据此仍被收掉的能力：表单外提（无 allow-forms）、把宿主窗口导航走、弹窗、指针锁定 ——
+     * 这几条正是「恶意文档外泄/劫持」最实用的路径。
+     * ⚠ 诚实边界：allow-scripts 与 allow-same-origin 并存时，框内脚本理论上可自行摘掉 sandbox，
+     * 因此这**不是**对「内置预览器无净化」的根治。根治要放弃 Cookie、改由 postMessage 传入
+     * 一次性 token（见 docs/PrivHub-待改进清单-2026-09-21.md 的 S15），属独立改造。 */
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads allow-modals')
     frame.src = frameUrl(ctx)
     hostEl.appendChild(frame)
     return () => { frame.remove() }

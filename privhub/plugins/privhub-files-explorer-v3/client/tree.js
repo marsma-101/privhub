@@ -7,7 +7,7 @@ import { nav, bus, AUTH, fileIcon } from './deps.js'
 import { store } from './store.js'
 import { openTab } from './tabs.js'
 import { loadTree, treeOf, toggleTree } from './treecache.js'
-import { openMenuFor, cancelRename, submitRename, submitMkdirV3, newSheetFile, newPageFile } from './ops.js'
+import { openMenuFor, cancelRename, submitRename, submitMkdirV3, newSheetFile, newPageFile, newMindmapFile } from './ops.js'
 import { esc, inline } from './content.js'
 import { titleCollision } from './collide.js'
 
@@ -135,6 +135,10 @@ const TreeV3 = {
     onNewSheet() { store.newMenu = false; void newSheetFile() },
     onNewPage() { store.newMenu = false; void newPageFile() },
     onNewDataview() { store.newMenu = false; bus.emit('dataview:new') },
+    /* 新建思维导图（.mindmap，2026-10-17）：与「新建数据表 / 新建页面」同一族——
+     * 就地造一份模板文件，然后**打开它**（这一步与另外两个不同：导图建完就是要立刻画的）。
+     * 实现落在 ops.js（那边才有 api / openTab / refreshTree 那一套）。 */
+    onNewMindmap() { store.newMenu = false; void newMindmapFile() },
     onAddFile() { store.newMenu = false; nav.addFile() },
     onAddFolder() { store.newMenu = false; bus.emit('upload:request-dir') },
     onDelProject() { nav.delProject(nav.project) },
@@ -160,6 +164,9 @@ const TreeV3 = {
           <div class="ctx-item" @click="onNewSheet">📊 新建数据表</div>
           <div class="ctx-item" @click="onNewPage">🌐 新建页面</div>
           <div class="ctx-item" @click="onNewDataview">📈 数据看板页面</div>
+          <!-- 思维导图（2026-10-17）：建一个 .mindmap 纯文本大纲，建完直接开标签
+               （查看器由 privhub-mindmap 插件按扩展名认领；插件不在时它退回文本预览）。 -->
+          <div class="ctx-item" @click="onNewMindmap">🌳 新建思维导图</div>
           <div style="height:1px;background:var(--line);margin:5px 0"></div>
           <div class="ctx-item" @click="onAddFile">⬆ 上传文件</div>
           <div class="ctx-item" @click="onAddFolder">📁⬆ 上传文件夹</div>

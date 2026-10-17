@@ -68,7 +68,9 @@ const nav = {
   activeView: 'files',
   trashView: false, searchView: false, favView: false, rightOpen: false,
   projectsList: [],
+  lastHelpDoc: null,
   backToWelcome() { this.project = null },
+  openHelp(doc) { this.lastHelpDoc = doc },
 }
 
 globalThis.window = {
@@ -228,6 +230,57 @@ console.log('\n── 高亮判定 ──')
 
   nav.trashView = false; nav.activeView = 'dashboard'
   ok(o.isActive({ view: 'dashboard' }) === true, '视图型条目按 activeView 高亮')
+}
+
+/* ══════════ 7. 悬停说明气泡：desc 驱动 + 跳说明文档 ══════════
+ * 这段验证「鼠标停在图标上会弹说明、并能跳到说明文件」这条交互的**运行期逻辑**：
+ *   - 只有声明 desc 的条目才弹（没 desc 的退回原生 title，行为与迁前一致）；
+ *   - 分类把手也带 desc/doc（来自 SECTION_DEFS）；
+ *   - 「查看完整说明」把 doc 交给骨架的 nav.openHelp。 */
+
+console.log('\n── 悬停说明气泡 ──')
+{
+  nav.project = 'P'
+  const o = mount()
+
+  ok(o.sections.every((s) => typeof s.desc === 'string' && s.desc.length > 0),
+    '四个分类把手都带 desc（悬停可见分类说明）')
+  ok(o.sections.every((s) => /^\d{2}-.+\.md$/.test(s.doc || '')),
+    '分类把手都指向一份说明文档（NN-名称.md）')
+
+  // 合成条目没有 desc → 不弹气泡
+  const noDesc = { icon: '🧪', title: '无说明', slot: 'x', view: 'x', group: 'files' }
+  o.help = null
+  o.showHelp(noDesc, { currentTarget: null })
+  ok(o.help === null, '没有 desc 的条目：不弹自定义气泡（退回原生 title）')
+
+  // 有 desc → 弹气泡，并按被悬停元素定位
+  const withDesc = { icon: '🧪', title: '有说明', slot: 'y', view: 'y', group: 'files', desc: '一句话说明', doc: '03-协作与看板.md' }
+  o.showHelp(withDesc, { currentTarget: { getBoundingClientRect: () => ({ top: 120, right: 62 }) } })
+  ok(o.help === withDesc, '有 desc 的条目：弹出气泡并记录条目')
+  ok(o.helpPos.top === 120 && o.helpPos.left === 72, '气泡定位取自被悬停元素的 boundingRect（右缘 +10px）')
+
+  // 跳说明文档：doc 交给骨架 nav.openHelp
+  nav.lastHelpDoc = null
+  o.openHelpDoc(withDesc)
+  ok(nav.lastHelpDoc === '03-协作与看板.md', '「查看完整说明」把该条目的 doc 交给 nav.openHelp')
+  ok(o.help === null, '跳转后立即收起气泡')
+
+  // 缺 doc 时回落到总览，不至于点了没反应
+  nav.lastHelpDoc = null
+  o.openHelpDoc({ icon: '🧪', title: '无doc', desc: 'x' })
+  ok(nav.lastHelpDoc === '00-总览.md', '条目没写 doc 时回落到总览文档')
+
+  // 鼠标离开：延迟收起（给滑到气泡上的宽限）
+  o.showHelp(withDesc, { currentTarget: null })
+  o.hideHelp()
+  ok(o.help === withDesc, '刚离开时气泡仍在（留出滑到气泡上的宽限）')
+  o.keepHelp()
+  await new Promise((r) => setTimeout(r, 220))
+  ok(o.help === withDesc, '滑到气泡上（keepHelp）→ 收起被取消，气泡留在原地')
+  o.hideHelp()
+  await new Promise((r) => setTimeout(r, 220))
+  ok(o.help === null, '离开气泡后延迟收起生效')
 }
 
 console.log('\n========================================================')

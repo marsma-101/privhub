@@ -75,3 +75,15 @@ privhub/engine/
 
 # ===== MCP 转接器配置（含管家钥匙明文，绝不进 git） =====
 privhub/mcp/privhub-mcp*.json
+
+# ===== 本地专用物（只在本机存在，绝不进 git / 不推远端） =====
+# 参考项目源码（供研究借鉴，非本项目代码，不进 git）
+/_refs/
+# 本地验收/评审报告（跑出来的产物，非交付物）
+/reports/
+# 本地 git 工作树（Trae 等工具用）
+/worktrees/
+# 本地交流/备忘（含聊天记录存储位置说明等，仅本机）
+/聊天记录存储位置说明.md
+# 记忆导出（含内部笔记，仅本机）
+/tag-memory-export-*.csv

@@ -80,10 +80,17 @@ const DashboardView = {
       project: '',
       doc: null,
       facts: null,
+      tasks: null,        // 任务进度（实时投影自任务看板）：null / {ok:true,…} / {ok:false,reason}
+      agents: null,       // 智能体名册（实时投影自名册）：null / {ok:true,entries} / {ok:false,reason}
       canEditBoard: false,
+      canEditRoster: false,
       loading: false,
       error: '',
       collapsed: {}, // sectionId → bool（本地折叠，不落盘）
+      /* 名册条目编辑（人工补录 / 修改）—— null = 未在编辑 */
+      agtForm: null,
+      agtErr: '',
+      agtSaving: false,
     }
   },
   computed: {
@@ -107,6 +114,10 @@ const DashboardView = {
       this.project = project || ''
       this.doc = null
       this.facts = null
+      this.tasks = null
+      this.agents = null
+      this.agtForm = null
+      this.agtErr = ''
       this.error = ''
       this.collapsed = {}
       if (!this.project) { this.loading = false; return }
@@ -116,12 +127,15 @@ const DashboardView = {
       if (!r || !r.ok) { this.error = (r && r.error) || '加载失败'; return }
       this.doc = r.dashboard
       this.facts = r.facts
+      this.tasks = r.tasks || null
+      this.agents = r.agents || null
       this.canEditBoard = !!r.canEdit
+      this.canEditRoster = !!r.canEditRoster
     },
     async refresh() { await this.load(this.project) },
     async pick(p) {
       if (!p || p === this.project) return
-      nav.openProject(p) // 同步顶栏项目选择：看板跟着当前项目走
+      nav.openProject(p, { view: 'dashboard' }) // 同步顶栏项目选择：看板跟着当前项目走（原地不跳）
       await this.load(p)
     },
     isCollapsed(sec) {
@@ -157,6 +171,114 @@ const DashboardView = {
       return ({ done: '✅', doing: '🔄', todo: '⏳', blocked: '⛔' })[st] || '⏳'
     },
     renderMd(src) { return mdToHtml(src) },
+
+    /* ---------- tasks 组件（任务看板实时投影，只读） ---------- */
+
+    /** 该组件要显示哪些列（w.columns 为空 = 全部列）；按列序返回。 */
+    taskCols(w) {
+      const t = this.tasks
+      if (!t || !t.ok) return []
+      const sel = Array.isArray(w.columns) ? w.columns : []
+      if (!sel.length) return t.byColumn
+      return t.byColumn.filter((c) => sel.includes(c.id) || sel.includes(c.title))
+    },
+    /** 卡片明细：按所选列过滤，排成看板顺序（列序→列内序），再按 w.limit 截断（缺省 30）。 */
+    taskCards(w) {
+      const t = this.tasks
+      if (!t || !t.ok) return []
+      const cols = this.taskCols(w)
+      const idx = new Map(cols.map((c, i) => [c.id, i]))
+      const lim = Number.isFinite(w.limit) && w.limit > 0 ? w.limit : 30
+      return t.cards
+        .filter((k) => idx.has(k.columnId))
+        .sort((a, b) => (idx.get(a.columnId) - idx.get(b.columnId)) || ((a.order || 0) - (b.order || 0)))
+        .slice(0, lim)
+    },
+    colTitle(id) {
+      const t = this.tasks
+      if (!t || !t.ok) return id
+      const c = t.byColumn.find((x) => x.id === id)
+      return c ? c.title : id
+    },
+    priorityLabel(p) {
+      return ({ low: '低', normal: '普通', high: '高', urgent: '紧急' })[p] || '普通'
+    },
+    /** 跳到任务看板（保持当前项目 —— 两块板看的是同一个项目）。 */
+    openTaskboard() {
+      if (this.project) nav.openProject(this.project, { view: 'taskboard' })
+      else nav.setActiveView('taskboard')
+    },
+
+    /* ---------- 智能体名册组件（读为主；有 roster.write 时可登记/编辑） ---------- */
+
+    agtStatusLabel(st) {
+      return ({ active: '在册', paused: '暂停', retired: '退役' })[st] || '在册'
+    },
+    /** 系统实证一句话（该项目里的战绩）。 */
+    agtEvidence(e) {
+      const v = e.evidence
+      if (!v) return '（该项目实证暂不可读）'
+      if (v.total === 0) return '本项目暂无战绩'
+      return '本项目：已完成 ' + v.done + ' / 共 ' + v.total + ' 张' + (v.open ? '（在办 ' + v.open + '）' : '')
+    },
+    agtScopeText(e) {
+      return e.scope === 'all' ? '服务全部项目' : ('仅服务：' + (e.projects.join('、') || '（未指定）'))
+    },
+    startNewAgent() {
+      this.agtErr = ''
+      this.agtForm = {
+        id: '', name: '', kind: '', _skills: '', bio: '',
+        scope: 'all', _projects: '', status: 'active', contact: '',
+      }
+    },
+    startEditAgent(e) {
+      this.agtErr = ''
+      this.agtForm = {
+        id: e.id, name: e.name, kind: e.kind, _skills: (e.skills || []).join('、'), bio: e.bio,
+        scope: e.scope, _projects: (e.projects || []).join('、'), status: e.status, contact: e.contact,
+      }
+    },
+    cancelAgent() { this.agtForm = null; this.agtErr = '' },
+    /** 顿号/逗号/空白都当分隔符 —— 中文输入法下打「、」比逗号顺手。 */
+    _splitList(s) {
+      return String(s || '').split(/[,，、\s]+/).map((x) => x.trim()).filter(Boolean)
+    },
+    async saveAgent() {
+      const f = this.agtForm
+      if (!f || !f.name.trim()) { this.agtErr = '名称不能为空'; return }
+      this.agtSaving = true
+      this.agtErr = ''
+      try {
+        const body = {
+          id: f.id || undefined,
+          name: f.name.trim(),
+          kind: f.kind,
+          skills: this._splitList(f._skills),
+          bio: f.bio,
+          scope: f.scope,
+          projects: f.scope === 'projects' ? this._splitList(f._projects) : [],
+          status: f.status,
+          contact: f.contact,
+        }
+        const r = await api('/privhub/api/roster', { method: 'POST', body: JSON.stringify(body) })
+        if (!r || !r.ok) { this.agtErr = (r && r.error) || '保存失败'; return }
+        this.agtForm = null
+        await this.refresh()
+      } finally { this.agtSaving = false }
+    },
+    async deleteAgent(e) {
+      if (!confirm('从名册中删除智能体「' + e.name + '」？')) return
+      const r = await api('/privhub/api/roster?id=' + encodeURIComponent(e.id), { method: 'DELETE' })
+      if (!r || !r.ok) { this.agtErr = (r && r.error) || '删除失败'; return }
+      await this.refresh()
+    },
+    fmtDate(ms) {
+      if (!ms) return ''
+      const d = new Date(ms)
+      if (isNaN(d.getTime())) return ''
+      const p = (n) => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    },
   },
   template: `
     <div class="db-wrap">
@@ -180,7 +302,7 @@ const DashboardView = {
       <div v-else-if="loading && !hasBoard" class="db-empty">加载中…</div>
       <div v-else-if="!hasBoard" class="db-empty">该项目还没有看板内容。</div>
 
-      <div v-else class="db-body">
+      <div v-else class="db-body ph-scroll">
         <header class="db-head">
           <h2 class="db-h2">{{ doc.title }}</h2>
           <p v-if="doc.subtitle" class="db-sub">{{ doc.subtitle }}</p>
@@ -212,17 +334,117 @@ const DashboardView = {
                 <div v-if="!w.items.length" class="db-muted">（计划待智能体填写）</div>
               </div>
 
+              <div v-else-if="w.type === 'tasks'" class="db-tasks">
+                <template v-if="tasks && tasks.ok">
+                  <div class="db-tprog">
+                    <div class="db-tprog-top">
+                      <span class="db-tprog-n">{{ tasks.doneCount }} / {{ tasks.total }} 已完成</span>
+                      <span class="db-tprog-p">{{ tasks.donePercent }}%</span>
+                    </div>
+                    <div class="db-tprog-bar"><i :style="{ width: tasks.donePercent + '%' }"></i></div>
+                  </div>
+                  <div class="db-tcols">
+                    <span v-for="c in taskCols(w)" :key="c.id" class="db-tcol">
+                      {{ c.title }} <b>{{ c.count }}</b>
+                    </span>
+                  </div>
+                  <div v-if="w.showCards !== false" class="db-tcards">
+                    <div v-for="k in taskCards(w)" :key="k.id" class="db-tcard" @click="openTaskboard" :title="k.title">
+                      <span class="db-tcard-dot" :class="'p-' + k.priority"></span>
+                      <span class="db-tcard-t">{{ k.title }}</span>
+                      <span class="db-tcard-meta">
+                        <span class="db-tcard-col">{{ colTitle(k.columnId) }}</span>
+                        <span v-if="k.assignee">· {{ k.assignee }}</span>
+                        <span v-if="k.dueDate">· {{ fmtDate(k.dueDate) }}</span>
+                      </span>
+                    </div>
+                    <div v-if="!taskCards(w).length" class="db-muted">（这些列暂无任务）</div>
+                    <div v-if="tasks.cardsTruncated" class="db-muted">仅显示前 {{ tasks.cards.length }} 张卡片</div>
+                  </div>
+                </template>
+                <div v-else class="db-muted">{{ (tasks && tasks.reason) || '任务看板暂不可用' }}</div>
+                <div class="db-tfoot">
+                  <span class="db-muted">实时取自「任务看板」</span>
+                  <button class="db-btn db-btn-sm" @click="openTaskboard">在任务看板中打开</button>
+                </div>
+              </div>
+
+              <div v-else-if="w.type === 'agents'" class="db-agents">
+                <!-- 编辑 / 新建条目（需 roster.write） -->
+                <div v-if="agtForm" class="db-agt-form">
+                  <div class="db-agt-row">
+                    <div><label>名称（任务卡指派人用这个名字）</label>
+                      <input v-model="agtForm.name" maxlength="60" placeholder="如：小析" /></div>
+                    <div><label>类型 / 厂商</label>
+                      <input v-model="agtForm.kind" maxlength="40" placeholder="如：Claude Code" /></div>
+                  </div>
+                  <div><label>擅长（顿号或逗号分隔）</label>
+                    <input v-model="agtForm._skills" placeholder="如：文档整理、数据分析" /></div>
+                  <div><label>自述：以前干过什么</label>
+                    <textarea v-model="agtForm.bio" rows="3" placeholder="自由描述。系统会另附「它在本项目实际完成过的任务」作为实证。"></textarea></div>
+                  <div class="db-agt-row">
+                    <div><label>服务范围</label>
+                      <select v-model="agtForm.scope">
+                        <option value="all">全部项目</option>
+                        <option value="projects">仅指定项目</option>
+                      </select></div>
+                    <div><label>状态</label>
+                      <select v-model="agtForm.status">
+                        <option value="active">在册</option>
+                        <option value="paused">暂停（暂不派活）</option>
+                        <option value="retired">退役（不再出现在候选）</option>
+                      </select></div>
+                  </div>
+                  <div v-if="agtForm.scope === 'projects'"><label>服务的项目（顿号或逗号分隔，须是你看得见的项目）</label>
+                    <input v-model="agtForm._projects" :placeholder="project" /></div>
+                  <div><label>联系方式（可选）</label>
+                    <input v-model="agtForm.contact" maxlength="120" /></div>
+                  <div v-if="agtErr" class="db-agt-err">{{ agtErr }}</div>
+                  <div class="db-agt-acts">
+                    <button class="db-btn db-btn-sm" @click="saveAgent" :disabled="agtSaving || !agtForm.name.trim()">{{ agtSaving ? '保存中…' : '保存' }}</button>
+                    <button class="db-btn db-btn-sm" @click="cancelAgent">取消</button>
+                  </div>
+                </div>
+
+                <template v-if="agents && agents.ok">
+                  <div v-for="a in agents.entries" :key="a.id" class="db-agt">
+                    <div class="db-agt-head">
+                      <span class="db-agt-name">🤖 {{ a.name }}</span>
+                      <span v-if="a.kind" class="db-agt-kind">{{ a.kind }}</span>
+                      <span class="db-agt-status" :class="'st-' + a.status">{{ agtStatusLabel(a.status) }}</span>
+                    </div>
+                    <div v-if="a.skills && a.skills.length" class="db-agt-skills">
+                      <span v-for="(s, si) in a.skills" :key="si" class="db-agt-skill">{{ s }}</span>
+                    </div>
+                    <div v-if="a.bio" class="db-agt-bio">{{ a.bio }}</div>
+                    <div class="db-agt-line">📊 {{ agtEvidence(a) }}</div>
+                    <div class="db-agt-line">🎯 {{ agtScopeText(a) }}<template v-if="a.source === 'agent'"> · 自主登记</template></div>
+                    <div v-if="canEditRoster" class="db-agt-acts">
+                      <button class="db-btn db-btn-sm" @click="startEditAgent(a)">编辑</button>
+                      <button class="db-btn db-btn-sm" @click="deleteAgent(a)">删除</button>
+                    </div>
+                  </div>
+                  <div v-if="!agents.entries.length" class="db-muted">还没有智能体登记到本项目。智能体可调 POST /privhub/api/agent/v1/roster 自助登记（写明擅长与经历）。</div>
+                </template>
+                <div v-else class="db-muted">{{ (agents && agents.reason) || '智能体名册暂不可用' }}</div>
+                <div class="db-tfoot">
+                  <span class="db-muted">登记 / 自述 + 系统实证（实时算自任务看板）</span>
+                  <button v-if="canEditRoster && !agtForm" class="db-btn db-btn-sm" @click="startNewAgent">＋ 登记智能体</button>
+                </div>
+              </div>
+
               <div v-else class="db-md" v-html="renderMd(w.text)"></div>
             </div>
             <div v-if="!sec.widgets.length" class="db-muted">（该分区暂无内容）</div>
           </div>
         </section>
-
-        <footer class="db-foot">
-          <span v-if="facts && facts.truncated">统计为部分结果（项目较大，已达扫描上限）</span>
-          <span v-if="canEditBoard" class="db-foot-edit">你有编辑权限：可通过接口重写此看板（本界面只读展示，布局由 AI 智能体维护）。</span>
-        </footer>
       </div>
+
+      <!-- 页脚钉在滚动视口之外（在 .db-wrap 底部），内容再长也不随滚动消失 -->
+      <footer v-if="project && !error && hasBoard" class="db-foot">
+        <span v-if="facts && facts.truncated">统计为部分结果（项目较大，已达扫描上限）</span>
+        <span v-if="canEditBoard" class="db-foot-edit">你有编辑权限：可通过接口重写此看板（本界面只读展示，布局由 AI 智能体维护）。</span>
+      </footer>
     </div>
   `,
 }

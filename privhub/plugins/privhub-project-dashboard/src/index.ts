@@ -7,7 +7,8 @@
  * （`/api/agent/v1/dashboard`，X-Agent-Key），与本文件的登录态路由共用 core.ts 的清洗与存储。
  *
  * 路由（exact 匹配，资源标识走 query/body）：
- *   GET  /privhub/api/dashboard?project=      读看板 + 实时 facts
+ *   GET  /privhub/api/dashboard?project=      读看板 + 实时 facts + 任务进度（含 tasks 组件时）
+ *                                             + 智能体名册（含 agents 组件时）
  *   PUT  /privhub/api/dashboard                { project, dashboard } 覆盖写（需可编辑）
  *   POST /privhub/api/dashboard/reset          { project } 还原为默认看板（需可编辑）
  *   GET  /privhub/api/dashboard/schema         组件契约（供智能体发现）
@@ -23,7 +24,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
 import {
-  LIMITS, STAT_REFS, computeFactsCached, defaultDashboard, loadDashboard, sanitizeDashboard, writeDashboard,
+  LIMITS, STAT_REFS, computeFactsCached, defaultDashboard, loadDashboard,
+  readAgents, readTaskProgress, sanitizeDashboard, wantsAgents, wantsTasks, writeDashboard,
 } from './core'
 import { dashFile } from './core'
 
@@ -70,6 +72,25 @@ export function apply(ctx: Context): void {
         markdown: { text: '受限 Markdown（标题/粗体/斜体/行内代码/列表/链接/引用）。禁 HTML 直出。' },
         stats: { items: [{ label: '指标名', ref: '实时引用（可选）', value: '静态值（可选）', hint: '脚注（可选）' }], refs: STAT_REFS },
         plan: { items: [{ text: '事项', state: 'done|doing|todo|blocked', note: '备注' }] },
+        tasks: {
+          note: '**实时投影任务看板**（同一份数据，只读）：各列计数 + 完成度 + 卡片明细。'
+            + '不要在这里写死进度 —— 任务在「任务看板」里维护，本组件自动跟随。',
+          options: {
+            columns: '只看这些列（列 id 或列标题的数组；缺省=全部列）',
+            limit: '卡片明细条数上限（1…' + LIMITS.taskCards + '，缺省 30）',
+            showCards: 'false = 只显示计数与进度条，不列卡片',
+          },
+          disabledWhen: 'task.write 功能被关时不显示进度，只回一行说明（不会让看板报错）',
+        },
+        agents: {
+          note: '**实时投影智能体名册**（只读）：只列「服务本项目」的智能体'
+            + '（名册条目自己声明服务范围 all / 指定项目），每条给「擅长 / 自述 / 系统实证」。'
+            + '系统实证 = 服务端从任务看板现算的该项目战绩（已完成 / 未完成 / 总数 / 最近完成），不落盘。',
+          noOptions: '本组件没有旋钮：范围由名册条目自身的服务范围决定',
+          disabledWhen: '名册文件不可读时只回一行说明（不会让看板报错）',
+          write: '登记 / 编辑名册：POST /privhub/api/roster（登录态，需 roster.write）'
+            + '；智能体自注册：POST /privhub/api/agent/v1/roster（X-Agent-Key）',
+        },
       },
       limits: LIMITS,
       write: {
@@ -93,7 +114,24 @@ export function apply(ctx: Context): void {
         loadDashboard(ctx.storage, project),
         computeFactsCached(ctx, project),
       ])
-      json(res, 200, { ok: true, dashboard, facts, canEdit: canEdit(u, project) })
+      /* 任务进度：只有看板真的用了 tasks 组件才去读任务看板（否则 tasks=null）。
+       * 这是**只读投影** —— 项目看板不存一份进度副本，所以它和任务看板不会各说各话。 */
+      let tasks: unknown = null
+      if (wantsTasks(dashboard)) {
+        tasks = ctx.cap.can(u, 'task.write', 'read')
+          ? await readTaskProgress(ctx.storage, project)
+          : { ok: false, disabled: true, reason: '任务看板功能已关闭' }
+      }
+      /* 智能体名册：同理，看板用了 agents 组件才去读名册（否则 agents=null）。
+       * 读名册不设功能开关（登录即可看）；写由 roster.write 把（见 canEditRoster）。 */
+      let agents: unknown = null
+      if (wantsAgents(dashboard)) agents = await readAgents(ctx.storage, project)
+      json(res, 200, {
+        ok: true, dashboard, facts,
+        canEdit: canEdit(u, project),
+        canEditRoster: ctx.cap.can(u, 'roster.write', 'write'),
+        tasks, agents,
+      })
       return
     }
 

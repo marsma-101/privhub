@@ -274,6 +274,28 @@ export function build() {
     ok(byKey.json && byKey.json.ok, '有效 Agent 密钥应可读接口清单（自描述发现）')
   })
 
+  s.test('K 匿名面可发现性（JT-19）：健康检查给指路、猜错路径给带 hint 的 404', async () => {
+    /* 背景：外部集成方拿到密钥却联不通（不知请求头与前缀），把「通道完备」误判成
+     * 「AI 链接是断的」。这两条断言钉住「匿名面必须能自己指路」这个行为。 */
+    const hc = await GET('/privhub/api/health')
+    ok(hc.json && hc.json.ok, '健康检查应匿名可用')
+    ok(hc.json && hc.json.agent && hc.json.agent.header === 'X-Agent-Key',
+      '健康检查应给出智能体请求头 X-Agent-Key（匿名可发现）')
+    ok(hc.json && hc.json.agent && String(hc.json.agent.base).includes('/privhub/api/agent/v1/'),
+      '健康检查应给出智能体端点前缀')
+
+    /* 猜错端点形态（少 v1、写错段名）时，应是带指路的 JSON 404，而不是裸文本 not found */
+    const bogus = await GET('/privhub/api/agent/me')
+    eq(bogus.status, 404, `猜错智能体路径应 404（实际 ${bogus.status}）`)
+    ok(bogus.json && bogus.json.code === 'AGENT-4040', '应为 AGENT-4040 语义码')
+    ok(bogus.json && /X-Agent-Key/.test(String(bogus.json.hint)) && /\/privhub\/api\/agent\/v1\//.test(String(bogus.json.hint)),
+      '404 的 hint 必须同时给出请求头与正确前缀（否则等于没指路）')
+
+    /* 真实端点不受影响：仍走各自的路由（未登录 → 401 AGENT-4010，非 404） */
+    const real = await GET('/privhub/api/agent/v1/me')
+    eq(real.status, 401, '真实端点缺密钥应 401（引导 404 不遮蔽真实路由）')
+  })
+
   s.test('J 自助密钥：可签单项目范围，但不允许 all scope', async () => {
     const okOne = await POST('/privhub/api/agent/v1/my-keys', {
       token: userToken, body: { name: 'self-' + rand, scope: { kind: 'project', project: PROJECT } },

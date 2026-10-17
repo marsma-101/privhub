@@ -10,9 +10,15 @@
 
 const CSS = `
 /* ============ 引用检查 ============ */
-/* 竖版长页面，直接挂在骨架 .main（overflow:hidden）下：必须自带滚动条（同 project-dashboard 的 .db-wrap）。 */
-.rc-wrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-width: 1280px; margin: 0 auto; padding: var(--sp-4) var(--sp-5) var(--sp-6); }
+/* 版式与任务看板/项目看板同一标准：整页铺满主区（不限宽、不居中），工具条钉顶、
+ * 结果表落在有界滚动视口里、页脚贴底。直接挂在骨架 .main（flex column / overflow:hidden）下。 */
+.rc-wrap {
+  flex: 1 1 auto; min-height: 0; width: 100%;
+  display: flex; flex-direction: column;
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+}
 
+/* 工具条：钉在结果上方，翻表时「开始扫描 / 导出」始终够得着 */
 .rc-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; padding: 4px 0 var(--sp-3); border-bottom: 1px solid var(--line); margin-bottom: var(--sp-3); }
 .rc-title { font-size: var(--fs-lg); font-weight: 600; margin-right: 4px; }
 .rc-label { color: var(--muted); font-size: var(--fs-sm); }
@@ -32,6 +38,13 @@ const CSS = `
 .rc-muted { color: var(--muted); font-size: var(--fs-xs); }
 .rc-err { padding: var(--sp-5); text-align: center; color: var(--danger); }
 .rc-suppress { margin: 0 0 var(--sp-2); }
+/* 未扫描的说明 / 出错是 .rc-wrap 的直系子元素：吃掉工具条与页脚之外的高度 */
+.rc-wrap > .rc-hint, .rc-wrap > .rc-err { flex: 1; }
+.rc-wrap > .rc-err { display: grid; place-content: center; }
+
+/* 结果区 = 本页唯一的滚动视口（工具条与页脚在它之外，不随滚动消失）。
+ * flex:1 + min-height:0 缺一不可（缺 min-height:0 时 flex 项不肯比内容矮、滚动条被顶出屏幕）。 */
+.rc-body { flex: 1; min-height: 0; overflow: auto; padding-bottom: var(--sp-1); }
 
 .rc-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-2); }
 .rc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; font-size: var(--fs-xs); color: var(--muted); }
@@ -60,7 +73,8 @@ const CSS = `
 .rc-empty { text-align: center; color: var(--muted); padding: var(--sp-5) 0; }
 .rc-more { padding: 8px 10px; color: var(--muted); font-size: var(--fs-xs); background: var(--bg-soft, rgba(0,0,0,.03)); }
 
-.rc-foot { margin-top: var(--sp-4); padding-top: var(--sp-2); border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-xs); }
+/* 页脚：钉在 .rc-wrap 底部（在滚动视口之外），不随结果表滚走 */
+.rc-foot { margin-top: var(--sp-3); padding-top: var(--sp-2); border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-xs); }
 
 @media (max-width: 720px) {
   .rc-filter { margin-left: 0; width: 100%; }

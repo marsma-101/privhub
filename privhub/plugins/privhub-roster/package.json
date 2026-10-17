@@ -1,0 +1,8 @@
+{
+  "name": "privhub-roster",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PrivHub 智能体名册：全局登记「有哪些智能体 / 擅长什么 / 干过什么 / 服务哪些项目」，供项目看板展示与 PM 指派",
+  "main": "src/index.ts"
+}

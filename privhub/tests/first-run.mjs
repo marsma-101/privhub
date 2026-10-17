@@ -13,7 +13,8 @@
  *   1. 每次都能成功启动（不再偶发失败）；
  *   2. 自动生成 secret.key / data / data-files；
  *   3. 默认账号可登录、健康检查可用；
- *   4. 密钥内容稳定（同一目录重启不重新生成，否则旧数据将无法解密）。
+ *   4. 密钥内容稳定（同一目录重启不重新生成，否则旧数据将无法解密）；
+ *   5. GC-01：装配扫描根不存在时给出可见告警（不再是零日志的静默失败）。
  *
  *   node tests/first-run.mjs [轮数]
  *
@@ -178,6 +179,30 @@ async function main() {
     try { if (existsSync(link) && lstatSync(link).isSymbolicLink()) unlinkSync(link) } catch { /* 忽略 */ }
   }
   try { rmSync(TESTROOT, { recursive: true, force: true }) } catch { /* 忽略 */ }
+
+  /* ---- GC-01：装配扫描根不对时必须留痕（旧行为是「一个都不装且零日志」）----
+   * 用一个没有 plugins/ 子目录的空根启动：服务仍能起来（只剩骨架），但 stderr
+   * 必须出现明确告警 —— 否则「装成功但零功能」和「装配正常」在日志里长得一模一样。 */
+  console.log('\n── 装配扫描根不对须告警（GC-01）──')
+  const BOGUS = join(HERE, '.bogusroot-gc01')
+  try {
+    rmSync(BOGUS, { recursive: true, force: true })
+    mkdirSync(BOGUS, { recursive: true })
+    const c = spawn(process.execPath, ['--import', 'tsx/esm', 'src/main.ts', '--port', String(PORT + 1)], {
+      cwd: ROOT, env: { ...process.env, PRIVHUB_ROOT: BOGUS }, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let err = ''
+    c.stdout.on('data', (d) => { err += d.toString() })
+    c.stderr.on('data', (d) => { err += d.toString() })
+    const deadline = Date.now() + 25000
+    while (Date.now() < deadline && !/未找到插件目录/.test(err)) await new Promise((r) => setTimeout(r, 200))
+    ok(/未找到插件目录/.test(err), '扫描根不存在时给出明确告警（不再是零日志的静默失败）')
+    await stopServer(c)
+  } catch (e) {
+    ok(false, '装配告警用例异常：' + (e && e.message))
+  } finally {
+    try { rmSync(BOGUS, { recursive: true, force: true }) } catch { /* 忽略 */ }
+  }
 
   console.log(`\n${'='.repeat(56)}`)
   console.log(`  首次部署回归：${pass} 通过 / ${fail} 失败`)

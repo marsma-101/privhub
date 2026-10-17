@@ -57,10 +57,10 @@ import type { DeliveryRecord, Hook, HookView } from './core'
 export const name = 'privhub-webhook'
 export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'cap']
 
-/** 监听的 7 个事件（与 core.ts 的 EVENTS 一一对应；改一边必须改另一边）。 */
+/** 监听的 8 个事件（与 core.ts 的 EVENTS 一一对应；改一边必须改另一边）。 */
 const LISTEN = [
   'file:changed', 'file:saved', 'meta:changed', 'personal:renamed',
-  'audit:logged', 'task:changed', 'dashboard:changed',
+  'audit:logged', 'task:changed', 'dashboard:changed', 'roster:changed',
 ] as const
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()

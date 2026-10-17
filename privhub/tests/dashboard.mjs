@@ -27,6 +27,12 @@ function dashPath(project) {
   return root ? join(root, 'data', 'dashboards', project + '.json') : ''
 }
 
+/** tasks 组件会读任务看板文件；收尾要一并清掉，别给下游套件留残留。 */
+function tbPath(project) {
+  const root = process.env.PRIVHUB_TEST_ROOT
+  return root ? join(root, 'data', 'taskboards', project + '.json') : ''
+}
+
 /** 带 Agent 密钥的请求（与 agent-sandbox 同形）。 */
 const agent = (key) => ({
   GET: (p) => GET(p, { headers: { 'x-agent-key': key } }),
@@ -65,6 +71,7 @@ export function build() {
     ok(r.json && r.json.ok, '取契约失败：' + r.text.slice(0, 120))
     ok(r.json.widgetTypes && r.json.widgetTypes.markdown && r.json.widgetTypes.stats && r.json.widgetTypes.plan,
       '契约应含三种组件类型')
+    ok(r.json.widgetTypes.tasks && r.json.widgetTypes.tasks.note, '契约应含 tasks 组件（任务看板实时投影）')
     ok(r.json.widgetTypes.stats.refs && r.json.widgetTypes.stats.refs.files, 'stats 应给出实时引用清单')
     ok(r.json.limits && r.json.limits.sections > 0, '契约应给出边界常量')
     ok(r.json.write && r.json.write.agent, '契约应说明智能体写入车道')
@@ -84,7 +91,7 @@ export function build() {
     const r = await GET('/privhub/api/dashboard?project=' + encodeURIComponent(PROJECT), { token: admin })
     ok(r.json && r.json.ok, '读看板失败：' + r.text.slice(0, 120))
     const d = r.json.dashboard
-    ok(Array.isArray(d.sections) && d.sections.length === 3, '默认三区')
+    ok(Array.isArray(d.sections) && d.sections.length === 4, '默认四区（概览 / 任务进度 / 智能体名册 / 说明）')
     eq(d.source, 'default', '默认来源 default')
     eq(d.sections[0].width, 'full', '首区默认全宽')
     eq(r.json.canEdit, true, '管理员对项目根应有编辑权')
@@ -121,6 +128,68 @@ export function build() {
     eq(r.json.dashboard.sections[0].widgets[0].items[0].ref, 'files', 'stats ref 保留')
   })
 
+  /* ---------- tasks 组件：任务看板实时投影（第一信息源 = 任务看板） ---------- */
+
+  s.test('tasks 组件：清洗保留 columns / limit 旋钮', async () => {
+    const doc = {
+      title: 'T',
+      sections: [{
+        id: 's1', title: '进度', width: 'full', widgets: [{
+          type: 'tasks', title: '任务进度',
+          columns: ['col_todo', 'col_done', 'col_todo', 123],   // 去重 + 丢非字符串
+          limit: 500,                                            // 超过上限 → 夹到 LIMITS.taskCards
+          showCards: false,
+        }],
+      }],
+    }
+    const r = await PUT('/privhub/api/dashboard', { token: admin, body: { project: PROJECT, dashboard: doc } })
+    ok(r.json && r.json.ok, '写 tasks 看板失败：' + r.text.slice(0, 120))
+    const w = r.json.dashboard.sections[0].widgets[0]
+    eq(w.type, 'tasks', 'tasks 组件应保留')
+    eq((w.columns || []).join(','), 'col_todo,col_done', 'columns 去重且丢非字符串')
+    eq(w.limit, 60, 'limit 夹到上限 60')
+    eq(w.showCards, false, 'showCards=false 保留')
+  })
+
+  s.test('tasks 组件：数据实时取自任务看板（同一份）', async () => {
+    // 先在任务看板里造两张卡，把其中一张挪到「已完成」
+    const r1 = await POST('/privhub/api/taskboard/cards', { token: admin, body: { project: PROJECT, title: '联动卡 A' } })
+    const r2 = await POST('/privhub/api/taskboard/cards', { token: admin, body: { project: PROJECT, title: '联动卡 B' } })
+    ok(r1.json && r1.json.ok && r2.json && r2.json.ok, '建卡失败：' + r1.text.slice(0, 120) + r2.text.slice(0, 120))
+    const mv = await POST('/privhub/api/taskboard/cards/move', {
+      token: admin, body: { project: PROJECT, id: r2.json.card.id, toColumnId: 'col_done' },
+    })
+    ok(mv.json && mv.json.ok, '挪到已完成失败：' + mv.text.slice(0, 120))
+
+    // 看板只留一个 tasks 组件
+    await PUT('/privhub/api/dashboard', {
+      token: admin,
+      body: { project: PROJECT, dashboard: { title: 'T', sections: [{ id: 's1', title: '进度', width: 'full', widgets: [{ type: 'tasks' }] }] } },
+    })
+    const r = await GET('/privhub/api/dashboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    ok(r.json && r.json.ok, '读看板失败：' + r.text.slice(0, 120))
+    const t = r.json.tasks
+    ok(t && t.ok === true, '应返回 tasks 摘要：' + JSON.stringify(t).slice(0, 160))
+    eq(t.doneColumnId, 'col_done', '完成列 id')
+    ok(t.total >= 2, '总数应含两张联动卡（实际 ' + t.total + '）')
+    eq(t.doneCount, 1, '已完成应恰为 1 张')
+    eq(t.byColumn.length, 4, '四列计数')
+    ok(t.byColumn.some((c) => c.id === 'col_done' && c.count === 1), '「已完成」列计数应为 1')
+    ok(t.cards.some((k) => k.title === '联动卡 A'), '卡片明细应带出联动卡')
+    ok(t.cards.length && !('desc' in t.cards[0]), '卡片明细只带渲染所需字段（不含 desc）')
+    ok(typeof t.donePercent === 'number' && t.donePercent > 0, '完成度应为正数')
+  })
+
+  s.test('tasks 组件：看板未用 tasks 组件 → tasks=null（不去读任务看板）', async () => {
+    await PUT('/privhub/api/dashboard', {
+      token: admin,
+      body: { project: PROJECT, dashboard: { title: 'T', sections: [{ id: 's1', title: 'A', width: 'full', widgets: [{ type: 'markdown', text: '只有说明' }] }] } },
+    })
+    const r = await GET('/privhub/api/dashboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    ok(r.json && r.json.ok, '读看板失败')
+    eq(r.json.tasks, null, '没有 tasks 组件时应为 null')
+  })
+
   s.test('清洗：未知组件类型被丢弃、越界状态归一', async () => {
     const doc = {
       title: 'X',
@@ -154,7 +223,7 @@ export function build() {
     const r = await POST('/privhub/api/dashboard/reset', { token: admin, body: { project: PROJECT } })
     ok(r.json && r.json.ok, '还原失败：' + r.text.slice(0, 120))
     eq(r.json.dashboard.source, 'default', '还原后 source=default')
-    eq(r.json.dashboard.sections.length, 3, '还原为默认三区')
+    eq(r.json.dashboard.sections.length, 4, '还原为默认四区')
     eq(r.json.dashboard.updatedBy, 'admin', '记录操作者')
   })
 
@@ -231,8 +300,9 @@ export function build() {
     await purgeTrashOfProject(admin, PROJECT)
     await purgeTrashOfProject(admin, OTHER)
     for (const p of [PROJECT, OTHER]) {
-      const f = dashPath(p)
-      if (f && existsSync(f)) { try { rmSync(f) } catch { /* 忽略 */ } }
+      for (const f of [dashPath(p), tbPath(p)]) {
+        if (f && existsSync(f)) { try { rmSync(f) } catch { /* 忽略 */ } }
+      }
     }
     ok(true, '已清理')
   })

@@ -91,6 +91,18 @@ export interface DashboardChangedPayload {
   sections: number
 }
 
+/** 智能体名册（全局一份）变更。 */
+export interface RosterChangedPayload {
+  /** create（新登记）| update（改条目）| delete（移除）。 */
+  action: string
+  /** 条目 id（删除后即不存在，仅供消费方定位）。 */
+  id: string
+  /** 智能体名（名册内唯一，也是任务卡 assignee 用的名字）。 */
+  name: string
+  /** 变更后条目数（删除场景为删除后的数量）。 */
+  total: number
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** 审计条目落盘后广播（S1 闭环：内存环形缓冲等实时消费方）。 */
@@ -107,5 +119,7 @@ declare module '@deepseek-ai/cordis' {
     'task:changed': (payload: TaskChangedPayload) => void
     /** 项目看板（纵向分区页）变更。 */
     'dashboard:changed': (payload: DashboardChangedPayload) => void
+    /** 智能体名册（全局一份）变更。 */
+    'roster:changed': (payload: RosterChangedPayload) => void
   }
 }

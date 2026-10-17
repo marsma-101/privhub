@@ -3,8 +3,19 @@
   "title": "引用检查",
   "icon": "🔗",
   "description": "扫出没人引用的孤儿附件与指向空处的断链引用；只报告、可导出清单，不会删除任何文件",
-  "slots": ["refcheck-view"],
+  "slots": [
+    "refcheck-view"
+  ],
   "barItems": [
-    { "icon": "🔗", "title": "引用检查", "slot": "app-iconbar", "view": "refcheck", "group": "knowledge", "capFeature": "nav.refcheck" }
+    {
+      "icon": "🔗",
+      "title": "引用检查",
+      "slot": "app-iconbar",
+      "view": "refcheck",
+      "group": "knowledge",
+      "capFeature": "nav.refcheck",
+      "desc": "扫出孤儿附件与断链引用；只报告、可导出，不删任何文件。",
+      "doc": "02-知识组织.md"
+    }
   ]
 }

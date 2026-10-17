@@ -1,8 +1,9 @@
 /**
  * 任务看板回归（PLAN-01 · privhub-task-board）
  *
- * 覆盖 R1–R8：读看板 / 建改删卡 / 拖拽改列 / 建改删列（卡片迁移）/ WIP 上限 /
- * 权限（401·403·400）/ 项目隔离 / 加密落盘（PHENC1）。
+ * 覆盖 R1–R9：读看板 / 建改删卡 / 拖拽改列 / 审核流（提交·通过·退回）/ 建改删列（卡片迁移）/
+ * WIP 上限 / 内置「待审核」列（默认四列、不可删）/ 权限（401·403·400）/ 项目隔离 /
+ * 加密落盘（PHENC1）。
  *
  * 使用独立项目 `_taskboard_reg`，结束后整项目删除并回收站清空；看板文件一并清除。
  * 磁盘断言仅在 PRIVHUB_TEST_ROOT 存在时执行（否则静默降级为空断言）。
@@ -60,12 +61,15 @@ export function build() {
     eq(r.status, 400, '项目名无效应 400')
   })
 
-  s.test('空看板返回默认三列', async () => {
+  s.test('空看板返回默认四列（含内置「待审核」）', async () => {
     const r = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
     ok(r.json && r.json.ok, '读看板失败：' + r.text.slice(0, 120))
-    eq(r.json.board.columns.length, 3, '默认三列')
+    eq(r.json.board.columns.length, 4, '默认四列')
     eq(r.json.board.cards.length, 0, '默认无卡片')
     eq(r.json.board.columns[0].title, '待办', '首列标题')
+    // 内置「待审核」列必须存在，且位置在「已完成」之前
+    const ids = r.json.board.columns.map((c) => c.id)
+    eq(ids.join(','), 'col_todo,col_doing,col_review,col_done', '列序：待办 / 进行中 / 待审核 / 已完成')
   })
 
   s.test('建卡成功', async () => {
@@ -78,6 +82,15 @@ export function build() {
     eq(r.json.card.priority, 'high', '优先级')
     eq(r.json.card.columnId, 'col_todo', '默认落首列')
     eq(r.json.card.source, 'human', '第 1 期 source 固定 human')
+    eq(r.json.card.createdBy, 'admin', '创建人 = 建卡时的登录用户（卡片正面要显示「谁建的」）')
+  })
+
+  s.test('创建人不可被 PATCH 篡改（始终是首次写入者）', async () => {
+    await PATCH('/privhub/api/taskboard/cards', {
+      token: admin, body: { project: PROJECT, id: cardId, createdBy: 'someone-else' },
+    })
+    const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    eq(g.json.board.cards.find((c) => c.id === cardId).createdBy, 'admin', 'createdBy 不被请求体改写')
   })
 
   s.test('空标题建卡 → 400', async () => {
@@ -115,6 +128,57 @@ export function build() {
     eq(r.status, 404, '目标列不存在应 404')
   })
 
+  /* ---------- 审核流（R9）---------- */
+
+  s.test('审核流：非法 action → 400', async () => {
+    const r = await POST('/privhub/api/taskboard/cards/review', {
+      token: admin, body: { project: PROJECT, id: cardId, action: 'nope' },
+    })
+    eq(r.status, 400, '未知 action 应 400')
+  })
+
+  s.test('审核流：提交审核 → 待审核', async () => {
+    const r = await POST('/privhub/api/taskboard/cards/review', {
+      token: admin, body: { project: PROJECT, id: cardId, action: 'submit' },
+    })
+    ok(r.json && r.json.ok, '提交审核失败：' + r.text.slice(0, 120))
+    eq(r.json.columnId, 'col_review', '应回到待审核列')
+    const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    eq(g.json.board.cards.find((c) => c.id === cardId).columnId, 'col_review', '卡片已在待审核列')
+  })
+
+  s.test('审核流：退回重做 → 待办 + 打「退回重做」标签', async () => {
+    const r = await POST('/privhub/api/taskboard/cards/review', {
+      token: admin, body: { project: PROJECT, id: cardId, action: 'reject' },
+    })
+    ok(r.json && r.json.ok, '退回失败：' + r.text.slice(0, 120))
+    eq(r.json.columnId, 'col_todo', '退回应落到待办')
+    const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    const card = g.json.board.cards.find((c) => c.id === cardId)
+    eq(card.columnId, 'col_todo', '卡片已回待办')
+    ok(card.labels.includes('退回重做'), '应打上「退回重做」标签')
+  })
+
+  s.test('审核流：通过 → 已完成，并清掉「退回重做」标签', async () => {
+    await POST('/privhub/api/taskboard/cards/review', { token: admin, body: { project: PROJECT, id: cardId, action: 'submit' } })
+    const r = await POST('/privhub/api/taskboard/cards/review', {
+      token: admin, body: { project: PROJECT, id: cardId, action: 'approve' },
+    })
+    ok(r.json && r.json.ok, '通过失败：' + r.text.slice(0, 120))
+    eq(r.json.columnId, 'col_done', '通过应落到已完成')
+    const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    const card = g.json.board.cards.find((c) => c.id === cardId)
+    eq(card.columnId, 'col_done', '卡片已在已完成')
+    ok(!card.labels.includes('退回重做'), '通过后不应再带退回标签')
+  })
+
+  s.test('审核流：不存在的卡片 → 404', async () => {
+    const r = await POST('/privhub/api/taskboard/cards/review', {
+      token: admin, body: { project: PROJECT, id: 'nope', action: 'approve' },
+    })
+    eq(r.status, 404, '不存在应 404')
+  })
+
   s.test('新建列成功', async () => {
     const r = await POST('/privhub/api/taskboard/columns', { token: admin, body: { project: PROJECT, title: '待验证' } })
     ok(r.json && r.json.ok, '建列失败：' + r.text.slice(0, 120))
@@ -150,19 +214,27 @@ export function build() {
     const r = await DEL('/privhub/api/taskboard/columns?project=' + encodeURIComponent(PROJECT) + '&id=' + encodeURIComponent(colB), { token: admin })
     ok(r.json && r.json.ok, '删列失败：' + r.text.slice(0, 120))
     const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
-    eq(g.json.board.columns.length, 3, '删回三列')
+    eq(g.json.board.columns.length, 4, '删回内置四列')
     ok(!g.json.board.cards.some((c) => c.columnId === colB), '无卡片残留在已删列')
     eq(g.json.board.cards.length, 2, '卡片总数不变（迁移而非删除）')
   })
 
-  s.test('删列删到只剩一列 → 400', async () => {
+  s.test('内置「待审核」列不可删除 → 400', async () => {
+    const r = await DEL('/privhub/api/taskboard/columns?project=' + encodeURIComponent(PROJECT) + '&id=col_review', { token: admin })
+    eq(r.status, 400, '内置列不可删')
+    includes(r.text, '内置列', '错误应说明是内置列')
+  })
+
+  s.test('删列删到只剩内置列 → 再删仍 400（至少保留一列）', async () => {
     const g = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
-    const ids = g.json.board.columns.map((c) => c.id)
-    // 依次删到 1 列
-    for (const id of ids.slice(1)) {
+    const deletable = g.json.board.columns.map((c) => c.id).filter((id) => id !== 'col_review')
+    for (const id of deletable) {
       await DEL('/privhub/api/taskboard/columns?project=' + encodeURIComponent(PROJECT) + '&id=' + encodeURIComponent(id), { token: admin })
     }
-    const r = await DEL('/privhub/api/taskboard/columns?project=' + encodeURIComponent(PROJECT) + '&id=' + encodeURIComponent(ids[0]), { token: admin })
+    const g2 = await GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin })
+    eq(g2.json.board.columns.length, 1, '只剩内置列')
+    eq(g2.json.board.columns[0].id, 'col_review', '剩下的正是内置「待审核」列')
+    const r = await DEL('/privhub/api/taskboard/columns?project=' + encodeURIComponent(PROJECT) + '&id=col_review', { token: admin })
     eq(r.status, 400, '最后一列不可删')
     includes(r.text, '至少保留一列', '错误应说明原因')
   })

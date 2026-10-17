@@ -52,7 +52,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 /** 端口不与既有套件冲突：3190(run-all) / 3192(audit) / 3193(matrix) / 3194(first-run)
  *  / 3195(rag) / 3196(preview-limits) / 3197(file-exts,model-parsing) / 3198(office-doc,json-corruption)
- *  / 3199(write-serialization)。3191 空着。 */
+ *  / 3199(write-serialization) / 3191(思维导图 mindmap.mjs)。 */
 const PORT = Number(process.env.PRIVHUB_MEDIATEST_PORT || 3191)
 const BASE = `http://127.0.0.1:${PORT}`
 const TESTROOT = join(HERE, '.testroot-media')

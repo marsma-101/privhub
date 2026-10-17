@@ -153,13 +153,13 @@ export function build() {
     made.pop()
   })
 
-  s.test('事件目录：7 个事件，覆盖全部实际 emit 的事件', async () => {
+  s.test('事件目录：8 个事件，覆盖全部实际 emit 的事件', async () => {
     const r = await GET('/privhub/api/webhook/events', { token: admin })
     ok(r.json && r.json.ok, '读事件目录失败：' + r.text.slice(0, 160))
     const names = r.json.events.map((e) => e.name).sort()
     eq(names.join(','), [
       'audit:logged', 'dashboard:changed', 'file:changed', 'file:saved',
-      'meta:changed', 'personal:renamed', 'task:changed',
+      'meta:changed', 'personal:renamed', 'roster:changed', 'task:changed',
     ].join(','), '事件目录与实际 emit 的事件集合不一致')
   })
 

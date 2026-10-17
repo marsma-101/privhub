@@ -296,6 +296,27 @@ export class WebServerService extends Service {
           }
           const handler = routes.get(url.pathname)
           if (handler) return await handler(req, res)
+          /* JT-19 补强：落在智能体 API 命名空间下、但没有匹配到任何路由的路径，
+           * 回一条带指路的 JSON 404（而不是裸文本 "not found"）。
+           * 背景：外部集成方拿到密钥却猜错端点形态（试过 /privhub/api/ai/*、
+           * /privhub/api/agent/me 等），裸 404 看不出「前缀应是 /privhub/api/agent/v1/」，
+           * 于是误判「AI 通道是断的」。这里无论猜成哪种形状，都直接把正确前缀与
+           * 请求头告诉它，把发现成本降到一次请求。
+           * 只作用于「本来就是 404」的情形，不遮蔽任何真实路由、不改动任何已注册端点。 */
+          if (/^\/privhub\/api\/agent(\/|$)/.test(url.pathname)) {
+            const body = Buffer.from(JSON.stringify({
+              ok: false, code: 'AGENT-4040',
+              error: '智能体接口路径不存在',
+              hint: '端点前缀为 /privhub/api/agent/v1/，请求头携带 X-Agent-Key；自检：GET /privhub/api/agent/v1/me（详见 docs/PrivHub-AgentAPI-接入指南.md）',
+            }), 'utf8')
+            res.writeHead(404, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-length': String(body.length),
+              'cache-control': 'no-store',
+            })
+            res.end(body)
+            return
+          }
           await self.serveStatic(url.pathname, req, res)
         } catch (e) {
           /* O3/07 修复：此处是全站【唯一】兜底 catch —— 此前它把异常整个吞掉
