@@ -30,6 +30,7 @@ import { build as buildAclFileFilter } from './acl-file-filter.mjs'
 import { build as buildDupVerdict } from './dup-verdict.mjs'
 import { build as buildDupUploadHttp } from './dup-upload-http.mjs'
 import { build as buildDupNearDelete } from './dup-near-delete.mjs'
+import { build as buildUploadLimit } from './upload-limit.mjs'
 import { build as buildEditLock } from './edit-lock.mjs'
 import { build as buildDashboard } from './dashboard.mjs'
 import { build as buildTaskCalendar } from './task-calendar.mjs'
@@ -114,6 +115,9 @@ async function main() {
     buildDupUploadHttp(),
     // Q7 新增：近似/版本族删除开关（allowNearDelete 单一事实来源；只读 + 改/复位开关）。
     buildDupNearDelete(),
+    // issue #1 新增：上传上限与设置同源（0=不限）、超限 413 可读、收尾恢复设置。
+    // 它会临时把上限改成 1MB 再改回，放在上传/查重类之后，避免影响别的上传样本。
+    buildUploadLimit(),
     buildEditLock(),
     // Z 批新增：项目看板（纵向分区页；含智能体 X-Agent-Key 写入车道）
     buildDashboard(),

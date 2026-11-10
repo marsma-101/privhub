@@ -294,6 +294,33 @@ const wsSrc = readFileSync(join(ROOT, 'src', 'web-server.ts'), 'utf8')
 ok(/agent\/v1\/write/.test(wsSrc), 'Agent 写入路由豁免全局预检（保住 200MB 契约）')
 ok(/res\.end\(payload, \(\) =>/.test(wsSrc), '413 在响应写出后再断开（避免 RST 吞掉响应）')
 
+/* ══════════ issue #1：上传上限与超时（2026-11-10） ══════════
+ * 三个回归点，任一被改回去都会让「大文件上传反复失败」复现：
+ *   ① 上限口径必须唯一（settings.json），上传路由不得再写死常量；
+ *   ② 超时必须显式放大（Node 默认 5 分钟会掐断大文件）；
+ *   ③ 前端必须有字节进度与真重试（否则用户看不到进展、失败只能重选文件）。 */
+console.log('\n── 上传上限与超时（issue #1） ──')
+
+const filesSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files', 'src', 'index.ts'), 'utf8')
+const settingsSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell-settings', 'src', 'index.ts'), 'utf8')
+ok(/async uploadLimitBytes\(\)/.test(coreSrc), 'core 提供 uploadLimitBytes()（上限的单一事实来源）')
+ok(/maxUploadMB:\s*0/.test(settingsSrc), '设置默认 maxUploadMB = 0（不限），与 uploadLimitBytes 口径一致')
+ok(/svc\.uploadLimitBytes\(\)/.test(filesSrc), '上传路由实时读取设置，而不是用常量')
+ok(!/MAX_UPLOAD_BYTES/.test(filesSrc), '上传路由不得再直接引用 2GB 常量（否则设置形同虚设）')
+ok(/replyUploadTooLarge/.test(filesSrc) && /'文件过大'/.test(filesSrc),
+  '超限返回带「文件过大」的 413 JSON（不是断连后的「网络错误」）')
+ok(/requestTimeout:\s*REQUEST_TIMEOUT_MS/.test(wsSrc),
+  'HTTP 服务显式设置 requestTimeout（Node 默认 5 分钟会掐断大文件上传）')
+
+const uploadClientSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files-upload', 'client', 'index.js'), 'utf8')
+const queueClientSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files-upload-queue', 'client', 'index.js'), 'utf8')
+ok(/XMLHttpRequest/.test(uploadClientSrc) && /upload\.onprogress/.test(uploadClientSrc),
+  '上传走 XHR 并提供字节级进度（fetch 没有上传进度事件）')
+ok(/UPLOAD_RETRY_MAX/.test(uploadClientSrc) && /upload:retry-failed/.test(uploadClientSrc),
+  '失败项自动退避重试 + 支持真·重试（复用 File 句柄）')
+ok(/bus\.emit\('upload:retry-failed'\)/.test(queueClientSrc), '队列的「重试」发出 upload:retry-failed（真重试）')
+ok(!/bus\.emit\('upload:request'\)/.test(queueClientSrc), '队列不得再用「重新打开文件选择框」冒充重试')
+
 /* ══════════ S16：首屏可登录（防死锁） ══════════ */
 console.log('\n── S16 首屏可登录守卫 ──')
 

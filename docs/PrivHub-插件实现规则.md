@@ -190,7 +190,7 @@ export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component }
 
 ### 3.1 privhub-core · 共享服务枢纽
 - **职责**：唯一持有共享状态（账号/会话/回收站持久化、data-files 文件根、权限判定）。**不暴露任何 HTTP 接口**，接口按域归属各业务插件。
-- **提供基座能力**：`svc.route()`（复用自研 webServer 注册路由）、`svc.requireUser()`、`svc.canAccess(u, project)`、`svc.visibleProjects(u)`、`svc.listFiles()`、`svc.readFileForPreview()`、`svc.isValidName()`、`svc.resolveInProject()`、`svc.createFolder()`、`svc.moveToTrash()`、`svc.renameEntry()`；HTTP 工具 `json/readBody/readBodyRaw/MAX_UPLOAD_BYTES`。
+- **提供基座能力**：`svc.route()`（复用自研 webServer 注册路由）、`svc.requireUser()`、`svc.canAccess(u, project)`、`svc.visibleProjects(u)`、`svc.listFiles()`、`svc.readFileForPreview()`、`svc.isValidName()`、`svc.resolveInProject()`、`svc.createFolder()`、`svc.moveToTrash()`、`svc.renameEntry()`；HTTP 工具 `json/readBody/readBodyRaw`；上传上限走 `svc.uploadLimitBytes()`（读 `settings.maxUploadMB`，0=不限；`MAX_UPLOAD_BYTES` 仅作配置损坏时的保守回落值）。
 - **子插件挂载约定**：core 无 client，子插件均为"后端能力"，在 `src/index.ts` 中扩展 `ctx.privhub` 方法，供其他枢纽复用。
 - **状态**：✅ 已实现（494 行）。新增子能力（如防病毒扫描）只扩展服务方法，不动现有逻辑。
 
@@ -276,7 +276,7 @@ export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component }
 | B7 | 文件预览 | 🟢 | ✅ | 后端 preview/preview-raw 已落地；client 挂 `preview`；Office 由 `files-office` / `files-office-ui` / `files-office2` 三档承载（Markdown 转换 / 人工编辑 / 原生观感+独占锁） | 打开文件在中间内容区渲染；右侧详情面板显示类型/大小/时间/路径 |
 | B8 | 搜索（文件名） | 🟢 | ✅ | `privhub-files-search`（后端 1 路由 + `search-view`），复用 `listFiles` 递归；**必须带 project 参数**（防全局越权感） | 顶栏搜索入口开视图；输入即筛选当前项目文件 |
 | B10 | 批量操作 | 🟢 | ✅ | 复用 delete/rename/move；client 行首多选 + 顶部批量工具栏 | 勾选多个 → 批量移动/删除/下载 |
-| B11 | 拖拽上传 + 递归上传 | 🟢 | ✅ | 后端 upload 已落地（raw body ≤2GB，同名覆盖）；client `privhub-files-upload`（纯前端，挂 `upload`）拖拽整个文件夹递归建目录并上传 | 拖文件夹进面板 → 保持目录结构上传 |
+| B11 | 拖拽上传 + 递归上传 | 🟢 | ✅ | 后端 upload 已落地（流式落盘，上限读 `settings.maxUploadMB`，默认 0=不限，超限回 413；同名覆盖）；client `privhub-files-upload`（纯前端，挂 `upload`）拖拽整个文件夹递归建目录并上传 | 拖文件夹进面板 → 保持目录结构上传 |
 | B12 | 上传进度队列 | 🟢 | ✅ | `privhub-files-upload-queue`（纯前端，挂 `upload-queue`）逐条进度，失败重试 | 上传时浮现队列抽屉，进度条 + 失败重试按钮 |
 | C14 | Markdown 在线编辑 | 🟠 | ✅ | `privhub-files-edit-md`（后端 4 路由 + `md-editor` slot）：frontmatter + 双链 + 版本历史 20 版 + 冲突检测 | 打开 .md 进编辑视图，左编辑右预览，Ctrl+S 保存生成版本 |
 | C15 | 内容全文搜索 | 🟠 | ✅ | `privhub-files-fulltext`（后端 1 路由）：BM25 + CJK bigram 索引，snippet 高亮，项目内检索 | 搜索视图切换"文件名/全文"，全文返回命中片段 |

@@ -33,9 +33,26 @@ export interface WebServerConfig {
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024
 
 /**
+ * 请求超时（毫秒）。
+ *
+ * Node 18+ 的 `requestTimeout` 默认 300 秒（5 分钟）—— 从收到首字节算起，
+ * 不管请求有没有在动。局域网里传一个几 GB 的视频远超 5 分钟，连接会被
+ * 服务端直接掐断，前端只看到「网络中断」，重试也必然再失败
+ * （GitHub issue #1 里「视频上传反复失败」就是这个默认值造成的）。
+ *
+ * 这里只设「有上限的大值」而不是关掉（0 = 不限）：
+ * 关掉会让被遗弃的半开连接永久占着句柄，反过来又成了新的失败源。
+ * 6 小时足够 100Mbps 局域网传 200GB；headersTimeout 仍保持 60 秒，
+ * 慢速攻击（只发头不传体）照样会被断开。
+ */
+const REQUEST_TIMEOUT_MS = 6 * 60 * 60 * 1000
+const HEADERS_TIMEOUT_MS = 60 * 1000
+
+/**
  * 自带上限的路由：不参与全局 body 上限预检，由插件内部按各自契约校验。
  *
- * - `/privhub/api/upload`：流式落盘，上限 2GB（files 插件内校验）
+ * - `/privhub/api/upload`：流式落盘，上限来自 `data/settings.json` 的
+ *   `maxUploadMB`（0 = 不限，默认），每次上传实时读取（`uploadLimitBytes()`）。
  * - `/privhub/api/agent/v1/write`：Agent API 二进制写入，契约上限 200MB
  *   （files-agent 的 LIMITS.writeBinaryMax），超出时返回带 code 的 413 信封。
  *   若纳入全局 16MB 预检会【破坏已发布接口契约】，故必须豁免。
@@ -281,7 +298,12 @@ export class WebServerService extends Service {
     const routes = this.routes
     const self = this
     const maxBody = this.maxBodyBytes
-    this.server = createServer((req, res) => {
+    /* 超时显式设置：默认 5 分钟会掐断大文件上传（详见 REQUEST_TIMEOUT_MS 注释）。
+     * 其余 createServer 行为不变（keep-alive / headers 默认策略保留）。 */
+    this.server = createServer({
+      requestTimeout: REQUEST_TIMEOUT_MS,
+      headersTimeout: HEADERS_TIMEOUT_MS,
+    }, (req, res) => {
       void (async () => {
         try {
           const url = new URL(req.url ?? '/', 'http://localhost')

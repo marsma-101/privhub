@@ -34,7 +34,9 @@ export interface Settings {
 const DEFAULT_SETTINGS: Settings = {
   theme: 'light',
   defaultView: 'grid',
-  maxUploadMB: 2048,
+  /* 0 = 不限（主人方向：单个文件不设上限）。上限的唯一事实来源是这里 ——
+   * privhub-core 的 uploadLimitBytes() 每次上传读取本文件，上传路由不再写死 2GB。 */
+  maxUploadMB: 0,
   allowSelfRegister: true,
 }
 
@@ -84,7 +86,7 @@ export function apply(ctx: Context): void {
       const merged: Settings = { ...cur }
       if (body.theme === 'light' || body.theme === 'dark') merged.theme = body.theme
       if (body.defaultView === 'grid' || body.defaultView === 'list') merged.defaultView = body.defaultView
-      if (typeof body.maxUploadMB === 'number' && body.maxUploadMB >= 1 && body.maxUploadMB <= 8192) merged.maxUploadMB = Math.floor(body.maxUploadMB)
+      if (typeof body.maxUploadMB === 'number' && body.maxUploadMB >= 0 && body.maxUploadMB <= 8192) merged.maxUploadMB = Math.floor(body.maxUploadMB)
       if (typeof body.allowSelfRegister === 'boolean') merged.allowSelfRegister = body.allowSelfRegister
       await saveSettings(ctx.storage, merged)
       return merged

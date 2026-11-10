@@ -14,7 +14,7 @@ const SettingsPanel = {
   data() {
     return {
       theme: THEME,
-      maxUploadMB: 2048,
+      maxUploadMB: 0,
       allowSelfRegister: true,
       saved: false,
       myName: '',
@@ -192,11 +192,15 @@ const SettingsPanel = {
             </div>
           </div>
           <div v-if="isAdmin" style="margin-top:20px">
-            <div style="font-size:13px;color:var(--muted);margin-bottom:12px">上传限制（MB）</div>
+            <div style="font-size:13px;color:var(--muted);margin-bottom:12px">单文件上传上限（MB）</div>
             <div class="field" style="display:flex;gap:8px">
-              <input v-model.number="maxUploadMB" type="number" min="1" max="8192" style="flex:1" />
+              <input v-model.number="maxUploadMB" type="number" min="0" max="8192" style="flex:1" />
               <button class="btn btn-primary" style="width:auto" @click="saveUploadLimit">保存</button>
               <span v-if="saved" style="color:var(--warn);font-size:12px;line-height:38px">已保存</span>
+            </div>
+            <div class="field-hint">
+              0 = 不限（默认）；此上限由上传路由实时读取，改完立即生效。
+              {{ maxUploadMB > 0 ? '当前上限：' + maxUploadMB + ' MB（超出会返回 413 并明确提示）' : '当前不限制单个文件大小。' }}
             </div>
           </div>
           <div v-if="isAdmin" style="margin-top:20px">

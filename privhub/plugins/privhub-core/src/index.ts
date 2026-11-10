@@ -65,7 +65,15 @@ export interface TrashRecord {
   deletedAt: number
 }
 
-/** 单文件上传大小上限（2GB，受 Node Buffer 上限约束）。 */
+/**
+ * 上传上限的**保守回落值**（2GB）。
+ *
+ * 正常上限不再写死在这里：它来自 `data/settings.json` 的 `maxUploadMB`
+ * （0 = 不限），由 `PrivHubStore.uploadLimitBytes()` 在每次上传时读取 ——
+ * 否则管理员在设置面板把上限调到 4GB/8GB 也不会生效（旧实现的实际缺陷）。
+ * 这个常量只在「settings.json 存在但读/解析失败」时兜底，避免损坏的配置
+ * 把原本设过的小上限静默放开成无限。
+ */
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 /** 文本在线预览的体积上限（10 MB）。
@@ -371,6 +379,30 @@ export class PrivHubStore extends Service {
     this.trashFile = join(this.dataDir, 'trash.json')
     this.trashDir = join(this.dataRoot, '.trash')
     this.sessionTtlMs = (config.sessionTtlDays > 0 ? config.sessionTtlDays : 7) * 24 * 3600 * 1000
+  }
+
+  /**
+   * 单文件上传上限（字节）。**唯一事实来源 = `data/settings.json` 的 `maxUploadMB`**，
+   * 返回 0 表示不限。
+   *
+   * 为什么放在 core：`privhub-shell-settings`（L3）负责写设置，`privhub-files`（L1）
+   * 负责上传，两者不能互相 import；由 core 在请求时读同一份文件，避免「设置面板
+   * 允许 8GB、上传路由却仍硬编码 2GB」的口径分裂（GitHub issue #1 P0#3）。
+   *
+   * 文件不存在（从未改过设置）=> 不限（与 settings 默认 0 一致）；
+   * 文件存在但读/解析失败 => 保守回落 2GB，绝不因配置损坏而静默放开上限。
+   */
+  async uploadLimitBytes(): Promise<number> {
+    const file = join(this.dataDir, 'settings.json')
+    if (!existsSync(file)) return 0
+    try {
+      const raw = await this.ctx.storage.readText(file)
+      const mb = Number((JSON.parse(raw) as { maxUploadMB?: unknown }).maxUploadMB)
+      if (!Number.isFinite(mb) || mb <= 0) return 0
+      return Math.floor(mb) * 1024 * 1024
+    } catch {
+      return MAX_UPLOAD_BYTES
+    }
   }
 
   /** 注册一条 exact 路由（业务插件共用入口，可随插件停用回收）。

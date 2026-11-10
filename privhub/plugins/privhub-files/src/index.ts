@@ -11,8 +11,9 @@ import { writeFile, stat, rename, unlink } from 'node:fs/promises'
 import { join, resolve, extname, sep, basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody, MAX_UPLOAD_BYTES } from '../../privhub-core/src/index'
+import { json, readBody } from '../../privhub-core/src/index'
 import { isMediaExt } from '../../privhub-core/src/file-exts'
 import { parseSingleRange } from '../../privhub-core/src/http-range'
 import { NEAR_MAX_BYTES } from '../../privhub-svc-dup/src/core'
@@ -23,6 +24,61 @@ export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock', 'cap',
 /** Y 批：名字级操作（重命名/移动/删除）撞上他人编辑锁时的统一文案。 */
 function busyMsg(holder: string): string {
   return '文件正被 ' + holder + ' 修改，请稍后重试'
+}
+
+/** 上传超限（内置状态码，路由据此回 413 而不是笼统的 400）。 */
+class UploadTooLargeError extends Error {
+  readonly status = 413 as const
+  constructor(readonly limitBytes: number) {
+    super('文件过大（当前上限 ' + formatUploadSize(limitBytes) + '）')
+    this.name = 'UploadTooLargeError'
+  }
+}
+
+/** 人类可读的体积（用于「上限 8GB / 本次 9.2GB」这类可行动提示）。 */
+function formatUploadSize(bytes: number): string {
+  const GiB = 1024 * 1024 * 1024
+  const MiB = 1024 * 1024
+  if (bytes >= GiB) {
+    const v = bytes / GiB
+    return (Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)) + 'GB'
+  }
+  if (bytes >= MiB) {
+    const v = bytes / MiB
+    return (Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)) + 'MB'
+  }
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + 'KB'
+  return bytes + 'B'
+}
+
+/**
+ * 超限时**先回 413 JSON，等响应真正写出后再断开请求**。
+ *
+ * 旧实现先 `req.destroy()` 再 `json(400)`：连接已经没了，那句「文件过大」永远
+ * 到不了浏览器，客户端只能看到「网络错误」，于是反复重传同一个大文件
+ * （GitHub issue #1 P0#2）。这里沿用 web-server `rejectTooLarge` 的证明过
+ * 的顺序：res.end 回调里才 destroy。客户端（XHR）因此能读到 413 与真实原因。
+ */
+function replyUploadTooLarge(req: IncomingMessage, res: ServerResponse, limitBytes: number, actualBytes?: number): void {
+  const sizeText = actualBytes !== undefined && Number.isFinite(actualBytes)
+    ? '文件大小 ' + formatUploadSize(actualBytes) + '，'
+    : ''
+  const payload = JSON.stringify({
+    ok: false,
+    error: '文件过大：' + sizeText + '当前上限 ' + formatUploadSize(limitBytes)
+      + '。管理员可在「系统设置 → 单文件上传上限」调整（0 = 不限），或压缩后再传。',
+  })
+  try {
+    res.writeHead(413, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      connection: 'close',
+      'x-content-type-options': 'nosniff',
+    })
+    res.end(payload, () => req.destroy())
+  } catch {
+    req.destroy()
+  }
 }
 
 /**
@@ -234,6 +290,19 @@ export function apply(ctx: Context): void {
       if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) {
         return json(res, 400, { ok: false, error: '文件名过长（中文约 60 字以内），请缩短后重试' })
       }
+      /* 上传上限与设置面板同源：0 = 不限（默认）。每次上传实时读取，
+       * 管理员改完设置立即生效，不再有「设置写 8GB、路由仍卡 2GB」的分裂。 */
+      const limitBytes = await svc.uploadLimitBytes()
+      if (limitBytes > 0) {
+        const declared = Number(req.headers['content-length'])
+        if (Number.isFinite(declared) && declared > limitBytes) {
+          /* 绝大多数客户端都带 content-length：在读取请求体之前就拒绝，
+           * 既不浪费流量，也能稳定把 413 送达（不必等流式超限再处理）。 */
+          void audit(u, 'upload_fail', project + '/' + (subPath ? subPath + '/' : '') + name,
+            'too_large size=' + declared + ' limit=' + limitBytes)
+          return replyUploadTooLarge(req, res, limitBytes, declared)
+        }
+      }
       // S7 安全加固：realpath 校验防 junction 目录写穿越
       const dir = await svc.resolveReal(project, subPath)
       if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
@@ -271,11 +340,16 @@ export function apply(ctx: Context): void {
               if (buffered + c.length > NEAR_MAX_BYTES) { tooBigForNear = true; chunks.length = 0; buffered = 0 }
               else { chunks.push(c); buffered += c.length }
             }
-            if (written > MAX_UPLOAD_BYTES && !aborted) {
+            /* chunked / 无 content-length 的客户端走流式兜底。
+             * 关键区别：这里**不再 req.destroy()** —— 先让 catch 分支把 413
+             * 写出去（res.end 回调里才断开），客户端才能看到真实原因。
+             * 停止读入时 unpipe + pause，避免把剩余字节继续灌进已销毁的流。 */
+            if (limitBytes > 0 && written > limitBytes && !aborted) {
               aborted = true
               ;(stream as import('node:stream').Writable).destroy()
-              req.destroy()
-              fail(new Error('文件过大（超过 2GB 上限）'))
+              req.unpipe(stream as import('node:stream').Writable)
+              req.pause()
+              fail(new UploadTooLargeError(limitBytes))
             }
           })
           req.on('error', (e) => { if (!aborted) { aborted = true; (stream as import('node:stream').Writable).destroy(); fail(e) } })
@@ -306,6 +380,11 @@ export function apply(ctx: Context): void {
     } catch (e) {
       // JT-05：不经 err.message 直传，避免 errno/绝对路径泄漏到界面（见 uploadErrorText）
       ctx.logger?.warn?.('[upload] 失败：' + (e instanceof Error ? e.message : String(e)))
+      /* 流式超限：临时文件已在 promise 的 catch 里清理；这里先写 413，再断连接。 */
+      if (e instanceof UploadTooLargeError) {
+        replyUploadTooLarge(req, res, e.limitBytes)
+        return
+      }
       json(res, 400, { ok: false, error: uploadErrorText(e) })
     }
   }, 'upload')
