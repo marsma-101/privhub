@@ -40,7 +40,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /** 出网的单个功能视图（界面直接渲染）。 */
 export interface FeatureView extends FeatureSpec {
@@ -59,7 +59,7 @@ export class CapService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'cap')
     const f = config.file.trim()
-    this.file = f === '' ? join(rootDir, 'data', 'capabilities.json') : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', 'capabilities.json') : resolve(f)
     this.table = defaultTable()
     void this.load().catch(() => { /* 失败已在 load 内记录并置标志 */ })
   }

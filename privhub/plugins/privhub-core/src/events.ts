@@ -103,6 +103,23 @@ export interface RosterChangedPayload {
   total: number
 }
 
+/**
+ * 蓝绿待命槽被控制层激活（解除 standby）。
+ *
+ * **内部生命周期事件，不进 Webhook 目录**：它描述的是「进程切换」而不是
+ * 「用户数据变化」，外部订阅者拿到它没有任何可执行语义。emit 方是 core，
+ * 监听方是那些在 core 之前挂载、拿不到 `ctx.privhub.standby` 的 L2 服务
+ * （目前是 svc-audit 的定时清理）。
+ */
+export interface RuntimeActivatedPayload {
+  /** 激活时刻（毫秒）。 */
+  at: number
+  /** 新活跃槽的进程号（控制层据此核对是否切到了预期进程）。 */
+  pid: number
+  /** 本次激活执行的延后钩子数量（0 = 该槽没有需要延后的后台任务）。 */
+  hooks: number
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** 审计条目落盘后广播（S1 闭环：内存环形缓冲等实时消费方）。 */
@@ -121,5 +138,7 @@ declare module '@deepseek-ai/cordis' {
     'dashboard:changed': (payload: DashboardChangedPayload) => void
     /** 智能体名册（全局一份）变更。 */
     'roster:changed': (payload: RosterChangedPayload) => void
+    /** 蓝绿待命槽被激活（内部生命周期事件，不进 Webhook 目录）。 */
+    'runtime:activated': (payload: RuntimeActivatedPayload) => void
   }
 }

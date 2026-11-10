@@ -70,7 +70,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /** 一个仍以明文落盘的系统数据文件。 */
 export interface PlaintextFile {
@@ -106,7 +106,7 @@ export class StorageService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'storage')
     this.enabled = config.enabled
-    this.keyFile = config.keyFile.trim() === '' ? join(rootDir, 'data', 'secret.key') : config.keyFile
+    this.keyFile = config.keyFile.trim() === '' ? join(dataRootDir, 'data', 'secret.key') : config.keyFile
     // 审计块 magic 固定 8 字节（不足补 NUL，与文件头对齐）
     this.auditMagic = Buffer.from((config.auditMagic || 'PHAUD1\0').padEnd(8, '\0'), 'utf8')
   }
@@ -542,8 +542,8 @@ export class StorageService extends Service {
     if (basename(norm).toLowerCase().startsWith('audit')) {
       return '这是审计文件（自有 PHAUD1 加密块格式），再包一层 PHENC1 后 auditScan 读不出任何块'
     }
-    if (under(join(rootDir, 'data', 'logs'))) return '应用日志是明文追加的，加密后会与后续追加内容混成乱码'
-    if (under(join(rootDir, 'data', 'git-backup'))) return '这是 git 仓库内部文件，加密会毁掉自动备份'
+    if (under(join(dataRootDir, 'data', 'logs'))) return '应用日志是明文追加的，加密后会与后续追加内容混成乱码'
+    if (under(join(dataRootDir, 'data', 'git-backup'))) return '这是 git 仓库内部文件，加密会毁掉自动备份'
     return null
   }
 
@@ -555,7 +555,7 @@ export class StorageService extends Service {
    * （守卫拒绝项由 `migrateFilesToEncrypted` 显式报告，不在这里吞掉）。
    */
   async scanPlaintextSystemFiles(): Promise<PlaintextFile[]> {
-    const dir = join(rootDir, 'data')
+    const dir = join(dataRootDir, 'data')
     let entries: Dirent[]
     try { entries = await readdir(dir, { withFileTypes: true }) } catch { return [] }
     const out: PlaintextFile[] = []

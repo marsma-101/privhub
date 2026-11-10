@@ -26,8 +26,8 @@ import { WIKI_LINK_RE } from '../../privhub-svc-links/src/linkparse'
 
 const execFileP = promisify(execFile)
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const TMP_DIR = join(rootDir, 'data', 'export-tmp')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const TMP_DIR = join(dataRootDir, 'data', 'export-tmp')
 const MAX_BYTES = 512 * 1024
 
 /** 候选无头浏览器（Windows 常见路径）。 */

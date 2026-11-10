@@ -83,8 +83,11 @@ because cordis services must exist before their consumers `inject` them:
    sorted by directory name, skipping names starting with `_` (e.g. `_retired-v2`).
    Installing/removing a feature = adding/removing a directory. No edit to `main.ts`.
 
-`PRIVHUB_ROOT` anchors every data path anywhere in the codebase. Unset ⇒ `process.cwd()`.
-This is why `start.bat` sets it and why tests spawn with `cwd` inside a scratch root.
+`PRIVHUB_ROOT` anchors the **code** root (plugin discovery, frontend, `node_modules`).
+`PRIVHUB_DATA_ROOT` anchors every **data** path (`data/`, `data-files/`, `secret.key`);
+unset ⇒ `PRIVHUB_ROOT`, which in turn unset ⇒ `process.cwd()`. Blue-green slots run from
+different release dirs but must share one data root, so this split is load-bearing: never
+use `PRIVHUB_ROOT` for data paths in new code.
 
 Client-only plugins (a `client/` dir with no `src/index.ts`) are never mounted
 server-side; they contribute UI only.
@@ -140,7 +143,8 @@ Extension points that are easy to miss:
   there silently bypasses ACL.**
 - **Events** — declare with `ctx.eventBus.declareEmit/declareListen`. The registry
   (`privhub-svc-events`) documents the live contracts: `audit:logged`, `file:changed`,
-  `file:saved`, `meta:changed`.
+  `file:saved`, `meta:changed`. `runtime:activated` is internal lifecycle (activation of
+  a standby slot) and deliberately not in the Webhook catalog.
 
 ### Identity, sessions, permissions
 
@@ -184,6 +188,31 @@ Audit records append as independently encrypted blocks, so `auditScan()` returns
 block-level integrity stats. If those stats are dropped, corruption becomes invisible —
 that failure mode already happened once (a 446 MB damaged store).
 
+### Blue-green runtime (optional deployment)
+
+`privhub/runtime/` is a **stable layer** that never ships inside a release: `control.mjs`
+(plain Node builtins), `update.mjs`, `nginx.conf.template`, and the vendored `nginx/` binary.
+It runs two release slots (`blue`/`green`, 127.0.0.1:3301/3302) behind nginx (public 3181),
+sharing one `PRIVHUB_DATA_ROOT`. Each release is a self-contained dir under `releases/<ver>/`
+built by `scripts/build-release.mjs`; `runtime/update.mjs` fetches new ones and asks control
+to switch — it never stops slots itself.
+
+Switch order (enforced by `tests/runtime-contract.mjs`): prewarm target in **standby**
+(`PRIVHUB_STANDBY=1`, no background writers) → freeze old slot → drain in-flight writes →
+`POST /privhub/api/runtime/reload` (re-read users/sessions/ACL/cap/meta/links/dup/model from
+disk) → `POST /privhub/api/runtime/activate` (run deferred hooks, emit `runtime:activated`)
+→ persist `active.json` → nginx reload → SSE broadcast → stop old slot. Any newly added
+periodic writer **must** be wrapped in `ctx.privhub.onActivate(...)`; an L2 service mounted
+before core listens for `runtime:activated`. A new in-memory writable state must expose
+`reload()` and be added to `main.ts`'s reload list — otherwise the prewarmed slot serves stale
+data.
+
+nginx writes `privhub_client_version=<release>` on `/index.html` and 409s non-GET requests
+carrying an old cookie (`PRIVHUB_CLIENT_STALE`); `frontend/index.html` subscribes to
+`/privhub/_version/stream` and shows a blocking refresh modal. Login/register/agent routes
+are exempt. Direct `npm run dev` has no control layer, so `/privhub/_version` returns
+`managed:false` and the gate stays off.
+
 ### Frontend
 
 `privhub/frontend/index.html` is the entire skeleton: Vue 3 global build, a single
@@ -192,6 +221,8 @@ properties for the two themes. Everything else is a plugin.
 
 Boot sequence and why it is shaped this way:
 
+0. Version handshake: `GET /privhub/_version` vs the `privhub_client_version` cookie, then
+   SSE `/privhub/_version/stream` when managed. Stale ⇒ blocking refresh modal (see above).
 1. Exchange any stored token for a session cookie (`/privhub/api/me`).
 2. Fetch `/privhub/api/shell/manifest` — **unconditionally, including when logged out**.
    The login form is itself a plugin, so the endpoint returns a reduced manifest
@@ -213,8 +244,8 @@ accumulate in an array. Slots declared by manifests today: `auth`, `project-tabs
 plugin, which renders the `admin-*` slots itself. Adding a *new* slot name means editing
 `index.html`; reusing an existing one does not.
 
-`window.PrivHub` is the only cross-plugin channel: `api()`, `AUTH`, `THEME`, `nav`, `bus`,
-`toast`, `badges`, `fileIcon`, plus `openSettings/openAdmin/openAcl/...` shortcuts.
+`window.PrivHub` is the only cross-plugin channel: `api()`, `AUTH`, `THEME`, `VERSION`, `nav`,
+`bus`, `toast`, `badges`, `fileIcon`, plus `openSettings/openAdmin/openAcl/...` shortcuts.
 
 Because components use string `template:` (runtime compilation), the CSP must keep
 `unsafe-eval`. Removing it white-screens every plugin.

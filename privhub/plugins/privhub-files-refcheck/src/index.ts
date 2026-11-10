@@ -28,8 +28,8 @@ import { LIMITS, mapLimit, mergeReports, reportToCsv, scanProject, type Report }
 export const name = 'privhub-files-refcheck'
 export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus', 'links']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const BOARDS_DIR = join(rootDir, 'data', 'taskboards')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const BOARDS_DIR = join(dataRootDir, 'data', 'taskboards')
 
 interface User { username: string; role: string; projects?: string[] }
 

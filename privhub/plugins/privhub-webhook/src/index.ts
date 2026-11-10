@@ -63,9 +63,9 @@ const LISTEN = [
   'audit:logged', 'task:changed', 'dashboard:changed', 'roster:changed',
 ] as const
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const CFG_FILE = join(rootDir, 'data', 'webhooks.json')
-const LOG_FILE = join(rootDir, 'data', 'webhook-log.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const CFG_FILE = join(dataRootDir, 'data', 'webhooks.json')
+const LOG_FILE = join(dataRootDir, 'data', 'webhook-log.json')
 
 /** 订阅配置文件的形状（严格读取时的 check）。 */
 function looksLikeStore(v: unknown): boolean {

@@ -121,6 +121,7 @@
       --z-modal-top: 1150;  /* 模态之上的收尾元素（灯箱关闭按钮） */
       --z-panel: 1300;      /* 管理后台弹层 */
       --z-toast: 1400;      /* 全局提示条 */
+      --z-stale: 2000;      /* 版本过期阻断层：压过所有业务弹层，仅低于安全水印 */
       --z-watermark: 2100;  /* 防截屏水印：安全功能，恒在最上 */
       /* 界面缩放：由 设置 → 外观 写入，既有的用户可调项（不要并进上面的刻度） */
       --ui-zoom: 1;
@@ -522,6 +523,12 @@
     .EasyMDEContainer .CodeMirror .cm-quote { color: var(--muted); font-style: italic; }
     .EasyMDEContainer .CodeMirror .cm-link { color: var(--accent); }
     .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: var(--z-modal); }
+    /* 蓝绿热更新：旧页面阻断层。必须压过 md/office 编辑器与所有业务弹层，
+     * 否则用户能在「已过期」的页面上继续点写操作（请求会被后端 409 拒绝）。 */
+    .privhub-version-mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: var(--z-stale); }
+    .privhub-version-card { width: 420px; max-width: 92vw; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-4); padding: var(--sp-5); box-shadow: var(--sh-3); text-align: center; }
+    .privhub-version-title { font-size: var(--fs-lg); font-weight: 600; margin-bottom: var(--sp-3); }
+    .privhub-version-text { font-size: var(--fs-base); color: var(--muted); line-height: 1.7; margin-bottom: var(--sp-5); }
     .modal { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-4); width: 460px; max-width: 92vw; max-height: 86vh; padding: 22px; box-shadow: var(--sh-3); display: flex; flex-direction: column; }
     .modal h2 { font-size: 16px; margin-bottom: var(--sp-4); }
     .modal-body { flex: 1; overflow-y: auto; }
@@ -670,12 +677,145 @@
     })
     const THEME = reactive({ theme: localStorage.getItem('privhub_theme') || 'light' })
 
+    /* ============================================================
+     * 蓝绿热更新：版本握手与「旧页面阻断」
+     *
+     * 事实链：
+     *   - nginx 在 /index.html 响应上原子写入 privhub_client_version Cookie
+     *     （值 = 提供这份 HTML 的 release 版本）；
+     *   - 控制层在 /privhub/_version 暴露当前活跃版本，并通过 SSE 广播切换；
+     *   - nginx 对「携带旧版本 Cookie 的非 GET 请求」直接 409。
+     *
+     * 前端职责：
+     *   - 启动时比较「本页版本（Cookie）」与「当前版本」，不一致立即阻断；
+     *   - 订阅 SSE，切换一完成就弹阻断层，让用户刷新（而不是等用户自己发现）；
+     *   - api() 在阻断态下直接拒绝本地写请求；全局 fetch 捕获 409 兜底
+     *     （插件里大量上传/下载走原生 fetch，不经过 api()）。
+     * ============================================================ */
+    const VERSION = reactive({
+      current: '',      // 本页面 HTML 所属的 release 版本（由 nginx Cookie 写入）
+      server: '',       // 控制层当前活跃版本
+      stale: false,     // 本页面是否已过期（阻断层可见）
+      managed: false,   // true = 经 nginx + 常驻控制层（蓝绿部署）
+      checked: false,
+      switchedAt: null,
+    })
+
+    function versionsDiffer(a, b) {
+      return typeof a === 'string' && typeof b === 'string' && a !== '' && b !== '' && a !== b
+    }
+
+    function markVersionStale(cause) {
+      if (VERSION.stale) return
+      VERSION.stale = true
+      console.warn('[version] 当前页面已过期，需刷新：' + (cause || ''))
+    }
+
+    function readVersionCookie() {
+      try {
+        const m = document.cookie.match(/(?:^|;\s*)privhub_client_version=([^;]*)/)
+        return m ? decodeURIComponent(m[1]) : ''
+      } catch { return '' }
+    }
+
+    function setVersionCookie(v) {
+      if (!v) return
+      try { document.cookie = 'privhub_client_version=' + encodeURIComponent(v) + '; Path=/; SameSite=Lax' } catch { /* Cookie 被禁用 */ }
+    }
+
+    async function fetchVersionInfo() {
+      /* 2 秒上限：控制层/nginx 异常时不能把首屏一起拖死。 */
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null
+      const timer = setTimeout(() => { if (ctrl) ctrl.abort() }, 2000)
+      try {
+        const r = await fetch('/privhub/_version', {
+          method: 'GET',
+          cache: 'no-store',
+          headers: { accept: 'application/json' },
+          ...(ctrl ? { signal: ctrl.signal } : {}),
+        })
+        if (!r.ok) return null
+        const j = await r.json()
+        if (!j || typeof j.version !== 'string' || j.version === '') return null
+        return j
+      } catch { return null } finally { clearTimeout(timer) }
+    }
+
+    async function initVersionWatch() {
+      const info = await fetchVersionInfo()
+      if (!info) {
+        /* 直连 Node 的旧式启动或控制层暂不可用：不启用版本门，保持原有行为。 */
+        console.warn('[version] 版本服务不可用，跳过版本握手')
+        return
+      }
+      VERSION.managed = info.managed !== false
+      VERSION.server = info.version
+      VERSION.switchedAt = info.switchedAt || null
+      const cookieVer = readVersionCookie()
+      /* 本页版本优先取 Cookie（它跟随 HTML 响应写入）；缺失时退回当前版本，
+       * 并补写 Cookie 让 nginx 的写入门有依据。 */
+      VERSION.current = cookieVer || info.version
+      if (!cookieVer) setVersionCookie(info.version)
+      VERSION.checked = true
+      if (versionsDiffer(VERSION.current, VERSION.server)) {
+        markVersionStale('页面版本 ' + VERSION.current + ' ≠ 当前版本 ' + VERSION.server)
+        return
+      }
+      if (!VERSION.managed) return
+      try {
+        const es = new EventSource('/privhub/_version/stream')
+        const onVersion = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data || '{}')
+            if (typeof msg.version !== 'string' || msg.version === '') return
+            VERSION.server = msg.version
+            VERSION.switchedAt = msg.switchedAt || null
+            if (versionsDiffer(VERSION.current, msg.version)) {
+              markVersionStale('系统已更新到 ' + msg.version)
+            }
+          } catch { /* 坏帧忽略 */ }
+        }
+        es.addEventListener('hello', onVersion)
+        es.addEventListener('version', onVersion)
+        /* onerror：浏览器会自动重连；断线期间不做误判（控制层重启不代表版本变化）。 */
+      } catch (e) {
+        console.warn('[version] 版本事件流不可用:', e)
+      }
+    }
+
+    /* 原生 fetch 兜底：上传/下载等插件路径不经过 api()，但同样会被版本门 409。
+     * 只观察、不改写响应（clone 后解析 JSON，不消费原响应体）。 */
+    const nativeFetch = window.fetch.bind(window)
+    window.fetch = async function patchedFetch(input, init) {
+      const res = await nativeFetch(input, init)
+      try {
+        if (res.status === 409) {
+          res.clone().json().then((j) => {
+            if (j && j.code === 'PRIVHUB_CLIENT_STALE') markVersionStale(j.error || '服务端拒绝了旧页面请求')
+          }).catch(() => { /* 非 JSON 的 409 与版本无关 */ })
+        }
+      } catch { /* clone 失败不影响业务响应 */ }
+      return res
+    }
+
     function applyTheme() {
       document.documentElement.setAttribute('data-theme', THEME.theme)
       localStorage.setItem('privhub_theme', THEME.theme)
     }
 
     async function api(path, opts = {}) {
+      /* 旧页面写入手闸：切换后旧前端不可再发写请求（读请求仍放行，
+       * 让用户能继续浏览直到刷新）。登录/注册必须豁免——否则旧页面无法
+       * 重新登录会形成死锁；Agent 网关不带版本 Cookie，由 nginx 豁免。 */
+      const method = String(opts.method || 'GET').toUpperCase()
+      if (VERSION.stale && method !== 'GET' && method !== 'HEAD') {
+        const exempt = path.includes('/privhub/api/login')
+          || path.includes('/privhub/api/register')
+          || path.includes('/privhub/api/agent/')
+        if (!exempt) {
+          return { ok: false, code: 'PRIVHUB_CLIENT_STALE', error: '系统已更新，请刷新页面后重试' }
+        }
+      }
       const headers = { 'content-type': 'application/json', ...(opts.headers || {}) }
       if (AUTH.token) headers['authorization'] = 'Bearer ' + AUTH.token
       let res
@@ -691,7 +831,11 @@
         toast('登录已过期，请重新登录', 'warn')
       }
       try {
-        return await res.json()
+        const data = await res.json()
+        if (res.status === 409 && data && data.code === 'PRIVHUB_CLIENT_STALE') {
+          markVersionStale(data.error || '当前页面版本已被切换')
+        }
+        return data
       } catch {
         // 非 JSON 响应（网关/静态兜底）归一
         return { ok: false, error: '服务器返回异常（HTTP ' + res.status + '）' }
@@ -1160,7 +1304,7 @@
     }
 
     /* ============ 插件桥 ============ */
-    window.PrivHub = { api, AUTH, THEME, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
+    window.PrivHub = { api, AUTH, THEME, VERSION, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
     /* 图标栏角标（插件更新，骨架渲染） */
     window.PrivHub.badges = reactive({ trash: 0 })
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */
@@ -1258,6 +1402,7 @@
           for (const p of parts) { acc = acc ? acc + '/' + p : p; arr.push({ label: p, path: acc }) }
           return arr
         },
+        ver() { return VERSION },
       },
       watch: {
         // P2-3：输入模态打开时预填初始值
@@ -1275,6 +1420,8 @@
           if (fn) void fn(this.inputValue.trim())
         },
         cancelNavInput() { this.nav.inputState = null },
+        /* 版本阻断层的唯一动作：整页重载（重新拿到新版本 HTML + 新 Cookie） */
+        reloadNow() { window.location.reload() },
         /* 插件加载失败 / 首屏超时后的重试入口（清空错误状态后重新拉取 manifest 并 import） */
         async retryLoadPlugins() {
           this.failedPlugins = []
@@ -1370,6 +1517,10 @@
       },
       async mounted() {
         applyTheme()
+        /* 版本握手必须先于一切业务请求：确认「本页 HTML 属于当前活跃 release」。
+         * 若已过期（极少见：切换恰发生在 HTML 与脚本之间），后面所有写请求都会被
+         * nginx 409，提前知道就能直接弹刷新层。失败不影响启动（旧式直连启动无此服务）。 */
+        await initVersionWatch()
         /* 插件 client 加载：manifest → import() → 按 slot 注册（同 slot 可多组件，数组累积） */
         window.PrivHub.manifests = []
         const self = this
@@ -1643,6 +1794,20 @@
                 <button class="btn btn-ghost" @click="nav.closeHelp()">关 闭</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- 蓝绿更新版本阻断层：挂在 app 外层、与登录态无关。
+             切换后旧页面的写请求会被 nginx 409，这里给出唯一正确动作「刷新」。
+             读写均不经插件，避免插件弹层截获点击。 -->
+        <div v-if="ver.stale" class="privhub-version-mask" role="dialog" aria-modal="true" aria-labelledby="privhub-version-title">
+          <div class="privhub-version-card">
+            <div id="privhub-version-title" class="privhub-version-title">系统已更新</div>
+            <div class="privhub-version-text">
+              当前页面属于旧版本<span v-if="ver.current">（{{ ver.current }}）</span>，继续操作可能失败。<br>
+              刷新后即可继续使用，通常只需几秒。
+            </div>
+            <button class="btn btn-primary" style="width:auto" @click="reloadNow">立即刷新</button>
           </div>
         </div>
       `,

@@ -1,0 +1,165 @@
+# ============================================================
+# PrivHub nginx config template
+#
+# runtime/control.mjs rewrites the live config (config/nginx.conf) from
+# this template on every switch. Do not edit the generated file.
+#
+# Placeholders are filled by the control layer; paths are Windows-safe
+# (forward slashes, quoted) and version/plugin values are validated
+# before substitution.
+# ============================================================
+
+worker_processes auto;
+pid "{{HOME_DIR}}/logs/nginx.pid";
+error_log "{{HOME_DIR}}/logs/nginx-error.log" warn;
+
+events {
+    worker_connections 4096;
+}
+
+http {
+    include "{{NGINX_DIR}}/conf/mime.types";
+    default_type application/octet-stream;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    server_tokens off;
+
+    # 上传体积不由 nginx 限制：/privhub/api/upload 的 2GB 契约与 Agent 写入的
+    # 200MB 契约都由 Node 路由各自校验。nginx 只做无损转发。
+    client_max_body_size 0;
+
+    client_body_temp_path "{{HOME_DIR}}/tmp/nginx/client-body";
+    proxy_temp_path "{{HOME_DIR}}/tmp/nginx/proxy";
+    fastcgi_temp_path "{{HOME_DIR}}/tmp/nginx/fastcgi";
+    uwsgi_temp_path "{{HOME_DIR}}/tmp/nginx/uwsgi";
+    scgi_temp_path "{{HOME_DIR}}/tmp/nginx/scgi";
+
+    log_format privhub '$remote_addr - $remote_user [$time_local] "$request" '
+                       '$status $body_bytes_sent "$http_referer" '
+                       '"$http_user_agent" $request_time';
+    access_log "{{HOME_DIR}}/logs/nginx-access.log" privhub;
+
+    gzip on;
+    gzip_min_length 1024;
+    gzip_comp_level 5;
+    gzip_proxied any;
+    gzip_types text/plain text/css application/json application/javascript
+               text/javascript application/xml image/svg+xml;
+
+    # 蓝绿槽：同一时刻只有一个 release 在这个 upstream 上。
+    upstream privhub_active {
+        server 127.0.0.1:{{ACTIVE_PORT}};
+        keepalive 64;
+    }
+
+    # 版本门：页面加载时由前端写入 privhub_client_version Cookie。
+    # 没有 Cookie（登录页首次访问 / 外部 API 客户端）不拦；旧页面携带旧版本才拦。
+    map $cookie_privhub_client_version $privhub_version_match {
+        default 0;
+        "" 1;
+        "{{ACTIVE_VERSION}}" 1;
+    }
+
+    map "$request_method:$privhub_version_match" $privhub_write_allowed {
+        default 1;
+        "POST:0" 0;
+        "PUT:0" 0;
+        "PATCH:0" 0;
+        "DELETE:0" 0;
+    }
+
+    server {
+        listen {{PUBLIC_HOST}}:{{PUBLIC_PORT}};
+        server_name _;
+        charset utf-8;
+
+        # ---- 版本服务（由常驻控制层提供，切 release 时连接不断） ----
+        location /privhub/_version {
+            proxy_pass http://127.0.0.1:{{CONTROL_PORT}};
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header Connection "";
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            add_header Cache-Control "no-store" always;
+        }
+
+        # ---- API 豁免：登录/注册必须能在旧页面上完成；Agent 不带版本 Cookie ----
+        location = /privhub/api/login {
+{{API_PROXY_NO_GATE}}
+        }
+        location = /privhub/api/register {
+{{API_PROXY_NO_GATE}}
+        }
+        location /privhub/api/agent/ {
+{{API_PROXY_NO_GATE}}
+        }
+
+        # ---- 其余 API：旧页面写请求 409，正常请求反代到当前槽 ----
+        location /privhub/api/ {
+            default_type application/json;
+            if ($privhub_write_allowed = 0) {
+                return 409 '{"ok":false,"code":"PRIVHUB_CLIENT_STALE","error":"页面已过期：系统已更新，请刷新页面后重试"}';
+            }
+{{API_PROXY}}
+        }
+
+        # ---- 插件前端静态（从当前 release 直接读盘，不再经 Node） ----
+        # 声明 auth slot 的插件必须匿名可读（登录框本身由它们提供）。
+{{AUTH_PLUGIN_LOCATIONS}}
+        # 其余插件前端代码要求有效会话：nginx 只看到 Cookie 是否存在，
+        # 会话是否有效由 auth_request 交给 Node 判定（与业务接口同一条校验）。
+        location ~ ^/privhub-plugins/([^/]+)/(.+)$ {
+            auth_request /__privhub_auth;
+            alias "{{ACTIVE_RELEASE_DIR}}/plugins/$1/client/$2";
+            add_header Cache-Control "no-cache" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-PrivHub-Version "{{ACTIVE_VERSION}}" always;
+        }
+
+        location = /__privhub_auth {
+            internal;
+            proxy_pass http://privhub_active/privhub/api/session/check;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Host $host;
+            proxy_set_header Cookie $http_cookie;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header Connection "";
+            proxy_http_version 1.1;
+        }
+
+        # ---- 前端静态 ----
+        # 内部 rewrite 到 = /index.html，让那里的 CSP / 缓存头统一生效。
+        # （若在 = / 里用 try_files 直接命中文件，响应头只按该 location 计算，
+        #   /index.html 上写的安全头不会带上 —— 实测已踩到。）
+        location = / {
+            rewrite ^ /index.html last;
+        }
+        location = /index.html {
+            root "{{ACTIVE_RELEASE_DIR}}/frontend";
+            add_header Cache-Control "no-cache" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data; frame-ancestors 'self'" always;
+            add_header X-PrivHub-Version "{{ACTIVE_VERSION}}" always;
+            # 版本 Cookie 必须与「本次 HTML 响应所属的 release」原子绑定：
+            # 若改由前端脚本再写，会出现「旧 HTML 已返回、切换刚好完成、脚本读到新版本」
+            # 的竞态，旧页面会带着新版本 Cookie 被 nginx 当成有效页面放行写请求。
+            add_header Set-Cookie "privhub_client_version={{ACTIVE_VERSION}}; Path=/; SameSite=Lax" always;
+        }
+        location / {
+            root "{{ACTIVE_RELEASE_DIR}}/frontend";
+            try_files $uri =404;
+            add_header Cache-Control "no-cache" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-PrivHub-Version "{{ACTIVE_VERSION}}" always;
+        }
+    }
+}

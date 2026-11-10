@@ -275,8 +275,8 @@ export class WebServerService extends Service {
     }
   }
 
-  /** 启动 HTTP 服务。 */
-  async listen(port = this.config.port): Promise<void> {
+  /** 启动 HTTP 服务。host 缺省时监听全部网卡（旧行为）；蓝绿槽传 127.0.0.1。 */
+  async listen(port = this.config.port, host?: string): Promise<void> {
     if (this.server) return
     const routes = this.routes
     const self = this
@@ -342,8 +342,10 @@ export class WebServerService extends Service {
       })()
     })
     await new Promise<void>((ok, err) => {
+      const ready = (): void => { this.server!.off('error', err); ok() }
       this.server!.once('error', err)
-      this.server!.listen(port, () => { this.server!.off('error', err); ok() })
+      if (host) this.server!.listen(port, host, ready)
+      else this.server!.listen(port, ready)
     })
   }
 

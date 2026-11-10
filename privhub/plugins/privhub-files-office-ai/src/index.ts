@@ -26,8 +26,8 @@ import { readJsonStore } from '../../privhub-core/src/json-store'
 export const name = 'privhub-files-office-ai'
 export const inject = ['privhub', 'office', 'storage', 'audit', 'cap']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const KEYS_FILE = join(rootDir, 'data', 'office-api.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const KEYS_FILE = join(dataRootDir, 'data', 'office-api.json')
 
 function json(res: { writeHead: (n: number, h: Record<string, string>) => void; end: (s: string) => void }, status: number, body: unknown): void {
   const payload = JSON.stringify(body)

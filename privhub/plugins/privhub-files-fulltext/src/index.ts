@@ -127,8 +127,11 @@ export function apply(ctx: Context): void {
     return () => { offSaved(); offChanged() }
   })
 
-  /* ---- 启动全量构建（不阻塞监听） ---- */
-  void rebuild().catch(() => {})
+  /* ---- 全量构建（不阻塞监听） ----
+   * 蓝绿待命槽把这次全量扫描延后到激活：预热期间旧槽仍会改文件，此时扫出的
+   * 索引注定是过渡态；激活后再扫一次既省启动时间，也保证索引覆盖最终状态。 */
+  const offActivate = svc.onActivate(() => { void rebuild().catch(() => {}) })
+  ctx.effect(() => () => offActivate())
 
   /* ---- 全文检索接口 ---- */
   svc.route('/privhub/api/fulltext/search', async (req, res) => {

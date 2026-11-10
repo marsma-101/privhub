@@ -49,7 +49,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 interface MetaData {
   [project: string]: {
@@ -105,7 +105,7 @@ export class MetaService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'meta')
     const f = config.file.trim()
-    this.file = f === '' ? join(rootDir, 'data', 'meta.json') : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', 'meta.json') : resolve(f)
     this.templatesFile = join(dirname(this.file), 'templates.json')
     void this.load().catch(() => { /* 失败已在 load 内记录并置标志 */ })
     void this.loadTemplates().catch(() => { /* 失败已在 loadTemplates 内记录并置标志 */ })

@@ -70,7 +70,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export class AclService extends Service {
   private readonly file: string
@@ -81,7 +81,7 @@ export class AclService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'acl')
     const f = config.file.trim()
-    this.file = f === '' ? join(rootDir, 'data', 'acl.json') : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', 'acl.json') : resolve(f)
     void this.load().catch(() => { /* 失败已在 load 内记录并置标志 */ })
   }
 

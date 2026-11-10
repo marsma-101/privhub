@@ -95,8 +95,8 @@ const PLAN_STATES: Record<PlanState, true> = { done: true, doing: true, todo: tr
 
 /* ============ 路径与默认文档 ============ */
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-export const DASHBOARDS_DIR = join(rootDir, 'data', 'dashboards')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+export const DASHBOARDS_DIR = join(dataRootDir, 'data', 'dashboards')
 
 export function dashFile(project: string): string {
   return join(DASHBOARDS_DIR, project + '.json')

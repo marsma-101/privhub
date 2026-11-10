@@ -121,11 +121,26 @@ export function apply(ctx: Context, config: Config): void {
 
   /* 定时自动清理（Cordis effect 可逆：插件卸载时清除定时器，零残留） */
   ctx.effect(() => {
-    const run = (): void => { void svc.purgeExpiredTrash(ttlDays * 24 * 3600 * 1000).catch(() => { /* 单次清理失败不影响主流程 */ }) }
+    const run = (): void => {
+      /* 蓝绿待命槽不碰数据根：旧槽还在服务，不能让两个进程同时清理。 */
+      if (svc.standby) return
+      void svc.purgeExpiredTrash(ttlDays * 24 * 3600 * 1000).catch(() => { /* 单次清理失败不影响主流程 */ })
+    }
     // 启动 5 秒后先清一次（避开启动高峰），此后按 intervalHours 周期执行
     const first = setTimeout(run, 5000)
     const timer = setInterval(run, intervalMs)
     if (typeof timer.unref === 'function') timer.unref()
-    return () => { clearTimeout(first); clearInterval(timer) }
+    /* 待命槽在切流激活后再补一次启动清理（预热期间跳过了那次）。 */
+    let afterActivate: ReturnType<typeof setTimeout> | null = null
+    const offActivate = svc.onActivate(() => {
+      afterActivate = setTimeout(() => { afterActivate = null; run() }, 5000)
+      if (typeof afterActivate.unref === 'function') afterActivate.unref()
+    })
+    return () => {
+      clearTimeout(first)
+      clearInterval(timer)
+      if (afterActivate) clearTimeout(afterActivate)
+      offActivate()
+    }
   })
 }

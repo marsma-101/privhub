@@ -20,7 +20,7 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 export const name = 'privhub-shell-favorites'
 export const inject = ['privhub', 'storage']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export interface FavoriteEntry {
   project: string
@@ -35,7 +35,7 @@ interface FavData {
 }
 
 /* 收藏文件是**所有用户共用一份**（按 username 分键），所以两个人同时收藏就会撞同一个文件。 */
-const FAV_FILE = join(rootDir, 'data', 'favorites.json')
+const FAV_FILE = join(dataRootDir, 'data', 'favorites.json')
 
 async function loadAll(storage: { readText: (f: string) => Promise<string> }): Promise<FavData> {
   /* D4：收藏库损坏 → 隔离存证 + 抛错（此前静默当空，一次「收藏」就把所有人的收藏清掉）。 */

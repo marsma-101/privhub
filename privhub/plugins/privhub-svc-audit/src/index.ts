@@ -58,7 +58,7 @@ export interface AuditFilter {
 }
 
 export interface Config {
-  /** JSONL 文件路径；留空则按项目根（PRIVHUB_ROOT）定位 data/audit.jsonl */
+  /** JSONL 文件路径；留空则按数据根（PRIVHUB_DATA_ROOT，缺省回退 PRIVHUB_ROOT）定位 data/audit.jsonl */
   file: string
   /** 保留天数，默认 60 */
   retentionDays: number
@@ -75,7 +75,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /** 加密块魔数：'PHAUD1' + 2 个 NUL，共 8 字节（与 svc-storage 写入格式一致）。 */
 const MAGIC = Buffer.from('PHAUD1\u0000\u0000', 'latin1')
@@ -96,7 +96,7 @@ export class AuditService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'audit')
     const f = config.file.trim()
-    this.file = f === '' ? join(rootDir, 'data', 'audit.jsonl') : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', 'audit.jsonl') : resolve(f)
     this.ttlMs = (config.retentionDays > 0 ? config.retentionDays : 60) * 24 * 3600 * 1000
     // 防止无限膨胀：保留天数之外再兜底 20 万条
     this.maxEntries = 200_000
@@ -337,13 +337,21 @@ export class AuditService extends Service {
 
 /** 插件挂载：注册 AuditService 到 ctx.audit。 */
 export const name = 'privhub-svc-audit'
-export const inject = ['storage']
+export const inject = ['storage', 'eventBus']
 export function apply(ctx: Context, config: Config): void {
   const svc = new AuditService(ctx, config)
+  /* 蓝绿待命槽：审计清理是写盘操作，预热期间必须停手（旧槽仍在服务）。
+   * 激活后由 runtime:activated 事件解除本进程的待命标记。 */
+  let standby = process.env.PRIVHUB_STANDBY === '1'
+  const offActivate = ctx.on('runtime:activated', () => { standby = false })
+  ctx.eventBus.declareListen('runtime:activated', 'privhub-svc-audit', '蓝绿待命槽激活 → 恢复定时清理')
   // D2：定时兜底清理（写入计数之外的第二通道）；unref 避免阻碍进程退出
-  const timer = setInterval(() => { void svc.pruneNow().catch(() => { /* 忽略 */ }) }, 30 * 60 * 1000)
+  const timer = setInterval(() => {
+    if (standby) return
+    void svc.pruneNow().catch(() => { /* 忽略 */ })
+  }, 30 * 60 * 1000)
   if (typeof timer.unref === 'function') timer.unref()
-  ctx.effect(() => () => clearInterval(timer))
+  ctx.effect(() => () => { clearInterval(timer); offActivate() })
   /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
-  ctx.effect(() => () => { void svc.pruneNow().catch(() => { /* 忽略 */ }) })
+  ctx.effect(() => () => { if (!standby) void svc.pruneNow().catch(() => { /* 忽略 */ }) })
 }

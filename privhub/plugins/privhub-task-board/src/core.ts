@@ -50,8 +50,8 @@ export const REJECT_LABEL = '退回重做'
 /** 「已完成」列 id —— 进度百分比按它算。 */
 export const DONE_COL = 'col_done'
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const BOARDS_DIR = join(rootDir, 'data', 'taskboards')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const BOARDS_DIR = join(dataRootDir, 'data', 'taskboards')
 
 /** 存储只用到这两个方法；用最小结构类型，避免把 Service 形状写进函数签名。 */
 export interface StorageLike {

@@ -16,6 +16,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { AGENT_SNAPSHOT_EXTS } from '../../privhub-core/src/file-exts'
 import { readJsonStore } from '../../privhub-core/src/index'
 
+/** 数据根：蓝绿双槽共享的 data/ 所在目录；未设置时回落应用根。 */
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+
 /* ============ 配置 ============ */
 
 export interface M2Config {
@@ -372,19 +375,24 @@ export class PathLocks {
 /* ============ 周期 flush 助手 ============ */
 
 export function startFlusher(ctx: Context, quota: QuotaLedger, rate: RateLimiter, idem: Idempotency, sec: number): () => void {
+  /* 蓝绿待命槽：不落盘、不清理。预热期间没有 Agent 请求进来，内存值不会变化，
+   * 激活后第一次周期 flush 会把完整状态写回即可。 */
+  const standby = (): boolean => ctx.privhub.standby === true
   const flushQuota = (): void => { void quota.flush(ctx).catch(() => {}) }
   const flushRate = (): void => {
-    const file = join(process.env.PRIVHUB_ROOT?.trim() || process.cwd(), 'data', 'agent-ratelimit.json')
+    const file = join(dataRootDir, 'data', 'agent-ratelimit.json')
     void ctx.storage.writeText(file, JSON.stringify({ version: 1, at: Date.now(), buckets: rate.snapshot() })).catch(() => {})
   }
-  void quota.flush(ctx).catch(() => {})
+  if (!standby()) void quota.flush(ctx).catch(() => {})
   const t = setInterval(() => {
+    if (standby()) return
     flushQuota()
     flushRate()
     void idem.purgeExpired(ctx).catch(() => {})
   }, Math.max(5000, sec * 1000))
   const dispose = (): void => {
     clearInterval(t)
+    if (standby()) return
     flushQuota()
     flushRate()
   }
@@ -396,7 +404,7 @@ export function startFlusher(ctx: Context, quota: QuotaLedger, rate: RateLimiter
 
 /** 恢复限流桶（启动时） */
 export function restoreRateBuckets(ctx: Context, rate: RateLimiter): void {
-  const file = join(process.env.PRIVHUB_ROOT?.trim() || process.cwd(), 'data', 'agent-ratelimit.json')
+  const file = join(dataRootDir, 'data', 'agent-ratelimit.json')
   void (async () => {
     try {
       const raw = JSON.parse(await ctx.storage.readText(file)) as { buckets?: Record<string, { count: number; resetAt: number }> }

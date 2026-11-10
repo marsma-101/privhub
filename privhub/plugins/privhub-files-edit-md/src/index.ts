@@ -28,8 +28,8 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 export const name = 'privhub-files-edit-md'
 export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const VERSIONS_DIR = join(rootDir, 'data', 'doc-versions')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const VERSIONS_DIR = join(dataRootDir, 'data', 'doc-versions')
 const INDEX_FILE = join(VERSIONS_DIR, 'index.json')
 /** 每文件版本上限（计划 4.2） */
 const MAX_VERSIONS = 20

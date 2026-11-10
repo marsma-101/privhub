@@ -30,8 +30,8 @@ interface Pub {
   expiresAt: number | null
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const FILE = join(rootDir, 'data', 'publish.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const FILE = join(dataRootDir, 'data', 'publish.json')
 
 /* D10：发布码是免登录读取凭据，必须加密落盘（此前为明文）。 */
 type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }

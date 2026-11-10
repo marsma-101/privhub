@@ -386,8 +386,8 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const CONFIG_FILE = join(rootDir, 'data', 'model.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const CONFIG_FILE = join(dataRootDir, 'data', 'model.json')
 const EMBEDDING_DIM = 64
 
 export class ModelService extends Service {

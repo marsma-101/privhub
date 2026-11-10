@@ -16,7 +16,7 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 export const name = 'privhub-shell-settings'
 export const inject = ['privhub', 'storage', 'cap']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export interface Settings {
   theme: 'light' | 'dark'
@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS: Settings = {
  * D4：损坏 → 隔离存证 + 抛错。此前降级成「默认设置」，随后一次 POST（改主题/开关）
  * 就会用默认值把文件整体覆盖 —— 用户设过的上传上限、注册开关一并消失。
  */
-const SETTINGS_FILE = join(rootDir, 'data', 'settings.json')
+const SETTINGS_FILE = join(dataRootDir, 'data', 'settings.json')
 
 async function loadSettings(storage: StorageLike): Promise<Settings> {
   const parsed = await readJsonStore<Partial<Settings>>(storage, SETTINGS_FILE, {})

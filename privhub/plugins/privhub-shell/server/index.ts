@@ -33,6 +33,8 @@ export interface ShellManifest {
 }
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+/** 数据根：蓝绿双槽共享的 data/ 与 data-files/ 所在目录；未设置时回落应用根。 */
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || rootDir
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
@@ -131,7 +133,7 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/help', async (req: IncomingMessage, res: ServerResponse) => {
     const u = svc.me(tokenOf(req))
     if (!u) return json(res, 401, { ok: false, error: '未登录' })
-    const helpDir = join(rootDir, 'data-files', 'privhub', '使用说明')
+    const helpDir = join(dataRootDir, 'data-files', 'privhub', '使用说明')
     try {
       const url = new URL(req.url ?? '/', 'http://x')
       const doc = url.searchParams.get('doc')

@@ -49,7 +49,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /** 键：项目 + 名字空间 + 值。用 JSON 元组而不是拼接 —— 名字里可能出现分隔符（同 refcheck 缓存键的做法）。 */
 const kPath = (project: string, path: string): string => JSON.stringify([project, 'p', path])
@@ -88,11 +88,25 @@ export class LinkService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'links')
     const f = (config?.file ?? '').trim()
-    this.file = f === '' ? join(rootDir, 'data', STORE_FILE) : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', STORE_FILE) : resolve(f)
     this.ready = this.load().catch(() => { /* 已在 load 内记录，登记表不是关键路径 */ })
   }
 
   /* ---------------- 载入 / 落盘 ---------------- */
+
+  /** 丢弃内存态并从盘上重读（蓝绿待命槽在切流前调用）。待命期间无写入，丢弃是安全的。 */
+  async reload(): Promise<void> {
+    this.store.entries = []
+    this.byId.clear()
+    this.byPath.clear()
+    this.byName.clear()
+    this.byAlias.clear()
+    this.pending.length = 0
+    this.queued.clear()
+    this.dirty = false
+    this.corrupt = false
+    await this.load()
+  }
 
   private async load(): Promise<void> {
     /* D4：损坏 → 隔离存证 + 记标志。这里**不退化为"就当没数据"**，因为

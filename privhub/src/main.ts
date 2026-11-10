@@ -61,6 +61,10 @@ const CORE_PLUGINS = new Set([
 ])
 
 const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+/** 数据根：蓝绿双槽共享的 data/ 与 data-files/ 所在目录；未设置时回落应用根，保持旧行为。 */
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || rootDir
+/** 监听地址：蓝绿槽由控制层指定回环地址（nginx 对外）；未设置时监听全部网卡（旧行为）。 */
+const listenHost = process.env.PRIVHUB_HOST?.trim() || ''
 
 async function discoverL3(): Promise<Array<{ name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }>> {
   const pluginsDir = join(rootDir, 'plugins')
@@ -185,21 +189,28 @@ function installProcessGuards(): void {
 
 async function main(): Promise<void> {
   const port = argPort()
+  const bootT0 = Date.now()
   /* 进程级兜底（O3 补齐）：紧随日志安装之后立即生效，此后任何异步故障都有日志可查。
    * 背景：Node 24 默认 --unhandled-rejections=throw，一个没人接手的 Promise 会被
    * 升级成 uncaughtException ⇒ 进程直接死；而 installFileLogger 只把 console 接到
    * 日志文件，崩溃现场（含堆栈）不会自己进去 ⇒ 事后查不出「服务为什么没了」。
    * 这里只做两件事：① 把现场完整写进 data/logs 日志；② 同一次故障只记一次不刷屏。
    * 不在此处 process.exit：退出策略留给运维（进程守护 / 重启），擅自退出会掩盖真实原因。 */
-  installFileLogger(rootDir)
+  installFileLogger(dataRootDir)
   installProcessGuards()
   const ctx = new Context()
 
   /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */
   /* 返回 PromiseLike：cordis 的 ctx.plugin 返回 Fiber & PromiseLike<Fiber>，
-   * 可 await 但不是原生 Promise；调用方一律 await，语义不变。 */
-  const mount = (mod: { name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }, config?: unknown): PromiseLike<unknown> =>
-    ctx.plugin({ name: mod.name, inject: mod.inject, apply: mod.apply }, config)
+   * 可 await 但不是原生 Promise；调用方一律 await，语义不变。
+   * 这里统一计时：启动慢往往不是代码解析，而是某个 Service 的构造/加载在等 I/O。 */
+  const mount = async (mod: { name: string; inject?: string[]; apply: (ctx: Context, config?: unknown) => unknown }, config?: unknown): Promise<unknown> => {
+    const t = Date.now()
+    const r = await ctx.plugin({ name: mod.name, inject: mod.inject, apply: mod.apply }, config)
+    const ms = Date.now() - t
+    if (ms > 1000) console.warn('[assembly] 慢挂载 ' + mod.name + '：' + ms + 'ms')
+    return r
+  }
 
   /* 1. 自研 webServer（core 的 svc.route 依赖 ctx.webServer） */
   await ctx.plugin(WebServerService, {
@@ -207,6 +218,7 @@ async function main(): Promise<void> {
     frontendDir: join(rootDir, 'frontend'),
     pluginsDir: join(rootDir, 'plugins'),
   })
+  console.log('[startup] webServer 就绪 +' + (Date.now() - bootT0) + 'ms')
 
   /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
    *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
@@ -233,6 +245,7 @@ async function main(): Promise<void> {
   /* Q6 上传查重索引（ctx.dup）：上传时按指纹提示"与 X 内容相同"。
    * 必须早于 L1 的 files（上传路由要 inject 它）。 */
   await mount(svcDup, { file: '' })
+  console.log('[startup] L2 服务装配完成 +' + (Date.now() - bootT0) + 'ms')
 
   /* 3. L1 六枢纽 */
   await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })
@@ -243,21 +256,75 @@ async function main(): Promise<void> {
   await mount(trash, { ttlDays: 30, intervalHours: 6 })
   await mount(admin)
   await mount(shell)
+  console.log('[startup] L1 枢纽装配完成 +' + (Date.now() - bootT0) + 'ms')
 
   /* 4. L3 功能插件：自动发现装配（装卸 = 增删 plugins/ 目录；无需改本文件） */
   const l3 = await discoverL3()
+  const l3T0 = Date.now()
   for (const p of l3) {
+    const t = Date.now()
     try {
       await mount(p)
+      const ms = Date.now() - t
+      /* 只报慢挂载：启动耗时诊断用，正常插件通常 <100ms，不刷屏。 */
+      if (ms > 500) console.warn('[assembly] 慢挂载 ' + p.name + '：' + ms + 'ms')
     } catch (e) {
       console.error('[assembly] 插件挂载失败: ' + p.name + ' → ' + (e instanceof Error ? e.message : String(e)))
     }
   }
+  console.log('[startup] L3 装配完成 +' + (Date.now() - bootT0) + 'ms（' + l3.length + ' 个插件，本段 ' + (Date.now() - l3T0) + 'ms）')
 
   /* 5. D4：等待核心数据（账号 / 会话）载入完成后再开始监听。
    *    否则存在竞态：服务已接受请求但用户表尚为空，表现为启动后首次登录
    *    偶发「用户名或密码错误」；账号文件损坏时也应在此明确失败而非带病启动。 */
   await ctx.privhub.ready
+  console.log('[startup] 核心数据就绪 +' + (Date.now() - bootT0) + 'ms')
+
+  /* 5.1 蓝绿切流前的状态接力（仅控制层可调）。
+   *
+   * 待命槽（PRIVHUB_STANDBY=1）在旧槽仍在服务时完成预热，期间不跑后台写任务；
+   * 旧槽冻结并排空后，控制层先调 /runtime/reload 把各服务的内存态刷新到
+   * 盘上的最新版本，再调 /runtime/activate 解除待命、启动延后的后台任务，
+   * 最后才让 nginx 把流量切过来。顺序不能颠倒：先切流量会短暂用旧内存态
+   * 服务新请求（例如刚登录的用户查不到会话、刚改的 ACL 不生效）。 */
+  ctx.privhub.route('/privhub/api/runtime/reload', async (req, res) => {
+    if (!ctx.privhub.controlAllowed(req, res)) return
+    if (req.method !== 'POST') { core.json(res, 405, { ok: false, error: 'method not allowed' }); return }
+    if (!ctx.privhub.standby) {
+      core.json(res, 409, { ok: false, code: 'PRIVHUB_NOT_STANDBY', error: '仅待命槽可刷新状态（避免覆盖正在服务的进程内存态）' })
+      return
+    }
+    const reloaded: string[] = []
+    const failed: Array<{ name: string; error: string }> = []
+    const run = async (name: string, fn: () => Promise<unknown> | unknown): Promise<void> => {
+      try { await fn(); reloaded.push(name) } catch (e) {
+        failed.push({ name, error: e instanceof Error ? e.message : String(e) })
+        console.error('[runtime] 状态刷新失败 ' + name + '：' + (e instanceof Error ? e.message : String(e)))
+      }
+    }
+    await run('users', () => ctx.privhub.loadUsers())
+    await run('sessions', () => ctx.privhub.loadSessions())
+    await run('acl', () => ctx.acl.load())
+    await run('cap', () => ctx.cap.load())
+    await run('meta', () => ctx.meta.load())
+    await run('templates', () => ctx.meta.loadTemplates())
+    await run('links', () => ctx.links.reload())
+    await run('dup', () => ctx.dup.reload())
+    await run('model', () => ctx.model.loadConfig(ctx))
+    core.json(res, failed.length === 0 ? 200 : 500, {
+      ok: failed.length === 0,
+      reloaded,
+      failed,
+      at: new Date().toISOString(),
+    })
+  }, 'runtime-reload')
+
+  ctx.privhub.route('/privhub/api/runtime/activate', async (req, res) => {
+    if (!ctx.privhub.controlAllowed(req, res)) return
+    if (req.method !== 'POST') { core.json(res, 405, { ok: false, error: 'method not allowed' }); return }
+    const r = await ctx.privhub.activate()
+    core.json(res, 200, { ok: true, ...r, at: new Date().toISOString() })
+  }, 'runtime-activate')
 
   /* 5.5 静态资源鉴权接线：插件前端代码即 API 全貌，未登录不得枚举。
    *     校验器在此注入而非在 web-server 内 inject privhub —— privhub-core 已
@@ -266,12 +333,14 @@ async function main(): Promise<void> {
   ctx.webServer.setSessionValidator((req) => ctx.privhub.me(core.tokenOf(req)) !== null)
 
   /* 6. 启动 HTTP 服务 */
-  await ctx.webServer.listen(port)
+  await ctx.webServer.listen(port, listenHost || undefined)
+  console.log('[startup] 监听就绪 +' + (Date.now() - bootT0) + 'ms')
 
   console.log('============================================')
   console.log('  PrivHub starting [port ' + port + ']')
   console.log('  Local:    http://127.0.0.1:' + port)
-  console.log('  LAN:      http://<this-host-IP>:' + port)
+  if (listenHost) console.log('  Bound:    ' + listenHost + '（蓝绿槽，仅本机；由 nginx 对外）')
+  else console.log('  LAN:      http://<this-host-IP>:' + port)
   console.log('============================================')
 
   const shutdown = (): void => {

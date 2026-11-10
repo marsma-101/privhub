@@ -18,7 +18,7 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 export const name = 'privhub-shell-recent'
 export const inject = ['privhub', 'storage', 'eventBus']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export interface RecentEntry {
   project: string
@@ -35,7 +35,7 @@ interface RecentData {
 const MAX_RECENT = 20
 
 /* 最近列表同样是**所有用户共用一份**（按 username 分键）。 */
-const RECENT_FILE = join(rootDir, 'data', 'recent.json')
+const RECENT_FILE = join(dataRootDir, 'data', 'recent.json')
 
 async function loadAll(storage: { readText: (f: string) => Promise<string> }): Promise<RecentData> {
   /* D4：最近列表损坏 → 隔离存证 + 抛错（此前静默当空，一次「打开」就把所有人的最近记录清掉）。 */

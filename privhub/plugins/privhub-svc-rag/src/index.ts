@@ -35,11 +35,11 @@ import type { ModelParams } from '../../privhub-svc-model/src/index'
 export const name = 'privhub-svc-rag'
 export const inject = ['privhub', 'storage', 'audit', 'eventBus', 'model', 'office', 'search', 'acl', 'cap']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const CORPUS_DIR = join(rootDir, 'data', 'rag-corpus')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const CORPUS_DIR = join(dataRootDir, 'data', 'rag-corpus')
 const MANIFEST_FILE = join(CORPUS_DIR, 'manifest.json')
-const CURATION_FILE = join(rootDir, 'data', 'rag-curation.json')
-const VEC_STATE_FILE = join(rootDir, 'data', 'rag-vectorize.json')
+const CURATION_FILE = join(dataRootDir, 'data', 'rag-curation.json')
+const VEC_STATE_FILE = join(dataRootDir, 'data', 'rag-vectorize.json')
 const VEC_DB_FILE = join(CORPUS_DIR, 'vectors.db')
 /** 问答检索块上限 */
 const ASK_TOPK = 6
@@ -974,6 +974,10 @@ async function allChunks(ctx: Context): Promise<ChunkRec[]> {
 /** 向量化任务（用户触发；幂等续跑：已入库 chunk 跳过；进度落盘） */
 async function runVectorize(ctx: Context): Promise<VecState> {
   if (vecTask) return vecState
+  /* 状态必须在第一个 await 之前就置为 running：触发接口已返回 started=true 后，
+   * 轮询方看到 idle 会把「已受理但还在读语料」误判成「任务没开始」（实测竞态）。
+   * total/done 等真实进度在语料读完后补齐。 */
+  vecState = { state: 'running', dim: vecState.dim || 0, total: 0, done: 0, failed: 0, startedAt: Date.now(), finishedAt: 0, error: undefined }
   try {
     const chunks = await allChunks(ctx)
     if (chunks.length === 0) {
@@ -1028,6 +1032,11 @@ async function runVectorize(ctx: Context): Promise<VecState> {
     vecState.finishedAt = Date.now()
     await saveVecState(ctx)
     return vecState
+  } catch (e) {
+    /* 任务异常不能停在 running：否则界面永远显示「进行中」，也无法从错误里恢复。 */
+    vecState = { ...vecState, state: 'idle', finishedAt: Date.now(), error: e instanceof Error ? e.message : String(e) }
+    try { await saveVecState(ctx) } catch { /* 状态都写不了时保留原错误 */ }
+    throw e
   } finally {
     // 任务释放由 startVecTask 的 finally 统一处理（vecTask = null）
   }
@@ -1389,7 +1398,22 @@ async function audit(ctx: Context, user: string, action: string, target: string,
 
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
-  void loadVecState(ctx).catch(() => {})
+  /* 蓝绿待命槽：向量态加载是纯读，启动重建会写 manifest/chunks —— 预热期间
+   * 旧槽仍在服务，必须把这两步都延后到控制层激活之后。非待命进程上
+   * onActivate 立即执行，行为与原来的「挂载即加载 + 8 秒重建」一致。 */
+  let rebuildTimer: ReturnType<typeof setTimeout> | null = null
+  const offActivate = svc.onActivate(() => {
+    void loadVecState(ctx).catch(() => {})
+    rebuildTimer = setTimeout(() => {
+      rebuildTimer = null
+      void rebuild(ctx).catch(() => {})
+    }, 8000)
+    if (typeof rebuildTimer.unref === 'function') rebuildTimer.unref()
+  })
+  ctx.effect(() => () => {
+    if (rebuildTimer) clearTimeout(rebuildTimer)
+    offActivate()
+  })
 
   /* E1 事件声明 */
   ctx.eventBus.declareListen('file:changed', 'privhub-svc-rag', '文件系统变更 → 语料增量更新')
@@ -1419,7 +1443,7 @@ export function apply(ctx: Context): void {
    * 生效条件有两个，缺一不可：① 运行在隔离测试根（PRIVHUB_TEST_ROOT 存在）；
    * ② 数据目录下出现一次性标记文件 data/rag-test-inject-queue-error（由测试写入）。
    * 生产环境没有 PRIVHUB_TEST_ROOT，本函数恒返回 null —— 只是多一次 existsSync 判定。 */
-  const TEST_INJECT_FILE = join(rootDir, 'data', 'rag-test-inject-queue-error')
+  const TEST_INJECT_FILE = join(dataRootDir, 'data', 'rag-test-inject-queue-error')
   const takeTestInject = (): Error | null => {
     if (!process.env.PRIVHUB_TEST_ROOT) return null
     if (!existsSync(TEST_INJECT_FILE)) return null
@@ -1467,8 +1491,7 @@ export function apply(ctx: Context): void {
     return () => { off1(); off2(); off3() }
   })
 
-  /* 启动全量（延迟避免与全量索引冲突；失败静默） */
-  setTimeout(() => { void rebuild(ctx).catch(() => {}) }, 8000)
+  /* 启动全量重建改由激活钩子调度（见 apply 顶部）：待命槽在切流前绝不全量写语料。 */
 
   /* ---------- 管理工具 ---------- */
 

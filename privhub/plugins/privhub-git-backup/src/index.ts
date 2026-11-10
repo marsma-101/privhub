@@ -28,9 +28,9 @@ const execFileP = promisify(execFile)
 export const name = 'privhub-git-backup'
 export const inject = ['storage', 'privhub', 'acl']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const DATA_FILES = join(rootDir, 'data-files')
-const REPO = join(rootDir, 'data', 'git-backup')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const DATA_FILES = join(dataRootDir, 'data-files')
+const REPO = join(dataRootDir, 'data', 'git-backup')
 const MIRROR = join(REPO, 'mirror')
 const POLL_MS = 60 * 1000
 
@@ -90,7 +90,7 @@ async function walkFiles(dir: string): Promise<string[]> {
  * 这些文件本就经 svc-storage 加密，直接按字节镜像即可，仍然不会被宿主机读明文。
  * 注意：secret.key 单独排除（密钥不应进备份仓库，应离线另行保管）。
  */
-const DATA_DIR = join(rootDir, 'data')
+const DATA_DIR = join(dataRootDir, 'data')
 const SYSTEM_BACKUP_FILES = [
   'users.json', 'acl.json', 'meta.json', 'templates.json', 'trash.json',
   'versions.json', 'favorites.json', 'recent.json', 'settings.json',
@@ -161,9 +161,16 @@ export function apply(ctx: Context): void {
   const svc = ctx.privhub
 
   /* D11：启动探测 git。缺失时【显著告警并关闭定时器】，
-   * 而不是每 60 秒静默失败——"以为有备份、实际没有"比没有备份更危险。 */
+   * 而不是每 60 秒静默失败——"以为有备份、实际没有"比没有备份更危险。
+   *
+   * 蓝绿待命槽：ensureRepo / 周期 commit 都是写操作，预热期间（旧槽仍在服务）
+   * 不得启动；控制层激活后再补跑。onActivate 在非待命进程上立即执行，语义与
+   * 原来的「挂载即启动」完全一致。 */
   let timer: ReturnType<typeof setInterval> | null = null
-  void (async () => {
+  let started = false
+  const start = async (): Promise<void> => {
+    if (started) return
+    started = true
     const has = await probeGit()
     if (!has) {
       const msg = '[gitbackup] 未检测到 git，自动备份已【停用】。'
@@ -179,9 +186,10 @@ export function apply(ctx: Context): void {
       void commitAll('auto: 文件变更备份').catch((e) => ctx.logger?.error?.('[gitbackup] 自动备份失败: ' + (e instanceof Error ? e.message : String(e))))
     }, POLL_MS)
     if (typeof timer.unref === 'function') timer.unref()
-  })()
+  }
+  const offActivate = svc.onActivate(() => { void start() })
   /* 卸载清理走 ctx.effect（cordis 不派发 'dispose' 事件） */
-  ctx.effect(() => () => { if (timer) clearInterval(timer) })
+  ctx.effect(() => () => { if (timer) clearInterval(timer); offActivate() })
 
   /* 手动/即时备份 */
   svc.route('/privhub/api/gitbackup/commit', async (req, res) => {

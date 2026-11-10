@@ -32,8 +32,8 @@ interface Invite {
   expiresAt: number | null // null = 永久
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const FILE = join(rootDir, 'data', 'invites.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const FILE = join(dataRootDir, 'data', 'invites.json')
 
 /* D10：邀请码是凭据类数据，必须加密落盘（此前裸 readFile/writeFile 为明文）。 */
 type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }

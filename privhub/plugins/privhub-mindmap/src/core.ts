@@ -57,11 +57,11 @@ export const LIMITS = {
   text: 1_000_000,
 } as const
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
-/** 全局导图的落盘位置（`PRIVHUB_ROOT` 锚定，与其它系统 JSON 同根）。 */
+/** 全局导图的落盘位置（数据根 `PRIVHUB_DATA_ROOT` 锚定，与其它系统 JSON 同根；未设时回退 PRIVHUB_ROOT）。 */
 export function globalFile(): string {
-  return join(rootDir, 'data', 'mindmaps', 'global.json')
+  return join(dataRootDir, 'data', 'mindmaps', 'global.json')
 }
 
 /* ============ 清洗 ============ */

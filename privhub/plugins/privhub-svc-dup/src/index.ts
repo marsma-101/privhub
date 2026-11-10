@@ -52,7 +52,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /** 落盘节流：登记是高频动作（每次上传/改名），不能一文件一次写。 */
 const SAVE_DEBOUNCE_MS = 400
@@ -87,13 +87,25 @@ export class DupService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'dup')
     const f = (config?.file ?? '').trim()
-    this.file = f === '' ? join(rootDir, 'data', STORE_FILE) : resolve(f)
+    this.file = f === '' ? join(dataRootDir, 'data', STORE_FILE) : resolve(f)
     const t = Number(config?.nearThreshold)
     this.threshold = Number.isFinite(t) && t > 0 && t <= 1 ? t : NEAR_THRESHOLD
     this.ready = this.load().catch(() => { /* 已在 load 内记录；索引不是关键路径 */ })
   }
 
   /* ---------------- 载入 / 落盘 ---------------- */
+
+  /** 丢弃内存态并从盘上重读（蓝绿待命槽在切流前调用）。待命期间无写入，丢弃是安全的。 */
+  async reload(): Promise<void> {
+    this.store.entries = []
+    this.byFile.clear()
+    this.byRaw.clear()
+    this.byNorm.clear()
+    this.byBand.clear()
+    this.dirty = false
+    this.corrupt = false
+    await this.load()
+  }
 
   private async load(): Promise<void> {
     try {

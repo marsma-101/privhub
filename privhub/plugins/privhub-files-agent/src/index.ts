@@ -43,8 +43,8 @@ import { boardFile, loadBoard } from '../../privhub-task-board/src/core'
 export const name = 'privhub-files-agent'
 export const inject = ['privhub', 'storage', 'audit', 'acl', 'eventBus', 'cap']
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const KEYS_FILE = join(rootDir, 'data', 'agent-keys.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const KEYS_FILE = join(dataRootDir, 'data', 'agent-keys.json')
 
 /* ============ 常量与限额 ============ */
 
@@ -496,8 +496,8 @@ export function apply(ctx: Context, config?: M2Config): void {
   ctxRef = ctx
   m2cfg = { ...M2_DEFAULTS, ...(config ?? {}) }
   gate = new WriteGate(m2cfg.writeConcurrency, m2cfg.queueCapacity, m2cfg.queueWaitMs)
-  idem = new Idempotency(rootDir, m2cfg.idemTtlMs)
-  quota = new QuotaLedger(rootDir, m2cfg.quotaPersonalMb * 1024 * 1024, ctx)
+  idem = new Idempotency(dataRootDir, m2cfg.idemTtlMs)
+  quota = new QuotaLedger(dataRootDir, m2cfg.quotaPersonalMb * 1024 * 1024, ctx)
   rate = new RateLimiter({ key: m2cfg.rateKeyPerMin, user: m2cfg.rateUserPerMin, ip: m2cfg.rateIpPerMin })
   locks = new PathLocks()
   void quota.load(ctx).catch(() => {})
@@ -811,7 +811,7 @@ export function apply(ctx: Context, config?: M2Config): void {
         let snapshot = false
         let backupped = false
         if (existed) {
-          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, sandbox, scopeRel + path, abs, m2cfg.snapshotMax)
+          await versionSnapshot(ctx, dataRootDir, 'ai:' + a.key.name, sandbox, scopeRel + path, abs, m2cfg.snapshotMax)
           if (TEXT_EXT.has(extname(abs).slice(1).toLowerCase())) {
             snapshot = true
           } else {
@@ -882,7 +882,7 @@ export function apply(ctx: Context, config?: M2Config): void {
         let snapshot = false
         let backupped = false
         if (existed) {
-          await versionSnapshot(ctx, rootDir, 'ai:' + a.key.name, sandbox, scopeRel + destRel, abs, m2cfg.snapshotMax)
+          await versionSnapshot(ctx, dataRootDir, 'ai:' + a.key.name, sandbox, scopeRel + destRel, abs, m2cfg.snapshotMax)
           if (TEXT_EXT.has(extname(abs).slice(1).toLowerCase())) {
             snapshot = true
           } else {
@@ -993,7 +993,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     try {
       /* D4：走统一入口 —— 只看不改的路径也照样隔离存证 + 记日志（原因不再无声消失）。 */
       const store = await readJsonStore<Record<string, Array<{ at: number; by: string; content: string }>>>(
-        ctx.storage, join(rootDir, 'data', 'versions.json'), {},
+        ctx.storage, join(dataRootDir, 'data', 'versions.json'), {},
       )
       arr = store[key] || []
     } catch { /* 无历史（含版本库损坏：原因已由 readJsonStore 记入系统日志） */ }
@@ -1012,7 +1012,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     const sandbox = sandboxDirOf(ctx, a.key)
     if (sandbox === null) return sandboxMissing(env, res, extra)
     const scopeRel = scopeRelOf(a)
-    const f = join(rootDir, 'data', 'versions.json')
+    const f = join(dataRootDir, 'data', 'versions.json')
     const lockKey = sandbox + '|' + scopeRel + path
     const g = await gateAcquire(env, res, extra)
     if (!g) return
@@ -1048,7 +1048,7 @@ export function apply(ctx: Context, config?: M2Config): void {
           arr.push({ at: Date.now(), by: 'ai:' + a.key.name, content })
           while (arr.length > m2cfg.snapshotMax) arr.shift()
           store[key] = arr
-          await mkdir(join(rootDir, 'data'), { recursive: true })
+          await mkdir(join(dataRootDir, 'data'), { recursive: true })
           await ctx.storage.writeText(f, JSON.stringify(store, null, 2))
           return { ok: true, size: Buffer.byteLength(content) }
         })

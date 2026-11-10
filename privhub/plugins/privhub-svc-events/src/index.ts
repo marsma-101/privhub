@@ -27,6 +27,8 @@
  *   dashboard:changed ── 项目看板（纵向分区页）变更。emit: project-dashboard · listen: webhook
  *   roster:changed ── 智能体名册变更（人工登记 / 智能体自注册 / 编辑 / 删除）。
  *                    payload { action, id, name, total }。emit: roster/agent · listen: webhook
+ *   runtime:activated ── 蓝绿待命槽被控制层激活（解除 standby）。
+ *                    emit: core · listen: svc-audit（恢复定时清理）
  *   dispose       ── cordis 内置清理通知（各插件 effect 清理任务）
  *
  * @module privhub-svc-events

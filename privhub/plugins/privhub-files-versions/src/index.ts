@@ -35,8 +35,8 @@ interface Version {
 
 type Store = Record<string, Version[]>
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const FILE = join(rootDir, 'data', 'versions.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const FILE = join(dataRootDir, 'data', 'versions.json')
 const MAX_PER_FILE = 20
 
 /** 允许创建版本快照的文本扩展名（**派生**，不手写）。 */

@@ -453,7 +453,7 @@ ok(/class="tb-scroll ph-scroll tb-cols"[\s\S]{0,40}ref="board"/.test(tbClient),
 const skelCss = (/<style>[\s\S]*<\/style>/.exec(feSrc) || [''])[0]
 ok(/\.ph-scroll[^{]*::-webkit-scrollbar\s*\{[^}]*width:\s*\d+px[^}]*height:\s*\d+px/.test(skelCss),
   '骨架定义全站细滚动条 .ph-scroll（宽高都收成细条）')
-ok(/:is\(\.ph-scroll,\s*\.view-inner\)/.test(skelCss),
+ok(/:is\(\.ph-scroll,\s*\.view-inner[,)]/.test(skelCss),
   '面板页的 .view-inner 并入同一条细滚动条规则（否则设置/权限/审计等面板仍是粗滚动条，标准就分叉了）')
 ok(/@supports not selector\(::-webkit-scrollbar\)\s*\{[\s\S]{0,240}?scrollbar-width:\s*thin/.test(skelCss),
   '标准属性 scrollbar-width 关在 @supports not selector(::-webkit-scrollbar) 里（写在元素上会让 Chromium 忽略 webkit 样式、退回经典滚动条）')
@@ -541,7 +541,11 @@ for (const f of walkTs(join(ROOT, 'plugins'))) {
 }
 const catalogNames = new Set()
 for (const m of whkCoreSrc.matchAll(/\{\s*name:\s*'([^']+)',\s*desc:/g)) catalogNames.add(m[1])
-const notCovered = [...emitNames].filter((n) => !catalogNames.has(n)).sort()
+/* 内部生命周期事件：描述「进程切换」而不是「用户数据变化」，Webhook 目录刻意不收录
+ * （外部订阅者拿到 activation 没有可执行语义）。豁免必须写在这里，而不是靠 emit 方的
+ * 写法绕过扫描——否则以后真的漏了一个业务事件也会被同样绕过。 */
+const INTERNAL_EVENTS = new Set(['runtime:activated'])
+const notCovered = [...emitNames].filter((n) => !catalogNames.has(n) && !INTERNAL_EVENTS.has(n)).sort()
 const ghostEvents = [...catalogNames].filter((n) => !emitNames.has(n)).sort()
 ok(notCovered.length === 0, `Webhook 事件目录覆盖全部实际 emit 的事件${notCovered.length ? '，缺：' + notCovered.join(', ') : `（${emitNames.size} 个）`}`)
 ok(ghostEvents.length === 0, `Webhook 事件目录不含没人发的事件${ghostEvents.length ? '，多：' + ghostEvents.join(', ') : ''}`)

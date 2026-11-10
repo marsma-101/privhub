@@ -35,8 +35,8 @@ interface Comment {
 
 type Store = Record<string, Comment[]>
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const FILE = join(rootDir, 'data', 'comments.json')
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const FILE = join(dataRootDir, 'data', 'comments.json')
 
 /* D10：批注内容属业务数据，必须加密落盘（此前为明文）。 */
 type StorageLike = { readText: (f: string) => Promise<string>; writeText: (f: string, d: string) => Promise<void> }

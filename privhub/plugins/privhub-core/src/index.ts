@@ -91,11 +91,38 @@ export const Config: z<Config> = z.object({
 })
 
 /** 项目根：由启动脚本注入 PRIVHUB_ROOT；缺省回退 cwd，兼容旧启动方式。 */
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const codeRootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+/** 数据根：蓝绿双槽共享的 data/ 与 data-files/ 所在目录；未设置时回落应用根。 */
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || codeRootDir
 
 function resolvePath(value: string, fallback: string): string {
   const t = value.trim()
-  return t === '' ? join(rootDir, fallback) : resolve(t)
+  return t === '' ? join(dataRootDir, fallback) : resolve(t)
+}
+
+/* ============ 蓝绿热更新（写入冻结） ============ */
+
+/** 视为「写操作」的方法。冻结期间只有这些请求会被拒绝；读请求照常服务。 */
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+/**
+ * 运行时控制端点：它们自身要能在冻结状态下工作（否则无法解冻 / 查询状态），
+ * 因此不参与冻结拦截与在途写计数。
+ */
+const CONTROL_ROUTES = new Set([
+  '/privhub/api/runtime/state',
+  '/privhub/api/runtime/freeze',
+  '/privhub/api/runtime/unfreeze',
+  '/privhub/api/runtime/shutdown',
+  '/privhub/api/runtime/reload',
+  '/privhub/api/runtime/activate',
+])
+
+/** 应用版本：health 与 runtime 状态共用；异步读取，请求到来时通常已就绪。 */
+let appVersion = 'unknown'
+
+function isLoopbackAddress(addr: string | undefined): boolean {
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
 }
 
 interface UserView {
@@ -317,11 +344,29 @@ export class PrivHubStore extends Service {
   /** D4：初始化完成信号——由 apply 赋值，main.ts 在 listen 前 await，避免「空用户表」竞态。 */
   ready: Promise<void> = Promise.resolve()
 
+  /* ---- 蓝绿热更新：写入冻结状态（进程级，仅控制层可改） ---- */
+  /** 冻结后新到的写请求一律 503；读请求不受影响。 */
+  frozen = false
+  /** 已进入 handler 且尚未完成的写请求数（冻结时等它归零再切流量）。 */
+  writesInFlight = 0
+  /** 在途写归零时唤醒冻结等待者。 */
+  private writeWaiters = new Set<() => void>()
+
+  /* ---- 蓝绿热更新：待命（standby）状态 ----
+   *
+   * 新槽在旧槽仍在服务时先启动预热（冷启动可达数十秒）。预热期间它绝不能
+   * 执行后台写任务（回收站清理 / RAG 重建 / 会话清理 / 备份…），否则两个
+   * 进程会并发写同一个数据根。控制层以 PRIVHUB_STANDBY=1 启动目标槽，
+   * 各定时任务检查这里的状态；切换流量前控制层调用 /runtime/reload 刷新
+   * 文件态缓存，再调用 /runtime/activate 解除待命并启动延后的后台任务。 */
+  standby = process.env.PRIVHUB_STANDBY === '1'
+  private activateHooks: Array<() => void | Promise<void>> = []
+
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'privhub')
     this.usersFile = resolvePath(config.usersFile, join('data', 'users.json'))
     this.dataRoot = resolvePath(config.dataRoot, 'data-files')
-    this.dataDir = join(rootDir, 'data')
+    this.dataDir = join(dataRootDir, 'data')
     this.sessionsFile = join(this.dataDir, 'sessions.json')
     this.trashFile = join(this.dataDir, 'trash.json')
     this.trashDir = join(this.dataRoot, '.trash')
@@ -330,9 +375,78 @@ export class PrivHubStore extends Service {
 
   /** 注册一条 exact 路由（业务插件共用入口，可随插件停用回收）。
    *  label 可选：多数调用点只传 path+handler（历史各插件影子类型也把它标成可选），
-   *  缺省取 path 本身作为副作用标签，便于自检与回收记录。 */
+   *  缺省取 path 本身作为副作用标签，便于自检与回收记录。
+   *
+   *  蓝绿热更新：所有业务路由在这里统一包装，因此「冻结写入」对全站一致生效 —
+   *  不需要每个插件自己判断。冻结时写请求立即 503（并给 Retry-After），
+   *  读请求与运行时控制端点照常；在途写请求会计数，供冻结端点等待排空。 */
   route(path: string, handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>, label: string = path): void {
-    this.ctx.effect(() => this.ctx.webServer.register({ kind: 'exact', path, handler }), label)
+    const self = this
+    const wrapped = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      const method = (req.method ?? 'GET').toUpperCase()
+      const isWrite = WRITE_METHODS.has(method)
+      const exempt = CONTROL_ROUTES.has(path)
+      if (isWrite && !exempt) {
+        if (self.frozen) { self.rejectFrozen(req, res); return }
+        self.writesInFlight++
+        try {
+          await handler(req, res)
+        } finally {
+          self.writesInFlight--
+          if (self.writesInFlight === 0) {
+            for (const wake of self.writeWaiters) wake()
+            self.writeWaiters.clear()
+          }
+        }
+        return
+      }
+      await handler(req, res)
+    }
+    this.ctx.effect(() => this.ctx.webServer.register({ kind: 'exact', path, handler: wrapped }), label)
+  }
+
+  /** 冻结期间拒绝新的写请求。
+   *
+   *  与 413 的处理同理：先把 503 响应完全交给内核，再断开请求。
+   *  大请求体（上传）此时可能仍在发送，立即 destroy 会触发 RST 把响应一起吞掉，
+   *  客户端只会看到 ECONNRESET，误以为服务挂了。 */
+  private rejectFrozen(req: IncomingMessage, res: ServerResponse): void {
+    const payload = JSON.stringify({
+      ok: false,
+      code: 'PRIVHUB_RESTARTING',
+      error: '服务正在更新，请刷新页面后重试',
+    })
+    try {
+      res.writeHead(503, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(payload),
+        'retry-after': '2',
+        connection: 'close',
+      })
+      res.end(payload, () => { req.destroy() })
+    } catch {
+      req.destroy()
+    }
+  }
+
+  /** 等待在途写请求归零；超时返回 false（控制层据此决定是否继续/回滚）。 */
+  waitForWrites(timeoutMs: number): Promise<boolean> {
+    if (this.writesInFlight === 0) return Promise.resolve(true)
+    return new Promise((done) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const wake = (): void => {
+        if (timer) clearTimeout(timer)
+        timer = null
+        this.writeWaiters.delete(wake)
+        done(this.writesInFlight === 0)
+      }
+      this.writeWaiters.add(wake)
+      timer = setTimeout(() => {
+        this.writeWaiters.delete(wake)
+        done(this.writesInFlight === 0)
+      }, Math.max(0, timeoutMs))
+      if (typeof timer.unref === 'function') timer.unref()
+    })
   }
 
   /** 鉴权辅助：从请求解析登录用户；未登录时直接回 401 并返回 null。 */
@@ -340,6 +454,75 @@ export class PrivHubStore extends Service {
     const u = this.me(tokenOf(req))
     if (!u) { json(res, 401, { ok: false, error: '未登录' }); return null }
     return u
+  }
+
+  /**
+   * 运行时控制接口的准入：仅本机回环 + 控制令牌。
+   *
+   * 这些端点能冻结全站写入、决定蓝绿切换，绝不能落到 LAN 客户端手里。
+   * 未设置 `PRIVHUB_CONTROL_TOKEN`（例如开发者直接 `npm run dev`）时一律关闭，
+   * 不让「本地调试」意外变成「任何人可冻结」。
+   */
+  controlAllowed(req: IncomingMessage, res: ServerResponse): boolean {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      json(res, 403, { ok: false, error: '运行时控制接口仅允许本机访问' })
+      return false
+    }
+    const expected = process.env.PRIVHUB_CONTROL_TOKEN?.trim() ?? ''
+    if (expected === '') {
+      json(res, 403, { ok: false, error: '运行时控制接口未启用（缺少 PRIVHUB_CONTROL_TOKEN）' })
+      return false
+    }
+    const raw = req.headers['x-privhub-control-token']
+    const given = Array.isArray(raw) ? raw[0] : raw
+    if (typeof given !== 'string' || given.length !== expected.length
+      || !timingSafeEqual(Buffer.from(given), Buffer.from(expected))) {
+      json(res, 403, { ok: false, error: '控制令牌无效' })
+      return false
+    }
+    return true
+  }
+
+  /** 注册「解除待命时执行」的回调。非待命进程立即执行（等价于正常启动路径）。
+   *  返回解除注册函数，供 ctx.effect 清理（插件卸载后不再触发）。 */
+  onActivate(fn: () => void | Promise<void>): () => void {
+    if (!this.standby) { void fn(); return () => { /* 已执行，无需清理 */ } }
+    this.activateHooks.push(fn)
+    return () => {
+      const i = this.activateHooks.indexOf(fn)
+      if (i >= 0) this.activateHooks.splice(i, 1)
+    }
+  }
+
+  /** 解除待命：先置 false（让回调看到已激活），再逐个执行延后的后台任务。 */
+  async activate(): Promise<{ activated: boolean; hooks: number }> {
+    if (!this.standby) return { activated: false, hooks: 0 }
+    this.standby = false
+    const hooks = this.activateHooks
+    this.activateHooks = []
+    for (const fn of hooks) {
+      try { await fn() } catch (e) {
+        console.error('[runtime] 激活钩子失败：' + (e instanceof Error ? e.message : String(e)))
+      }
+    }
+    /* L2 服务（如 svc-audit）在 core 之前挂载，拿不到 ctx.privhub.standby，
+     * 用事件解除待命。 */
+    try { this.ctx.emit('runtime:activated', { at: Date.now(), pid: process.pid, hooks: hooks.length }) } catch { /* 无监听方不影响激活 */ }
+    return { activated: true, hooks: hooks.length }
+  }
+
+  /** runtime 状态快照（控制层与运维脚本共用）。 */
+  runtimeState(): Record<string, unknown> {
+    return {
+      ok: true,
+      frozen: this.frozen,
+      writesInFlight: this.writesInFlight,
+      standby: this.standby,
+      version: appVersion,
+      pid: process.pid,
+      slot: process.env.PRIVHUB_SLOT ?? null,
+      uptimeSeconds: Math.floor(process.uptime()),
+    }
   }
 
   /* ---------- 并发控制 ---------- */
@@ -976,18 +1159,17 @@ export function apply(ctx: Context, config: Config): void {
   /* O2：健康检查（免登录）。只暴露「是否可用」所需的最小信息，
    * 不泄露路径、账号数、插件清单等敏感内容。 */
   const started = Date.now()
-  let version = 'unknown'
   void (async () => {
-    /* JT-09：版本号有两个来源。先看数据根（部署包会把 package.json 放在那），
+    /* JT-09：版本号有两个来源。先看代码根（蓝绿部署下每个 release 自带 package.json），
      * 取不到再回退到【本模块所在的应用目录】—— 测试/自定义 PRIVHUB_ROOT 的场景下
-     * 数据根通常没有 package.json，以前这里只剩 'unknown'，界面就没法报版本。 */
+     * 代码根通常没有 package.json，以前这里只剩 'unknown'，界面就没法报版本。 */
     const readVer = async (p: string): Promise<string | null> => {
       try {
         const raw = await readFile(p, 'utf8')
         return (JSON.parse(raw) as { version?: string }).version ?? null
       } catch { return null }
     }
-    version = (await readVer(join(rootDir, 'package.json')))
+    appVersion = (await readVer(join(codeRootDir, 'package.json')))
       ?? (await readVer(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json')))
       ?? 'unknown'
   })()
@@ -995,7 +1177,16 @@ export function apply(ctx: Context, config: Config): void {
     json(res, 200, {
       ok: true,
       service: 'privhub',
-      version,
+      version: appVersion,
+      /* 蓝绿控制层靠 pid 收养/优雅停止已有槽进程（Windows 上信号不可用）。 */
+      pid: process.pid,
+      slot: process.env.PRIVHUB_SLOT ?? null,
+      frozen: store.frozen,
+      writesInFlight: store.writesInFlight,
+      standby: store.standby,
+      /* 控制层据此判断该 release 是否支持「先预热、再冻结」的安全切换。
+       * 旧 release 没有这些能力，控制层会自动回落到「先冻结、再启动」。 */
+      capabilities: ['freeze', 'reload-state', 'standby', 'activate', 'session-check'],
       uptimeSeconds: Math.floor((Date.now() - started) / 1000),
       /* JT-19：健康检查是匿名可达、且外部集成方最先 curl 的端点——
        * 在这里给一行智能体接入指路，直接解决「拿到密钥却不知道请求头与前缀」的
@@ -1005,9 +1196,104 @@ export function apply(ctx: Context, config: Config): void {
     })
   }, 'health')
 
+  /* ---- 版本查询（直连 Node 的开发模式） ----
+   * 通过 nginx 部署时这个路径会被 nginx 的 /privhub/_version 反代到常驻控制层，
+   * 永远到不了这里；只有 `npm run dev` 直连 3180 时由 Node 应答。
+   * 返回 managed:false，前端据此不建立 SSE（没有控制层可听）。 */
+  store.route('/privhub/_version', async (req, res) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      json(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    json(res, 200, {
+      ok: true,
+      version: appVersion,
+      switchedAt: null,
+      ready: true,
+      managed: false,
+    })
+  }, 'version')
+
+  /* ---- 蓝绿热更新的运行时控制端点（仅回环 + PRIVHUB_CONTROL_TOKEN） ----
+   *
+   * 控制层（runtime/control.mjs）在切流量前调用 freeze，等旧槽在途写排空后再让
+   * 新槽接管。端点本身不受冻结拦截（见 CONTROL_ROUTES），否则冻结后无法解冻。 */
+  store.route('/privhub/api/runtime/state', async (req, res) => {
+    if (!store.controlAllowed(req, res)) return
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      json(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    json(res, 200, store.runtimeState())
+  }, 'runtime-state')
+
+  store.route('/privhub/api/runtime/freeze', async (req, res) => {
+    if (!store.controlAllowed(req, res)) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const body = await readJsonBody<{ timeoutMs?: unknown }>(req, res)
+    if (body === null) return
+    const raw = Number(body?.timeoutMs)
+    const timeoutMs = Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 60000) : 15000
+    store.frozen = true
+    const drained = await store.waitForWrites(timeoutMs)
+    json(res, 200, {
+      ...store.runtimeState(),
+      drained,
+      timeoutMs,
+    })
+  }, 'runtime-freeze')
+
+  store.route('/privhub/api/runtime/unfreeze', async (req, res) => {
+    if (!store.controlAllowed(req, res)) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    store.frozen = false
+    json(res, 200, store.runtimeState())
+  }, 'runtime-unfreeze')
+
+  /* 优雅停机：控制层切完流量后让旧槽退出。
+   *
+   * Windows 上 `child.kill('SIGTERM')` 走 TerminateProcess，子进程里的 SIGTERM 处理器
+   * 根本不会执行，在途读请求（大文件预览/下载）会被直接掐断。所以由控制层调这个
+   * 端点，先关监听（Node 19+ 会自动断开空闲 keep-alive，等在途连接自然结束），
+   * 再退出；控制层另有超时兜底强杀。 */
+  store.route('/privhub/api/runtime/shutdown', async (req, res) => {
+    if (!store.controlAllowed(req, res)) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    json(res, 200, { ok: true, shuttingDown: true, pid: process.pid })
+    setTimeout(() => {
+      const force = setTimeout(() => process.exit(0), 15000)
+      if (typeof force.unref === 'function') force.unref()
+      void ctx.webServer.close().then(() => process.exit(0), () => process.exit(0))
+    }, 30)
+  }, 'runtime-shutdown')
+
+  /* ---- nginx 静态插件的鉴权子请求 ----
+   *
+   * 插件前端代码即 API 全貌：未登录者不应靠猜地址枚举走。nginx 现在负责
+   * `/privhub-plugins/` 的静态服务，但 nginx 只能看到 Cookie 是否存在，无法判定
+   * 会话是否有效；因此由它发 auth_request 到这里，用与业务接口完全相同的会话校验。
+   * 路径不进入冻结逻辑（GET），也只需 204/401 两种结果。 */
+  store.route('/privhub/api/session/check', async (req, res) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      json(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    if (!store.me(tokenOf(req))) {
+      json(res, 401, { ok: false, error: '未登录' })
+      return
+    }
+    res.writeHead(204, {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    })
+    res.end()
+  }, 'session-check')
+
   /* D8：定时清理过期会话。原实现仅在「同一 token 再次被使用」时才删除，
    * 实测会话表累积到 3121 条、其中 93% 已过期（且每次续期都全量重写该文件）。 */
   const sessionSweep = setInterval(() => {
+    /* 待命槽不写盘：切流前控制层会 reload，旧槽的会话写入不会丢。 */
+    if (store.standby) return
     const now = Date.now()
     let removed = 0
     for (const [token, entry] of store.sessions) {

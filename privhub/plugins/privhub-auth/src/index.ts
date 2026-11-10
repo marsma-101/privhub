@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, tokenOf, hashPassword, verifyPassword, sessionSetCookie, sessionClearCookie } from '../../privhub-core/src/index'
 
-const rootDirForSettings = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const rootDirForSettings = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 /**
  * S11：读取「是否允许自助注册」开关。

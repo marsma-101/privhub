@@ -94,10 +94,10 @@ export const LIMITS = {
 
 export const NAME_MAX = LIMITS.name
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 
 export function rosterFile(): string {
-  return join(rootDir, 'data', 'roster.json')
+  return join(dataRootDir, 'data', 'roster.json')
 }
 
 /* ============ 清洗 ============ */
