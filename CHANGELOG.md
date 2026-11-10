@@ -1,7 +1,7 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.3.0**
+**当前版本：3.4.0**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -26,6 +26,55 @@
 > 引用检查+任务日历 / Webhook / 功能权限开关 / 多 Profile / 双链 ID 化 / 上传查重 / 管家①地基 / 长页面滚动条）
 > 与 4 段新增改动（任务看板待审核列 / 选项目落地项目看板 / V3 稳定化收尾批 / 项目看板↔任务看板联动）已一次性收成 **3.3.0**
 > （2026-10-15，见下方 `[3.3.0]` 段）。进度总览见 [`docs/PrivHub-开发状态与路线图.md`](docs/PrivHub-开发状态与路线图.md)。
+
+## [3.4.0] — 2026-11-10
+
+> **蓝绿热更新与自动更新（本版主线）**：解决单进程部署「更新时必须停服、用户会看到不可用」的问题。
+> 引入 `privhub/runtime/` 稳定层 + 自带官方 nginx + 双槽交替；**不改变文件与数据格式**，
+> 首次从旧单进程布局迁移到蓝绿无需搬数据（`data/`、`data-files/` 会被自动识别为数据根）。
+
+### 数据根与代码根分离
+
+- 新增 `PRIVHUB_DATA_ROOT`：锚定所有**数据**路径（`data/`、`data-files/`、`secret.key`）；未设置时回退
+   `PRIVHUB_ROOT`，保持旧行为。`PRIVHUB_ROOT` 只锚定**代码**根（插件发现、前端、`node_modules`）。
+- 蓝绿两槽从不同 release 目录启动，但共享同一个数据根（默认 `<privhub>/store/`），这是切换不丢数据的前提。
+- 审计、任务看板、Webhook、搜索引擎、git 备份、智能体密钥/配额等落盘路径统一改为数据根。
+
+### 控制层与切换顺序（`runtime/control.mjs`）
+
+- 常驻控制层只依赖 Node 内置模块：管理 `active.json`、槽进程、nginx 配置与 reload、SSE、切换/回滚/状态、自动更新守护。
+- 新槽先以 `PRIVHUB_STANDBY=1` **待命预热**（不跑任何后台写任务），把冷启动（实测 12–100 s）挡在冻结窗口之外；
+  再冻结旧槽 → 等待在途写排空（超时取消切换）→ 新槽 `/runtime/reload` 重读 users/sessions/ACL/cap/meta/templates/
+  links/dup/model → `/runtime/activate` 执行延后任务并发 `runtime:activated` → 落盘 `active.json` → nginx reload →
+  SSE 广播 → 停旧槽。任一步失败都会解冻旧槽、恢复旧配置。
+- 能力协商：release 在 `package.json` 声明 `privhub.runtimeCapabilities`；旧 release 缺少能力时回落到「先冻结再启动」
+  （首次升级到蓝绿的安全路径）。
+- 所有待命槽的周期写任务（回收站清理 / RAG 重建 / 全文索引 / git 备份 / 文件 Agent 配额 / 审计清理）统一延后到
+  `onActivate` / `runtime:activated`，避免两个进程并发写同一数据根。
+
+### nginx 与前端版本门
+
+- `scripts/fetch-nginx.ps1` 下载官方 nginx 并校验 SHA256；nginx 配置由控制层渲染（`runtime/nginx.conf.template`）。
+- nginx 在 `/index.html` 响应上原子写 `privhub_client_version=<当前版本>`；旧页面携带旧 Cookie 的非 GET/HEAD 请求
+  直接 409 `PRIVHUB_CLIENT_STALE`（登录/注册/Agent 路径豁免，避免旧页死锁）。
+- 前端启动时握手 `/privhub/_version`，订阅 `/privhub/_version/stream`；切换完成立即弹阻断层「系统已更新，请立即刷新」，
+  阻断期间 `api()` 本地拒绝写请求（原生 fetch 由全局 409 探测兜底）。直连模式 `managed:false`，版本门不启用。
+
+### 发布包与自动更新器
+
+- `scripts/build-release.mjs`：按白名单组装自包含 `releases/<version>/`（含 node_modules），绝不复制 `data/`、
+  `data-files/`、`config/`、`store/`；拒绝覆盖正在服务的 release。
+- `runtime/update.mjs`：支持 `git` 浅克隆 / `dir` 投放两种源；依赖清单或 lock 变化时拒绝复用旧 node_modules；
+  单实例锁；只通过控制层 `/control/switch` 切换；切换成功后清理旧 release（保留 `keepReleases` 个 + 当前/上一版本）。
+- 控制层启动时若存在 `config/update.json` 会自动拉起更新守护，停机时先停守护再停槽。
+
+### 修复与验证
+
+- 修复 RAG 向量化状态竞态：触发接口返回后、任务读取语料前状态仍为 `idle`，轮询方会误判「未开始」；
+  现在受理即置 `running`，异常落回 `idle` 并带 `error`。
+- 新增 `tests/runtime-contract.mjs`（89 项静态契约）；全量回归 `node tests/run-all.mjs --spawn`
+  **2098 项断言通过 / 0 失败**。
+- 版本号 `3.3.0 → 3.4.0`（自动更新器按「严格更高版本」判断，必须升版）。
 
 ## [3.3.0] — 2026-10-15
 

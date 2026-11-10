@@ -3,8 +3,13 @@
   PrivHub production deploy builder (O1/O4).  ASCII-only on purpose.
 
 .DESCRIPTION
-  Syncs privhub/{src,plugins,frontend} into deploy/privhub-deploy/ to produce
-  a standalone, runnable deployment package.
+  Syncs privhub/{src,plugins,frontend,mcp} into deploy/privhub-deploy/ to produce
+  a standalone, runnable SINGLE-PROCESS deployment package (start.bat).
+
+  For zero-downtime blue-green updates (recommended for production), use
+  privhub/scripts/build-release.mjs instead: it builds self-contained releases
+  for the runtime/ control layer. runtime/ is a stable layer and is intentionally
+  NOT copied into deploy/.
 
   NOTE ON ENCODING: this script is intentionally ASCII-only.
   Windows PowerShell 5.1 reads .ps1 files as ANSI unless they carry a UTF-8 BOM;
@@ -48,7 +53,7 @@ Step "Source     : $SrcDir"
 Step "Destination: $OutDir"
 
 # Only code is synced here; data and node_modules are handled separately.
-$syncDirs = @('src', 'plugins', 'frontend')
+$syncDirs = @('src', 'plugins', 'frontend', 'mcp')
 $syncFiles = @('package.json', 'start.bat')
 
 if (-not $WhatIfOnly) {
@@ -132,11 +137,13 @@ Write-Host "  has health  : $hasHealth"
 Write-Host "  data dir    : $dataState"
 Write-Host ""
 
-if ($pluginCount -lt 48) { Warn "Plugin count is below 48 - check the sync result" }
+if ($pluginCount -lt 60) { Warn "Plugin count is below 60 - check the sync result" }
 if (-not $hasRag) { Warn "svc-rag plugin missing" }
 
-Step 'Done. To start:'
+Step 'Done. To start (single process):'
 Write-Host "  cd `"$OutDir`""
 Write-Host "  npm install        # first time only (restores node_modules)"
 Write-Host "  start.bat 3181     # production port"
+Write-Host ""
+Warn "For blue-green updates use privhub/scripts/build-release.mjs + runtime/, not this package."
 Write-Host ""

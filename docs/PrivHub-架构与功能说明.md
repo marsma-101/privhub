@@ -1,18 +1,20 @@
 # PrivHub — 项目架构与功能说明（V3 现状快照）
 
-> 版本：**V3 现状快照 · 复核 2026-10-15（v3.3.0）**（历次核对：2026-09-06 / 09-11 / 09-14 v3.1.0 / 09-21 v3.1.1 / 10-13 初查 / 10-15 v3.2.0 逐节同步 / **10-15 并入 3.3.0 收口批**）· docs/ 根目录，持续维护
-> **2026-10-15 复核结论（并入发布收口批 B → 3.2.0 与批 C+D → 3.3.0，正文数字已逐节替换为实测值）**：v3.1.1 → 3.3.0 期间
-> 插件从 **50 增至 62**、注册 HTTP 路由从 **112 增至 150**，新增 `svc-links` / `svc-dup` / `svc-cap` /
-> `svc-lock` / `admin-cap` / `project-dashboard` / `task-board` / `task-calendar` / `webhook` /
-> `files-refcheck` / `shell-home` 等目录；分层架构、装配顺序、鉴权、存储、slot 机制等**结构描述未变**，仍然有效。
+> 版本：**V3 现状快照 · 复核 2026-11-10（v3.4.0）**（历次核对：2026-09-06 / 09-11 / 09-14 v3.1.0 / 09-21 v3.1.1 / 10-13 初查 / 10-15 v3.2.0 逐节同步 / **10-15 并入 3.3.0 收口批** / 10-16 看板批 / **11-10 蓝绿热更新批**）· docs/ 根目录，持续维护
+> **2026-11-10 复核结论（并入 v3.4.0 蓝绿热更新批，正文数字已按实测替换）**：
+> 插件 **63 → 64**（新增 `mindmap` 思维导图；`roster` 已于 10-16 增）、注册 HTTP 路由 **157 → 165**
+> （旧快照的 154 已漂移，本次按实测重算，含 10-16 之后陆续新增的 mindmap 等路由）
+> （新增运行时/版本门 8 条：`_version`、`runtime/state|freeze|unfreeze|shutdown|reload|activate`、
+> `session/check`）；slot 并集 **38 → 40**（新增 `mindmap` / `mindmap-global`），视图并集 **22 → 23**。
+> 本版新增 **数据根/代码根拆分**（`PRIVHUB_DATA_ROOT`）与 **蓝绿运行时**（`runtime/` 稳定层 + 自带 nginx + 自动更新器），
+> 其余分层架构、装配顺序、鉴权、存储、slot 机制**结构描述未变**。
 > 本次复核方式：直接扫描 `privhub/plugins/`、`privhub/src/`、`privhub/frontend/index.html` 逐项替换数字
 > （不再依赖启动日志）。新增问题与遗留项以《PrivHub-待改进清单-2026-09-21.md》为准。
-> **2026-10-16 增量（看板改进批首项）**：插件 **62 → 63**（新增 `roster` 智能体名册）、
-> 注册 HTTP 路由 **150 → 154**；slot / 视图并集**未变**（名册复用 `dashboard-view`）。详见 §2.1 / §2.3。
 > **核对口径**：插件数 = `privhub/plugins/` 下**非 `_` 开头**目录数（`_retired-v2/` 为归档目录、不参与装配）；
 > 路由数 = `.route('<路径>'` 调用数（注释里提及的 `svc.route()` 不计入；按「`.route(` 出现次数」的旧口径连注释一起数会得到 156）；
 > slot 数 = 各 `client/manifest.json` 的 `slots` 并集；视图数 = `barItems[].view` 并集。
-> 代码位置：`privhub/`（纯 Cordis 插件架构，零 DSH 依赖）· 开发环境 3180 · 生产环境 3181（`deploy/privhub-deploy/`）
+> 代码位置：`privhub/`（纯 Cordis 插件架构，零 DSH 依赖）· 开发环境 3180 · 生产环境 3181
+> （单进程包 `deploy/privhub-deploy/`；蓝绿形态 `runtime/` 控制层 + 自带 nginx，槽在 127.0.0.1:3301/3302）
 > 历史文档归档：`docs/v2/`（V2 时代全部方案/计划/报告）· `docs/v1/`（最早归档）
 
 ---
@@ -27,32 +29,32 @@
 
 ## 二、总体架构
 
-### 2.1 插件全景（**63 个插件目录**，2026-10-16 复核）
+### 2.1 插件全景（**64 个插件目录**，2026-11-10 复核）
 
-`privhub/plugins/` 下非归档目录共 **63 个**（另有 `_retired-v2/` 归档目录，内含若干已退役插件，以 `_` 前缀整体排除，不参与装配）。
+`privhub/plugins/` 下非归档目录共 **64 个**（另有 `_retired-v2/` 归档目录，内含若干已退役插件，以 `_` 前缀整体排除，不参与装配）。
 
 **按装配方式拆解（权威依据 = `src/main.ts` + 启动日志）**：
 
 | 装配方式 | 数量 | 说明 |
 |---|---|---|
-| 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 21 项） | 21 | L2 能力 Service 14 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册） |
-| L3 自动发现装配（扫描到 `src/index.ts` 即挂载） | 42 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2）、`roster`（智能体名册，2026-10-16 新增） |
-| 纯前端插件（只有 `client/`，无 `src/index.ts`） | 9 | `admin-audit-panel` / `admin-console`※ / `files-upload` / `files-upload-queue` / `files-wiki` / `shell`※ / `shell-home` / `task-calendar` / `trash-ui` |
+| 核心清单手动挂载（`CORE_PLUGINS`，main.ts 硬编码 21 项） | 21 | L2 能力 Service 14 个 + L1 六枢纽 6 个 + `admin-acl` 守卫 1 个（必须早于业务路由注册）；其中 `shell` 服务端代码在 `server/index.ts` |
+| L3 自动发现装配（非核心目录 + 扫描到 `src/index.ts` 即挂载） | 35 | 含 `svc-rag`（命名 `svc-` 前缀但装配层级实为 L3，见改进清单 B2）、`roster`（智能体名册，10-16 增）、`mindmap`（思维导图，v3.3.0 增） |
+| 无服务端装配（无 `src/index.ts`） | 9 | 其中 8 个纯前端：`admin-audit-panel` / `admin-console` / `files-upload` / `files-upload-queue` / `files-wiki` / `shell-home` / `task-calendar` / `trash-ui`；另 `shell` 服务端在 `server/index.ts`（归核心清单） |
 
-→ **54 个含 `src/index.ts` + 9 个纯前端 = 63**。其中 **39 个插件带 `client/manifest.json`**（前端可挂载）；
-54 个有 `src/` 的插件里，**39 个注册 HTTP 路由**，其余仅提供注入能力或纯前端。
+→ **64 = 21 手动核心 + 35 自动 L3 + 8 纯前端**；其中 **55 个目录含 `src/index.ts`**（20 核心 + 35 L3），
+**40 个插件带 `client/manifest.json`**（前端可挂载）；**40 个插件注册 HTTP 路由**，其余仅提供注入能力或纯前端。
 
-> ※ `admin-console`（v3.1.0 新增）是**纯前端插件**：无 `src/` 故不参与服务端装配，只提供
+> `admin-console`（v3.1.0 新增）是**纯前端插件**：无 `src/` 故不参与服务端装配，只提供
 > 管理控制台外壳与 `admin-nav` / `admin-*` slot 契约。
 >
-> `privhub-shell` 属特例：服务端代码在 `server/index.ts`（非 `src/index.ts`），故计入「纯前端」列的统计口径，
-> 但它实际提供 manifest 聚合路由。
+> `privhub-shell` 属特例：服务端代码在 `server/index.ts`（非 `src/index.ts`），不参与 L3 自动发现，
+> 但实际提供 manifest 聚合路由。
 
 **按分层归类**：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  L3 功能插件（42 个，自动发现装配）                          │
+│  L3 功能插件（35 个，自动发现装配）                          │
 │  admin-audit admin-cap auth-watermark                        │
 │  files-agent files-comments files-dataview                   │
 │  files-edit-md files-explorer-v3 files-export                │
@@ -63,7 +65,7 @@
 │  files-tags files-template files-versions                    │
 │  git-backup project-dashboard shell-agent-console            │
 │  shell-favorites shell-recent shell-settings                 │
-│  svc-rag roster task-board webhook                           │
+│  svc-rag roster mindmap task-board webhook                    │
 ├─────────────────────────────────────────────────────────────┤
 │  L2 能力 Service（14 个，手动挂载）                           │
 │  svc-storage(S7加密) svc-events(事件注册表) svc-audit(S1审计)  │
@@ -80,19 +82,20 @@
 
 **挂载顺序（`src/main.ts`）**：webServer → L2（S7 storage 最先，其余依赖它）→ core → adminAcl（包装 `svc.route`，必须在路由注册前）→ auth/files/trash/admin/shell → L3 功能插件自动发现（`CORE_PLUGINS` 清单外的插件）→ listen。
 
-**L3 装配数量（2026-10-16 实测）**：按 `CORE_PLUGINS` 清单外、且带 `src/index.ts` 的目录计，自动发现装配 **42 个**。
+**L3 装配数量（2026-11-10 实测）**：按 `CORE_PLUGINS` 清单外、且带 `src/index.ts` 的目录计，自动发现装配 **35 个**
+（2026-11-10 启动日志实测同样为 35 个）。
 （历史实证：`privhub/server-dev.log` 2026-09-06 09:39 记录当时 26 个 L3 全部发现并挂载成功、无失败项，
 唯一告警是 Node `fs.rmdir({recursive:true})` 的 DEP0147 弃用提示——该日志早于其后多批改动，仅作历史参考。）
 
 ### 2.2 前端骨架（frontend/index.html，1100 行单文件 + Vue3 全局）
 
-| 机制 | 实际现状（2026-10-15 v3.3.0 复核） |
+| 机制 | 实际现状（2026-11-10 v3.4.0 复核） |
 |---|---|
 | `window.PrivHub` 桥 | **骨架 26 个键 + 插件运行时追加**。骨架基座 12：`api` / `AUTH` / `THEME` / `applyTheme` / `logout` / `toast` / `bus` / `nav` / `fileIcon` / `previewImageUrl` / `previewPdfUrl` / `sortedEntries`；骨架扩展 14：`badges` / `manifests` / `barItems` / `loadBarItems` / `openBarItem` / `openAdmin`（=`openConsole`）/ `openSettings` / `openAcl` / `openAudit` / `openTags` / `openTemplate` / `openKg` / `openWiki`；插件运行时追加（实测 2 个）：`openRagDup` / `ragIntent`（svc-rag） |
 | `window.PrivHub` 第二层鉴权 | 插件前端代码经 `/privhub-plugins/<名>/<文件>` 加载，**需有效会话**（v3.0.1 起）。仅放行登录框自身（声明 `auth` slot 的插件，与 manifest 分级同判据）。会话经 `privhub_sid` Cookie 传递（HttpOnly + SameSite=Strict）——浏览器 `import()` 子资源无法附加 `Authorization` 头；`Bearer` 通道保持不变 |
-| slot 挂载 | 骨架按 `slots` 渲染；插件 client 导出 `export default { id, slots: { 槽名: Vue组件 } }`；**同 slot 可多组件**（数组累积）。插件实际声明的 slot 并集 **38 个**（2026-10-15 实测）：`acl` `admin` `admin-cap` `admin-console` `admin-settings` `admin-tags` `admin-template` `admin-trash` `admin-webhook` `agent-view` `app-iconbar` `audit` `auth` `calendar-view` `dashboard-view` `fav-view` `home` `kg` `md-editor` `office-editor` `panel` `preview` `project-tabs` `rag-view` `refcheck-view` `search-view` `settings` `tags` `taskboard-view` `template` `trash-view` `tree` `upload` `upload-queue` `user-area` `watermark` `welcome` `wiki`；另有 `tabs` 仅骨架渲染、已无插件声明（`shell-tabs` 已退役进 `_retired-v2/`） |
+| slot 挂载 | 骨架按 `slots` 渲染；插件 client 导出 `export default { id, slots: { 槽名: Vue组件 } }`；**同 slot 可多组件**（数组累积）。插件实际声明的 slot 并集 **40 个**（2026-11-10 实测）：`acl` `admin` `admin-cap` `admin-console` `admin-settings` `admin-tags` `admin-template` `admin-trash` `admin-webhook` `agent-view` `app-iconbar` `audit` `auth` `calendar-view` `dashboard-view` `fav-view` `home` `kg` `md-editor` `mindmap` `mindmap-global` `office-editor` `panel` `preview` `project-tabs` `rag-view` `refcheck-view` `search-view` `settings` `tags` `taskboard-view` `template` `trash-view` `tree` `upload` `upload-queue` `user-area` `watermark` `welcome` `wiki`；另有 `tabs` 仅骨架渲染、已无插件声明（`shell-tabs` 已退役进 `_retired-v2/`） |
 | 多组件 slot | `office-editor` 挂 8 个插件（comments / dataview / invite / mdpage / office-ui / office2 / publish / versions）；`user-area` 挂 3 个（explorer-v3 / shell / shell-recent）；`auth` 挂 2 个（auth / shell） |
-| `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式）。`setActiveView(v, opts)` 内置「同视图再点即回 files」的 toggle 语义，**`opts.noToggle` 可关闭该语义**（管理控制台专用：管理页之间切换不得被弹回文件页）。实际 **22 个视图**（2026-10-15 实测）：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` `home` `taskboard` `calendar` `dashboard` `refcheck` `agent` `admin-cap` `admin-webhook` `admin-settings`；按 `group` 字段归入 6 群（`files` `knowledge` `ai` `collab` `system` `global`） |
+| `nav.activeView` | **单一视图状态源**（⑤ 视图化，llm_wiki 范式）。`setActiveView(v, opts)` 内置「同视图再点即回 files」的 toggle 语义，**`opts.noToggle` 可关闭该语义**（管理控制台专用：管理页之间切换不得被弹回文件页）。实际 **23 个视图**（2026-11-10 实测）：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` `home` `taskboard` `calendar` `dashboard` `refcheck` `agent` `admin-cap` `admin-webhook` **`mindmap` `mindmap-global`**；按 `group` 字段归入 6 群（`files` `knowledge` `ai` `collab` `system` `global`） |
 | manifest 加载链 | 骨架 `GET /privhub/api/shell/manifest`（shell 插件聚合，5s TTL 缓存 + A19 view 冲突检测）→ 逐插件 `import('/privhub-plugins/<目录名>/index.js')` → 按 slot 注册 |
 | V3 布局 | explorer-v3 自带文件树（含文件 + ⋯ 菜单）+ 中央 VS Code 式标签页 + 右侧详情面板；md/txt 内嵌编辑 + office 浮层编辑；标签页软上限 **30**（超限从头部淘汰，见 `explorer-v3/client/tabs.js`） |
 | **插件前端模块化**（v3.0.4） | 插件前端按职责拆成同目录多文件，**全部留在该插件目录内**（卸载插件则其前端一并消失）。范例：`explorer-v3/client/` 单文件 1628 行 → 12 个模块；`admin-console/client/` 16 个模块 / 1980 行。依赖方向严格单向、无环。骨架 `frontend/` 只做容器与总线（唯一主界面），不承载业务 UI |
@@ -100,11 +103,17 @@
 | 项目上下文 | 选项目后搜索/收藏/回收站均限定当前项目（服务端 visibleProjects 白名单兜底） |
 | 持久化 | localStorage（token/主题/侧栏宽/字体档/**管理侧栏折叠态/管理详情列表宽/上次管理路由**）、sessionStorage（标签，按用户名分 key） |
 
-### 2.3 后端路由面（**154 条路由 · 39 个插件**，2026-10-16 复核）
+### 2.3 后端路由面（**165 条路由 · 40 个插件 + `main.ts`**，2026-11-10 复核）
 
-- 全仓 `.route('<路径>'` 注册 **154 条**（无重复路径），分布于 **39 个插件**（其余有 `src/` 的插件不注册 HTTP 路由，仅提供注入能力）。
-  统计口径：以 `.route('<路径>'` 调用计（注释里提及的 `svc.route()` 不计入）；按「`.route(` 出现次数」的旧口径连注释一起数会得到 156。
-- 路由数 Top：`files-agent` 24 · **`svc-rag` 18** · `files` 10 · `webhook` 8 · `admin` 8（`svc-rag` 含本轮新增的 `model/write` 写作助手；`task-board` 5 —— 含 `cards/review` 审核流；`files-agent` 含 2026-10-16 新增的智能体名册 `roster` 与 `board` 两条）。
+- 全仓 `.route('<路径>'` 注册 **165 条**（无重复路径）：**163 条分布在 40 个插件**，另 **2 条在
+  `src/main.ts`**（`/privhub/api/runtime/reload` 与 `/runtime/activate`，供控制层切换时调用）。
+  其余有 `src/` 的插件不注册 HTTP 路由，仅提供注入能力。
+  统计口径：以 `.route('<路径>'` 调用计（注释里提及的 `svc.route()` 不计入）。
+- **v3.4.0 新增 8 条运行时路由**：`/privhub/_version`、`/privhub/api/runtime/state|freeze|unfreeze|shutdown`、
+  `/privhub/api/session/check`（以上由 `privhub-core` 注册）与 `main.ts` 的 `reload` / `activate`。
+- 路由数 Top：`files-agent` 24 · **`svc-rag` 18** · `files` 10 · `webhook` 8 · `admin` 8
+  （`svc-rag` 含 `model/write` 写作助手；`task-board` 5 —— 含 `cards/review` 审核流；
+  `files-agent` 含智能体名册 `roster` 与 `board` 两条）。
 - **ACL 守卫覆盖面**：`admin-acl` 以白名单表 `GUARD_PATHS` 显式管辖 **38 条文件相关路由**（per-method 裁决 view/upload/edit/delete），并包装 `svc.route` 使之后注册的全部路由都经守卫函数（未列入白名单的 method 直接透传）。守卫于 2026-09-05 从 L1 扩展到 L3 写路由。
 
 ### 2.3b 核心概念：项目 / 个人空间 / 智能体沙箱（v3.0.1 新增）
@@ -152,9 +161,42 @@
 - `privhub/mcp/`（**非插件**，不进装配）：`privhub-mcp.mjs` 零依赖 stdio MCP 转接器 +
   `butler-setup.mjs` 一步接入脚本（打 `privhub-mcp.json` + 打印各客户端接线片段）。
 
+### 2.3c 数据根与蓝绿运行时（v3.4.0 新增）
+
+**代码根 / 数据根拆分**（蓝绿的前提）：
+
+| 环境变量 | 锚定 | 未设置时 |
+|---|---|---|
+| `PRIVHUB_ROOT` | **代码根**：插件发现、`frontend/`、`node_modules` | 回落 `process.cwd()` |
+| `PRIVHUB_DATA_ROOT` | **数据根**：`data/`、`data-files/`、`secret.key` | 回落 `PRIVHUB_ROOT` |
+
+蓝绿两个 release 跑在不同发布目录，但必须共享同一个数据根，所以**新代码的数据路径一律用
+`PRIVHUB_DATA_ROOT` 派生，绝不用 `PRIVHUB_ROOT`**。监听地址由 `PRIVHUB_HOST` 指定（槽只绑回环）。
+
+**`privhub/runtime/` 是稳定层，永不进入 release**：`control.mjs`（常驻控制进程，仅用 Node 内置模块）、
+`update.mjs`（自动更新器）、`nginx.conf.template`、自带官方 `nginx/`。
+
+- 形态：nginx 对外（默认 3181）→ 两个 release 槽轮换（`127.0.0.1:3301/3302`），同一时刻只有一个接流；
+- 切换顺序（`tests/runtime-contract.mjs` 钉死）：目标槽在 `PRIVHUB_STANDBY=1` 下预热（不跑后台写入器）
+  → 冻结旧槽 → 排空在途写 → `POST /runtime/reload`（从盘重读 users/sessions/ACL/cap/meta/links/dup/model）
+  → `POST /runtime/activate`（执行延后钩子 + `runtime:activated`）→ 落 `active.json` → nginx reload
+  → SSE 广播给前端 → 停旧槽；任一步失败则解冻 / 回滚；
+- 能力协商：release 的 `package.json` 声明 `privhub.runtimeCapabilities`；旧版本不会声明，控制层自动回落到
+  「先冻结再启动」的保守路径；
+- **新增周期性写入器必须包在 `ctx.privhub.onActivate(...)` 里**；**新增内存可写状态必须暴露 `reload()` 并
+  加进 `main.ts` 的重载清单**，否则预热槽会带着过期数据接流；
+- 版本门：nginx 在 `/index.html` 写 `privhub_client_version` cookie；旧版本页面发出的非 GET/HEAD 请求
+  返回 **409 `PRIVHUB_CLIENT_STALE`**（登录 / 注册 / 智能体路由豁免），前端经 SSE 收版本变化后弹阻塞刷新框；
+  直接 `npm run dev` 无控制层，`/privhub/_version` 返回 `managed:false`，版本门不生效；
+- 发布与更新：`scripts/build-release.mjs` 按白名单构建自包含 release；`runtime/update.mjs` 支持 git / 共享目录
+  两种更新源，依赖漂移拒绝、单实例锁、只通过控制层切换，成功后按 `keepReleases` 清理旧 release
+  （当前与上一版本始终保留，另有 `prune` 手动清理）；`config/update.json` 必须是**严格 JSON**（不能写注释）。
+
 ### 2.4 数据与安全
 
-- **S7 静态加密**：文件头 `PHENC1` + iv + tag；审计块 `PHAUD1`。密钥 `data/secret.key`（32B）或环境变量 `PRIVHUB_SECRET`。宿主机直接打开 `data-files/` 无法读取明文。
+- **S7 静态加密**：文件头 `PHENC1` + iv + tag；审计块 `PHAUD1`。密钥 `data/secret.key`（单进程）
+  或 `<数据根>/data/secret.key`（蓝绿默认 `<privhub>/store/data/secret.key`，32B），也可用环境变量
+  `PRIVHUB_SECRET` 覆盖。宿主机直接打开 `data-files/` 无法读取明文。
 - **⚠️ 加密并非全覆盖（2026-09-21 实测更新）**：`data/` 下系统 JSON 绝大多数为 `PHENC1` 密文；
   **仍为明文的剩 3 个**：`comments.json`、`publish.json`、`invites.json`（文档批注、发布链接、邀请码——后两者含免登录凭据）。
   ~~`settings.json`~~ 已收口：`privhub-shell-settings/src/index.ts:43-57` 改走 `ctx.storage`，磁盘实测文件头为 `PHENC1`。
@@ -229,7 +271,7 @@
 ### 3.4 交互体验（V2/V3 演进）
 | 项 | 说明 |
 |---|---|
-| 功能面板视图化 | 功能面板 = main 全宽视图（llm_wiki 范式），单一 activeView，天然互斥无残留（共 22 个视图，其中功能面板含 settings/admin/acl/audit/tags/template/kg/wiki/rag/home/taskboard/calendar/dashboard/refcheck/agent 等） |
+| 功能面板视图化 | 功能面板 = main 全宽视图（llm_wiki 范式），单一 activeView，天然互斥无残留（共 23 个视图，其中功能面板含 settings/admin/acl/audit/tags/template/kg/wiki/rag/home/taskboard/calendar/dashboard/refcheck/agent/mindmap/mindmap-global 等） |
 | V3 布局（VS Code 范式） | 侧边栏树含文件 + ⋯ 菜单；中央文件级标签页 + 内容区（撑满中间栏）；右侧详情面板（选中/打开即显示） |
 | 项目选择栏 | 未选项目时左侧栏显示项目列表（选中后变目录树），主区保持干净 |
 | 项目上下文贯穿 | 搜索/收藏/回收站限定当前项目；未选项目空态引导，杜绝跨项目混淆 |

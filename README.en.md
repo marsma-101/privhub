@@ -5,29 +5,44 @@
 #### Description
 PrivHub — a LAN file hub center: a file management system built on a pure Cordis base with self-developed plugins. Ready to use, encrypted at rest, and deployable as a private service.
 
-**Current version: 3.1.1** — per-version changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+**Current version: 3.4.0** — per-version changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+The headline feature of this release is **zero-downtime blue-green updates**: a bundled official
+nginx, two alternating slots, an old-page version gate, release packaging, and an auto-updater.
+Both the single-process launcher (`start.bat`) and the blue-green launcher (`start-runtime.bat`)
+are supported; see [`privhub/runtime/README.md`](privhub/runtime/README.md) for the runtime layout.
 
 #### Software Architecture
 - **Pure Cordis base**: only depends on `@deepseek-ai/cordis` + `schemastery` + `tsx`. No heavy framework; the whole directory can be moved and run as-is.
-- **Three-layer plugin architecture** (currently **50 plugin directories**):
+- **Three-layer plugin architecture** (currently **64 plugin directories**; 55 with `src/index.ts`, plus 8 frontend-only and `shell` whose server code lives in `server/index.ts`):
   - L1 core hubs: core / auth / files / trash / admin / shell
-  - L2 capability services (10): storage / events / audit / acl / watermark / search / meta / collab / office / model
+  - L2 capability services (14): storage / events / audit / acl / watermark / search / meta / collab / lock / office / model / links / dup / cap
   - L3 feature plugins: auto-discovered and assembled (add/remove = add/remove a `plugins/` directory, no code changes)
-- **Self-developed webServer** (node:http): exact-route + static frontend + `/privhub-plugins/<name>/<file>` plugin asset mapping (112 backend routes across 31 plugins).
+- **Self-developed webServer** (node:http): exact-route + static frontend + `/privhub-plugins/<name>/<file>` plugin asset mapping (165 backend routes: 163 across 40 plugins, plus 2 runtime routes in `src/main.ts`).
+- **Blue-green runtime (v3.4.0)**: `privhub/runtime/` is a stable layer that never ships inside a release. A resident control process drives two slots (127.0.0.1:3301/3302) behind a bundled official nginx. A switch prewarms the idle slot, freezes/drains the old one, reloads shared state, activates the new slot, reloads nginx, then stops the old slot; failures unfreeze and roll back. Stale pages are blocked by a version cookie + 409 gate with an immediate-refresh modal.
 - **Frontend**: Vue single-page skeleton (single `index.html`, no build step) + manifest/slot loader; pure-frontend plugins work out of the box.
 
 #### Installation
 
-1. Requirement: Node.js 20+ (tested on v24.21.0; no other runtime needed).
-2. Install dependencies: `npm install` (restores 15 runtime packages: cordis / schemastery / tsx / better-sqlite3 / sqlite-vec / Office document libraries, etc.).
-3. Start dev environment: double-click `start.bat`, visit http://127.0.0.1:3180
-4. Production: `start.bat 3181`, visit http://127.0.0.1:3181
+1. Requirement: Node.js 20+ (tested on v24.21.0; single-process needs no other runtime). Blue-green also needs Windows + official nginx (downloaded by script).
+2. Install dependencies inside `privhub/`: `npm install` (restores 15 runtime packages: cordis / schemastery / tsx / better-sqlite3 / sqlite-vec / Office document libraries, etc.).
+3. **Single process (dev / small deployments)**: double-click `start.bat` → http://127.0.0.1:3180; production: `start.bat 3181`.
+4. **Blue-green (recommended for production)**:
+   ```bat
+   powershell -ExecutionPolicy Bypass -File scripts\fetch-nginx.ps1
+   node scripts\build-release.mjs
+   start-runtime.bat
+   ```
+   Public entry is nginx (3181 by default); slots listen only on 127.0.0.1:3301/3302.
+   Apply updates with `node runtime\update.mjs apply` (or `daemon`); roll back with `node runtime\control.mjs rollback`.
 
 #### Instructions
 
 1. Default accounts are generated on first launch: `admin` / `admin123` (change the password immediately after login), plus a sample account `user1` / `user123`.
-2. User files and system data are encrypted at rest with AES-256-GCM (file header `PHENC1`); the key `data/secret.key` must be backed up together with the data — losing the key means the data cannot be recovered.
-   ⚠️ Exception: `comments.json`, `publish.json`, and `invites.json` are currently stored as plaintext (`settings.json` has already been migrated to encrypted storage).
+2. User files and system data are encrypted at rest with AES-256-GCM (file header `PHENC1`). The key is `privhub/data/secret.key`
+   in single-process mode, or `<privhub>/store/data/secret.key` in blue-green mode (or provided via `PRIVHUB_SECRET`). Back it up
+   together with the data — losing the key means the data cannot be recovered.
+   ⚠️ Exception: `comments.json` and `invites.json` may still be plaintext; the startup log lists the actual plaintext files,
+   and an admin can migrate them via `POST /privhub/api/storage/migrate`.
 3. Full deployment, migration, and plugin development guide: [`privhub/部署说明.md`](privhub/部署说明.md).
 
 #### Contribution

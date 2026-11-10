@@ -1,10 +1,14 @@
 @echo off
 title PrivHub Launcher (dev 3180 / prod 3181)
 REM ============================================================
-REM   PrivHub launcher (pure Cordis mode)
+REM   PrivHub launcher (pure Cordis mode, SINGLE PROCESS)
 REM   Base: @deepseek-ai/cordis (npm dependency, ~12MB)
 REM   Usage: start.bat            -> dev 3180
 REM          start.bat 3181       -> prod 3181
+REM
+REM   For zero-downtime blue-green updates use start-runtime.bat
+REM   (control layer + bundled nginx); see runtime\README.md.
+REM   Do not point both launchers at the same port.
 REM ============================================================
 cd /d "%~dp0"
 
