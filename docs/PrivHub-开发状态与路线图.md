@@ -13,14 +13,20 @@
 
 ---
 
-> ## 🚧 当前状态（2026-11-10）
+> ## 🚧 当前状态（2026-11-11）
 >
-> **`3.4.1` 是当前发布版本**：3.4.0 落地蓝绿热更新闭环（控制层 / 自带 nginx / 前端版本门 /
+> **`3.5.0` 是当前发布版本**：3.4.0 落地蓝绿热更新闭环（控制层 / 自带 nginx / 前端版本门 /
 > 发布包构建器与自动更新器）；3.4.1 修复 GitHub issue #1「视频上传反复失败」
-> （上限与设置同源、超限 413 可读、XHR 进度、自动重试、真重试、传输超时）。
-> **下一步**：蓝绿双槽真机切换实测（隔离端口，需主人点头再动测试栈）；
-> **V4**（并入引擎 / 宿主机智能体系统）**推迟**；issue #1 的中期项
-> **分片上传 + 断点续传**（B6）尚未做，另行排期。
+> （上限与设置同源、超限 413 可读、XHR 进度、自动重试、真重试、传输超时）；
+> 3.5.0 完成 issue #1 中期项 **B6 分片上传 + 断点续传**（8MB 分片 / 断网只补缺片 /
+> 刷新后重选同一文件继续 / 合并落盘仍是同一加密格式），并在同日补齐
+> **「纯使用版 + 一键热更新」**（HTTP 清单源 / 管理界面检查·更新·回滚 /
+> 自包含使用版打包，使用方无需源码与 npm）；随后按 GitHub issue #2 使用端反馈
+> 收口**三类存储根 + 密钥保护 + 切换前存储自检**（新端口不会再看到「空库」）。
+> **下一步**：issue #2 的 REQ-5（回收站根一致性）与 REQ-6（蓝绿首启自动沿用旧布局）已补齐，
+> 待主人决定是否推送 GitHub；本地个人服务（3180）的更新需另行申请停机窗口。
+> **V3 主线**：只做基础功能完善与缺陷修复；**V4 引擎层不在当前范围内**。
+> 蓝绿双槽真机切换实测由主人在生产端执行，开发侧只保证发布包可构建、契约测试全绿。
 
 ---
 
@@ -28,12 +34,12 @@
 
 | | |
 |---|---|
-| **当前版本** | **3.4.1**（唯一来源 `privhub/package.json`；`GET /privhub/api/health` 上报） |
+| **当前版本** | **3.5.0**（唯一来源 `privhub/package.json`；`GET /privhub/api/health` 上报） |
 | **最大口径债** | ✅ **已清零**：3.3.0 一次性收掉积压 15 段（批 A → 3.1.4、批 B → 3.2.0、批 C+D+4 段新增 → 3.3.0）；3.4.0 起「代码 = 版本号 = 发布包」再由 `build-release.mjs` + 更新器打通 |
-| **当前主线** | 蓝绿热更新已收口（3.4.0）+ 上传链路已修复（3.4.1，issue #1） → 下一步做**双槽真机切换实测**；宿主机智能体管家（MCP）②③④ 仍待做（**归属 V4 引擎层**） |
-| **本阶段第一动作** | 蓝绿双槽 + nginx 端到端实测（隔离端口，不碰 3180/3181；动测试栈前需主人点头）；issue #1 中期项「分片上传 + 断点续传」另行排期 |
+| **当前主线** | 蓝绿热更新已收口（3.4.0）+ 上传链路已修复（3.4.1）+ 分片续传已落地（3.5.0，issue #1 中期项）+ **纯使用版一键热更新已落地**（3.5.0 同日）+ **存储根/密钥安全已收口**（issue #2） → 下一步做**双槽真机切换实测**；宿主机智能体管家（MCP）②③④ 仍待做（**归属 V4 引擎层**） |
+| **本阶段第一动作** | 蓝绿双槽 + nginx 端到端实测（隔离端口，不碰 3180/3181；动测试栈前需主人点头） |
 | **质量闸门** | 无 lint / typecheck / `npm test`；唯一闸门是手写回归 `node tests/run-all.mjs --spawn`（硬拒 3180/3181） |
-| **最近全绿** | **2026-11-10 v3.4.1 修复批**：`run-all.mjs --spawn` 全量退出码 0（含新增 `upload-limit` 7 项；`integrity` 231/0）。上一基线为 v3.4.0 收口 **2098 项 / 0 失败**（含 `runtime-contract.mjs` 89 项蓝绿静态契约） |
+| **最近全绿** | **2026-11-11 v3.5.0 存储根批**：`run-all.mjs --spawn` 全量退出码 0（HTTP 347 项全绿；`integrity` 243/0；`runtime-contract` 155/0；新增 `update-source` 25/0、`store-config` 23/0；合计 **2256 项 / 0 失败**） |
 
 ---
 
@@ -71,6 +77,9 @@
 | 3.3.0 | 2026-10-15 | **发布收口批 C + D（合并发布）**：引用检查 / 任务日历 / Webhook / 功能权限开关 / 音视频预览 / 长页面滚动条 / 表格行上限·`.doc` + 多 Profile 模型配置 / RAG 流式 / 双链 ID 化 / 上传查重 + 四段新增（任务看板待审核列 / 选项目落地项目看板 / V3 稳定化收尾批 / **项目看板↔任务看板联动**）。**后端路由 148 → 150**；已推送 GitHub |
 | 3.4.0 | 2026-11-10 | **蓝绿热更新闭环**：`PRIVHUB_DATA_ROOT` 数据根 / 代码根拆分；`runtime/control.mjs` 控制层（待命预热 → 冻结 → 排空 → reload → activate → 切 nginx → 停旧槽，含能力协商与回滚）；自带官方 nginx + 版本 cookie + 409 `PRIVHUB_CLIENT_STALE` 旧页面门；`build-release.mjs` 发布包构建器 + `update.mjs` 自动更新器（git/dir 源、依赖漂移拒绝、`keepReleases` 清理，`prune` 手动清理）；修 RAG 向量化状态竞态。**后端路由 157 → 165**（新增运行时/版本门 8 条），**插件目录 63 → 64**；回归 2098/0（含 `runtime-contract` 89 项），已推送 GitHub |
 | 3.4.1 | 2026-11-10 | **GitHub issue #1 上传链路修复**：上限与设置同源（`maxUploadMB`，0=不限，默认不限）；超限统一 413 可读 JSON（预检 + chunked 流式兜底，先响应后断连）；上传前置体积校验；XHR 字节级进度 + 队列整批进度条；网络/5xx 指数退避重试 3 次；队列「重试」复用 File 句柄真重传；`requestTimeout=6h` / `headersTimeout=60s`。新增 `tests/upload-limit.mjs` 7 项；`integrity` 231/0；全量 `run-all --spawn` 退出码 0 |
+| 3.5.0 | 2026-11-10 | **issue #1 中期项 B6：分片上传 + 断点续传**：新增 `upload/init|chunk|complete|abort` 四路由（8MB 分片、会话 24h TTL、按用户隔离、乱序/重复分片幂等、缺片回 `missing`）；前端 ≥32MB 自动走分片，刷新后重选同一文件按 `key` 命中已有会话并从缺片继续；合并仍走 `storage` 加密流（与单次上传同格式、同查重旁路）；三路由登记 `GUARD_PATHS`；顺带修复 storage 对 0 字节密文 `createReadStream` 的 ERR_OUT_OF_RANGE。**后端路由 165 → 169**；新增 `tests/upload-chunked.mjs` 13 项；`integrity` 235/0；全量 **2132 项 / 0 失败** |
+| 3.5.0（同日追加·纯使用版） | 2026-11-11 | **纯使用版 + 一键热更新**：`update.mjs` 新增 `http` 源（`latest.json` + 整包 + sha256 强制校验 + bsdtar 解包 + 阶段状态）；控制层新增 `/control/update/{status,check,apply,config,rollback}`（并发保护、保存即生效）；新插件 `privhub-update`（代理控制层 + 「系统运维 → 系统更新」面板：检查 / 一键更新 / 回滚 / 改源）；新功能权限 `admin.update`；`build-release --package` 产出 `latest.json` + 整包；新增 `build-standalone.mjs` 产出「runtime + release + 启动器」自包含 zip（可内置 Node），`start-runtime.bat` 优先用内置 Node。**后端路由 169 → 174**，**插件目录 64 → 65**；新增 `tests/update-source.mjs` 25 项；`runtime-contract` 89 → 128 项；`integrity` +8 项 |
+| 3.5.0（同日追加·存储根） | 2026-11-11 | **GitHub issue #2 存储根 / 密钥安全**：新增 `src/store-paths.mjs` 统一解析三根（代码 / 系统数据 / 文件库），优先级 env > `config/store.json` > 默认；显式库根缺失拒绝启动；启动打印三根 + `storeCheck()`（库计数 / 密钥来源 / 抽样解密），`strict` 失败退出；新增 `GET /privhub/api/runtime/store-check` 与健康能力 `store-check`，控制层切换前自检、不通过取消切换；已有密文缺密钥时拒绝生成新密钥；`readJsonEnc` 不再吞密钥错配；迁移只允许在配置的 `data/` 根内；git 备份使用配置库根并报 `libraryMissing`；新增 `scripts/verify-store.mjs` 只读体检并随 release/纯使用版发布；控制层保守识别旧库；`store.json` 容忍 UTF-8 BOM（Windows 编辑器常见写法）。**REQ-5/REQ-6 补齐**：回收站物理删除前校验「回收站目录落在配置库根内」（单条清空拒绝执行、定时清理一条不删，`storeCheck()` 回报 `trash` 段，切换闸门同样能拦），蓝绿首启自动沿用旧单进程布局的 `dataRoot`/`dataFiles`（已配置过一律让路；库在别处不猜库根），新增 `control.mjs adopt-legacy [--dry-run]`，`DATA_FILES_*` 常量改函数求值以确保沿用结果生效。新增 `tests/store-config.mjs` **41 项**（含守卫正反证探针与沿用四场景）；`storage-migration` 42/0；`runtime-contract` **170/0**；全量 **2274 项 / 0 失败** |
 
 ---
 
@@ -166,9 +175,10 @@
 
 - 无 lint / typecheck / `npm test` 脚本；唯一质量闸门是手写回归套件
   `cd privhub && node tests/run-all.mjs --spawn`（**硬拒 3180/3181** —— 那两个端口上跑着真实数据）。
-- 最近一次全绿：**2098 项断言 / 0 失败**（2026-11-10 v3.4.0 收口全量复跑，含 `runtime-contract.mjs`
-  89 项蓝绿静态契约；HTTP / 前端 / 完整性 / RAG / 预览逐套件数字见 `CHANGELOG.md` 的 `[3.4.0]` 段）。
-- 新增专项闸门：`node tests/runtime-contract.mjs`（只读断言控制层 / 更新器 / nginx 模板契约，不需要服务器）。
+- 最近一次全绿：**2274 项断言 / 0 失败**（2026-11-11 v3.5.0 存储根批全量复跑，含 `runtime-contract.mjs`
+  170 项蓝绿静态契约、`store-config.mjs` 41 项存储根/密钥安全/回收站守卫/旧布局沿用与 `update-source.mjs` 25 项 HTTP 更新源契约；逐套件数字见 `CHANGELOG.md` 的 `[3.5.0]` 段）。
+- 新增专项闸门：`node tests/runtime-contract.mjs`（只读断言控制层 / 更新器 / nginx 模板契约，不需要服务器）、
+  `node tests/update-source.mjs`（自带 HTTP 清单服务器，验证发现 / sha256 强制校验 / 解包与版本一致性）。
 - **已知偶发**（均**非断言失败**，单跑都全绿）：
   - `refcheck` 的「孤儿附件」断言偶报 `read ECONNRESET`（传输层连接被重置）；属既有套件的陈旧 keep-alive socket，未改。
   - **本机负载高时**，`refcheck` 的首个 `POST`（清理并新建测试项目 + 目录 + 文件）会撞 30s 请求超时，

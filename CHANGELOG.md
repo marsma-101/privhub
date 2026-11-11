@@ -1,7 +1,7 @@
 # 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.4.1**
+**当前版本：3.5.0**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -26,6 +26,235 @@
 > 引用检查+任务日历 / Webhook / 功能权限开关 / 多 Profile / 双链 ID 化 / 上传查重 / 管家①地基 / 长页面滚动条）
 > 与 4 段新增改动（任务看板待审核列 / 选项目落地项目看板 / V3 稳定化收尾批 / 项目看板↔任务看板联动）已一次性收成 **3.3.0**
 > （2026-10-15，见下方 `[3.3.0]` 段）。进度总览见 [`docs/PrivHub-开发状态与路线图.md`](docs/PrivHub-开发状态与路线图.md)。
+
+## [3.5.0] — 2026-11-10
+
+> **GitHub issue #1 中期项 B6：分片上传 + 断点续传。** 3.4.1 把「失败原因看不见」修好了，
+> 但大视频一旦断网/关标签仍要从 0 重传。本版把 ≥32MB 的文件改成「init → 逐片上传 →
+> 合并」：8MB 一片、每片独立加密落盘，断网只影响当前片；刷新页面后重新选择同一个文件，
+> 会命中未完成会话并从缺的那片继续。接口为**新增**，`/api/upload` 原协议与数据格式不变。
+>
+> 同日追加 **「纯使用版」+ 一键热更新**：使用方机器不再需要源码 / npm / 智能体，
+> 双击启动器即可运行；有新版本时在「系统更新」页一键完成蓝绿热更新，前端无感。
+
+### 后端：四条新路由（`privhub-files`）
+
+- `POST /privhub/api/upload/init`（JSON `{project,path,name,size,key}`）：校验权限 / 文件名 /
+  大小与 `maxUploadMB` 上限（超限直接 413，不浪费流量）；同名文件已存在回 409；
+  同一用户 + 同一目标 + 同大小 + 同 `key` 的未完成会话**复用同一个 `uploadId`**，
+  并回带已到账分片 `uploaded` 与 `total`。
+- `POST /privhub/api/upload/chunk?project&path&id&index`（原始字节 body）：每片大小由服务端
+  按 `size/chunkSize` 计算并严格校验；分片可**乱序、重复**上传（幂等）；落盘仍走
+  `ctx.storage.createWriteStream`（AES-256-GCM），不产生明文临时文件。
+- `POST /privhub/api/upload/complete`（JSON `{project,path,name,id}`）：缺片时回
+  `409 {missing:[...]}`；齐全后在文件锁内按序解密分片 → 合并 → 一次成文，并与单次上传
+  共用同一套「指纹 → 查重 → 登记」旁路与 `upload` 审计 / `file:changed` 事件。
+- `POST /privhub/api/upload/abort`（JSON `{id}`）：放弃上传并清理会话与分片（幂等）。
+- 会话元数据与分片存于 `data/.upload-sessions/`，**24 小时未活动自动清理**（首次 init 时
+  懒触发，每小时最多扫一次）；会话按用户隔离，别人的 `uploadId` 一律按「不存在」处理。
+- 三条文件路由登记进 `admin-acl` 的 `GUARD_PATHS`（`init` / `chunk` / `complete` 按
+  `upload` 动作裁决；`abort` 只删自己的会话，不碰项目目录，故不纳入）。
+
+### 前端：大文件自动分片（`privhub-files-upload`）
+
+- 阈值 **32MB**：以下继续单次 POST（少三次往返），以上走分片；进度按整个文件字节数汇报，
+  续传时从已传大小起算，不再从 0 爬。
+- 每个分片独立重试（网络中断 / 超时 / 5xx，最多 3 次），终态错误（413/409/401/403）立即
+  把服务端原因显示出来。
+- `complete` 若回「还缺分片」，自动补传一轮再合并（最多一轮），覆盖会话在两次请求之间
+  被清理的边界情况。
+- 文件身份 = 项目 + 目录 + 文件名 + 大小 + 修改时间（FNV 双 32 位摘要），不读全文件算哈希。
+
+### 顺带修复
+
+- `privhub-svc-storage.createReadStream`：0 字节文件的密文只有「头 + tag」，此前会构造
+  `{start:20,end:size-17}` 的非法区间并异步抛 `ERR_OUT_OF_RANGE` —— 表现为**空文件下载/
+  合并必失败**。现在显式校验 GCM tag 后返回空流，不绕过完整性认证。
+
+### 测试与文档
+
+- 新增 `tests/upload-chunked.mjs`（13 项）：init 建会话 / 缺片报 `missing` / 重复 init 续传 /
+  乱序与重复分片 / 合并后逐字节比对 / 会话清理与同名 409 / 分片大小不符 / 跨用户越权 /
+  abort 幂等 / 上限 413 / 0 字节文件。
+- `tests/integrity.mjs` 增加 4 条静态契约（四路由存在、三路由在 `GUARD_PATHS`、分片与合并
+  走 storage 加密流、前端大文件走分片入口）。
+- 全量 `node tests/run-all.mjs --spawn` 退出码 0：HTTP 347 项 + 静态套件，合计 **2132 项 / 0 失败**。
+
+### 纯使用版：分发与一键热更新（2026-11-11）
+
+同一批工作把 3.4.0 的蓝绿热更新补成「使用方闭环」：**开发机发布 → 使用机自己发现并一键更新**，
+全程不需要智能体、不需要源码、不需要 npm。
+
+#### 稳定层：HTTP 更新源（`runtime/update.mjs`）
+
+- 新增 `source: "http"`：读 `manifestUrl` 指向的 `latest.json`
+  （`{version,url,sha256,notes,publishedAt}`，也兼容 `{releases:[…]}` / `{latest:{…}}`），
+  挑版本最高的一条；相对 `url` 按清单地址解析，可直接放 GitHub Release 或任意静态目录。
+- 下载整包时边下边算 **sha256**，与清单不一致即 `PRIVHUB_CHECKSUM_MISMATCH` 拒绝更新；
+  清单缺 sha256 时默认拒绝（`PRIVHUB_UNVERIFIED_RELEASE`），除非显式 `allowUnverified`。
+- 解包用系统自带 `tar.exe`（Windows 10 1803+），再用 `detectAppRoot()` 兼容「应用根在根目录」
+  与「压缩包多一层目录」两种形态；稳定层仍只依赖 Node 内置模块。
+- 阶段写入 `config/update-state.json`（`checking / preparing / downloading / extracting /
+  staging / switching / done / error` + 下载百分比），供管理界面轮询。
+- 新增 `autoApply`：`false` 时守护只检查不更新，由人工在界面点「立即更新」（企业内网更稳妥）。
+- 新增 `rollback` 子命令：只调用控制层 `/control/rollback`，由**独立进程**完成回滚。
+  回滚会冻结并停掉当前活跃槽，而发起回滚的 HTTP 请求正跑在那个槽里 —— 同步执行会把自己
+  计入「在途写」，排空永远等不到（`PRIVHUB_DRAIN_TIMEOUT`），即便通过，响应也出自即将被
+  停掉的进程。
+- 修复 `daemon` 启动即退出（两处）：定时器 `unref()` 让事件循环没有任何 handle；命令分发器
+  又在 `cmdDaemon()` 返回后调用 `process.exit(0)`。两者叠加使守护「启动成功」后 0ms 退出，
+  自动检查从未发生。实测修复后进程持续存活（控制层日志不再出现「更新守护退出 code=0」）。
+
+#### 控制层：更新管理接口（`runtime/control.mjs`）
+
+- 新增 `/control/update/status | check | apply | config | rollback`：
+  `apply` 后台跑 `update.mjs apply` 并拒绝并发（`PRIVHUB_UPDATE_BUSY`）；
+  `rollback` 同样后台跑 `update.mjs rollback` 并立刻返回 `{started,pid}` —— 让发起请求
+  与「被停掉的槽」解耦，回滚不再因排空超时失败（`startUpdaterTask` 统一更新/回滚互斥）；
+  `config` 白名单校验后原子写 `config/update.json` 并重启守护，不需要重启服务。
+- 槽进程环境补齐 `PRIVHUB_HOME` / `PRIVHUB_CONTROL_PORT`，业务插件才能回连控制层。
+
+#### 插件：系统更新（`privhub-update`，新）
+
+- 新服务端插件代理上述五个接口（`/privhub/api/update/*`），**不自己实现更新逻辑**；
+  只调用本机控制层（`x-privhub-control-token`），因此业务 release 被整体替换时更新能力仍在。
+- 新管理面板「管理控制台 → 系统运维 → 系统更新」：当前版本 / 更新源 / 守护状态 / 最近检查 /
+  下载进度 / 更新说明 / 错误原因 / 更新日志；按钮为「检查更新」「立即更新到 x.y.z」
+  「回滚到上一版」，并可在页面上直接改更新源。
+- 新增功能权限 `admin.update`（默认 `none`，仅管理员可见入口）。
+
+#### 打包：发布产物与纯使用版
+
+- `scripts/build-release.mjs` 新增 `--package [--with-modules] [--public-base] [--notes]`：
+  产出 `dist/privhub-<ver>.zip` 与 `dist/latest.json`。默认**不含** node_modules（包小、下载快），
+  依赖未变时更新器复用现有模块；依赖变了更新器会拒绝切换（`PRIVHUB_DEPS_CHANGED`），
+  发布时加 `--with-modules` 重打即可。
+- 新增 `scripts/build-standalone.mjs`：产出 `dist/privhub-<ver>-standalone.zip`
+  = `runtime/` + `releases/<ver>/` + `start-runtime.bat` + `使用说明.md`，
+  可 `--manifest-url` 预置更新源、`--with-node` 内置 Node（使用方无需预装）、
+  `--no-nginx` / `--out` / `--force`。
+- `start-runtime.bat` 优先使用 `runtime\node\node.exe`（内置 Node 时子进程一并继承）。
+- Windows 落盘加固：`build-release.mjs` 与 `runtime/update.mjs` 把暂存 release 放到
+  `releases/<ver>` 时改为「rename 重试 → 失败退化为复制 + 删除暂存」。实测在 Windows 上
+  刚复制完的大目录会被杀毒/索引进程短暂占用，直接 `rename` 持续 `EPERM`，会让打包和一键更新失败。
+
+#### 测试与文档
+
+- 新增 `tests/update-source.mjs`（25 项，自包含）：本地 HTTP 清单服务器 + 假 release zip，
+  验证清单发现（相对 URL / notes / sha256）、check 不下载整包、sha256 不匹配拒绝、
+  缺 sha256 默认拒绝、`requireNewer` 同版本不更新、`status` 字段、单层目录压缩包。
+- `tests/runtime-contract.mjs` 增加 40 条契约（http 源 / 校验 / 解包 / 五个控制接口 /
+  启动器优先内置 Node / 打包器只依赖 node: / 管理面板接线 / rename 退化复制 / 回滚独立进程 /
+  守护定时器保持引用）。
+- `tests/integrity.mjs` 增加 8 条系统更新面板接线契约；`run-all.mjs` 纳入新套件。
+- 全量回归 `run-all.mjs --spawn` 退出码 0：合计 **2204 项 / 0 失败**（HTTP 347 · `integrity` 243 ·
+  `runtime-contract` 128 · `update-source` 25，其余套件同前）。
+- `runtime/README.md` 增补 http 清单格式、管理界面、纯使用版发布流程。
+
+### 存储根与密钥安全（2026-11-11，GitHub issue #2）
+
+使用端实测发现：新启动的服务（新端口）看不到老库，老服务正常；同时提出「库根应可配置、
+密钥不能被误生成、破坏性操作要有守卫、切换前要自检」等要求。根因是**代码根 / 系统数据根 /
+文件库根**在旧布局里共用一个变量，换端口/换目录启动就会解析到另一个（空的）库。
+
+#### 统一的根解析（`src/store-paths.mjs`，新）
+
+- 三根分开：`PRIVHUB_ROOT`（代码）、`PRIVHUB_DATA_ROOT`（`data/`：账号/会话/审计/回收站/密钥）、
+  `PRIVHUB_DATA_FILES`（文件库：项目/个人空间），可分别放在不同磁盘。
+- 优先级：**环境变量 > `<home>/config/store.json` > 默认值**；`store.json` 位于 release 之外，
+  更新/回滚不会覆盖。`PRIVHUB_CONFIG_DIR` / `PRIVHUB_STORE_CONFIG` 可改配置位置。
+- `main.ts` **先解析根、再 import 任何插件**（插件在模块加载时读环境变量）；启动日志打印
+  三根与来源。
+- 显式配置的 `dataFiles` 不存在时**拒绝启动**（`PRIVHUB_DATA_FILES_MISSING`）；
+  若可能是把上级目录当库根，错误信息会提示 `<path>/data-files`。
+  全新空库首次初始化用 `PRIVHUB_ALLOW_INIT_DATA_FILES=1` 放行。
+- `store.json` JSON 非法时拒绝启动并指出文件，不会悄悄回退默认根。
+
+#### 密钥保护（`privhub-svc-storage`）
+
+- 目标根已有 `PHENC1` / `PHAUD1` 密文、但找不到密钥时，**拒绝自动生成新密钥**并退出
+  （`PRIVHUB_ALLOW_NEW_KEY=1` 才允许）。错误信息包含密文样本、期望密钥位置与恢复办法。
+- 首次真实生成密钥时打印「必须异地备份 secret.key」。
+- 密钥错配不再静默：解密抛 `PrivHubKeyMismatchError`（带当前密钥来源：env / file / generated），
+  `readJsonEnc` 不再把错配吞成「文件不存在」去写回空配置。`keyInfo` 暴露来源但不泄露密钥。
+- 新增 `findCiphertextFile()` 有界探测（跳符号链接与 `node_modules`），供密钥保护与体检复用。
+
+#### 启动自检与切换闸门
+
+- `ctx.privhub.storeCheck()`：三根、库存在性、顶层项目/个人空间计数、密钥来源、
+  抽样解密 `users.json` 与库内一个密文文件（≤8MB）；警告/硬失败分开返回。
+- `main.ts` 启动后打印 `[store-check]`；`PRIVHUB_STORE_STRICT=1` 或 `store.json.strict`
+  时，自检不通过 / 库不可见 / 顶层为空（既无项目也无个人空间）直接退出。
+- 新增控制路由 `GET /privhub/api/runtime/store-check`（仅控制令牌/回环），健康接口能力
+  增加 `store-check`。
+- 控制层 `performSwitch` 在预热后、**冻结旧槽之前**调用新槽自检；不通过则
+  `409 PRIVHUB_STORE_CHECK_FAILED` 取消切换，旧槽继续服务。
+- 控制层槽环境透传 `PRIVHUB_CONFIG_DIR` / `PRIVHUB_STORE_CONFIG` / `PRIVHUB_DATA_ROOT`，
+  只有显式配置时才传 `PRIVHUB_DATA_FILES`（否则会被当成显式根而拒绝首次启动）。
+
+#### 保守的旧库识别（`runtime/control.mjs`）
+
+- `detectStoreDir()`：显式 env/store.json > 已存在 `<home>/store` > 已存在 `<home>/data`
+  或 `<home>/data-files` > 首次运行才创建 `<home>/store`（并告警）。不再无条件把 `<home>`
+  当数据根。
+
+#### 破坏性操作守卫
+
+- 明文 → 密文迁移只允许发生在**当前配置的系统数据根 `data/` 下**；根外路径一律拒绝并指出
+  当前根（避免根指错时改另一棵树）。密钥/审计/日志/git 备份的既有逐条守卫不变。
+- **回收站物理删除加根一致性守卫（REQ-5 补齐）**：`trashRootGuard()` 以启动时解析的权威库根
+  （`PRIVHUB_DATA_FILES`）为准，要求 `<库根>/.trash` 落在其下。`purgeTrash`（单条清空）不通过
+  直接返回失败；`purgeExpiredTrash`（定时清理，**无人盯着的最危险路径**）一条都不删并留日志。
+  起因：原有的 `isInsideTrash()` 只证明「删的是回收站里的东西」，证明不了「这个回收站本身在
+  正确的库里」—— core 的 `dataRoot` 入参一旦被传错，包含判断依然成立，清理会毫无怨言地在
+  错误的库上执行。`storeCheck()` 新增 `trash` 段回报这条一致性，蓝绿切换闸门因此也能拦住它。
+- git 自动备份镜像改用配置的文件库根；库根不存在时启动显式告警，`gitbackup/status`
+  返回 `libraryMissing`，避免「备份在跑、实际为空」。
+
+#### 蓝绿首启自动沿用旧单进程布局（REQ-6 补齐）
+
+- 使用端的真实处境是「老单进程已经在跑，库和密钥都在它那个目录里」，换蓝绿时要手工把三根
+  抄进 `config/store.json`，抄错就等于新装一套空库。现在首次以蓝绿启动时自动沿用：
+  - 只在「**完全没配置过**」时介入 —— 已有 `config/store.json`、或设了
+    `PRIVHUB_DATA_ROOT/FILES/STORE_DIR` 的一律让路，绝不覆盖人的决定；
+  - 已是 `store/` 布局时不介入（那是蓝绿标准形态，不是待迁移的旧布局）；
+  - 探测到「`data/` 与 `data-files/` 和 `runtime/` 同在一个 home」→ 写
+    `{dataRoot: <home>, dataFiles: <home>/data-files}` 并逐行打印沿用结果；
+  - **只有 `data/`、没有 `data-files/`**（库在别的盘）→ 不猜库根，只提示去写配置。
+    猜测的代价是「看起来迁移成功、其实是空库」，比多一步手工更贵。
+- 对外端口可用 `PRIVHUB_LEGACY_PORT` 一并沿用（旧实例端口控制层无从得知，只在有线索时采纳）。
+- 新增显式子命令 `node runtime/control.mjs adopt-legacy [--dry-run]`：想先看「会沿用成什么」
+  而不落盘时用 `--dry-run`。
+- 工程细节：`DATA_FILES_DIR` / `DATA_FILES_EXPLICIT` 从模块级常量改为 `computeDataFiles()`
+  函数求值 —— 否则沿用结果写进 `storeConf` 后，后续代码仍读常量快照，库根停在旧值（空库）；
+  且沿用必须在 `serve` 时执行而非模块加载期，否则 `status` / `help` 这类只读命令也会写文件。
+
+#### 只读体检与打包
+
+- 新增 `scripts/verify-store.mjs`（`npm run verify-store`）：只读检查三根、密钥、
+  账号文件 GCM 解密、库内抽样解密；`--json` 输出；退出码 0/1。
+- `build-release.mjs` 与 `build-standalone.mjs` 把体检脚本带进 release / 纯使用版
+  （纯使用版从 `config/active.json` 找到当前 release 的解析模块，不再抄一份规则）。
+
+#### 文档与测试
+
+- `部署说明.md` / `runtime/README.md` / `README.md` 增补三根模型、`store.json` 示例、
+  密钥保护、`verify-store`、从旧单进程布局迁移、蓝绿对外端口改 3180 的注意事项。
+- 新增 `tests/store-config.mjs`（**41 项**，自包含、端口 3193）：分根启动、控制令牌 store-check、
+  `config/store.json` 配置（不设环境变量）、带 UTF-8 BOM 的 `store.json`、体检脚本、
+  缺密钥拒绝生成、显式缺库拒绝启动、严格模式空库拒绝启动、无盘符硬编码；
+  以及本批新增的 18 项 —— 回收站根一致性（自检回报 + `tests/lib/trash-guard-probe.mjs`
+  直接装配两个实例做「一致放行 / 错配拒绝」的正反证）、`adopt-legacy` 的
+  dry-run 不落盘 / 真写 / 幂等不覆盖 / 库在别处不瞎猜。
+- `tests/storage-migration.mjs` 增加「库根之外拒绝迁移」2 项（42 项全过）。
+- `tests/runtime-contract.mjs` 增加存储根/密钥/切换闸门/迁移守卫/备份根契约，
+  以及本批 REQ-5/REQ-6 的静态契约（**170 项全过**）。
+- 打包端到端复核发现并修复：PowerShell 5.1 / 记事本写出的 `store.json` 带 UTF-8 BOM 时被
+  误判为坏 JSON 而拒绝启动；`store-paths.mjs` 与控制层现在先剥 BOM 再解析。
+- 全量回归 `node tests/run-all.mjs --spawn`：合计 **2274 项 / 0 失败**
+  （唯一偶发为已登记的 `dup-verdict` 近似文档 10s 等待超时，单独跑 6/0，属环境抖动）。
+- 上传上限同源（issue #2 REQ-8）复核：3.4.1 已让前端读取与后端相同的
+  `maxUploadMB` 设置源，本批未改动。
 
 ## [3.4.1] — 2026-11-10
 

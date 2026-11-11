@@ -321,6 +321,27 @@ ok(/UPLOAD_RETRY_MAX/.test(uploadClientSrc) && /upload:retry-failed/.test(upload
 ok(/bus\.emit\('upload:retry-failed'\)/.test(queueClientSrc), '队列的「重试」发出 upload:retry-failed（真重试）')
 ok(!/bus\.emit\('upload:request'\)/.test(queueClientSrc), '队列不得再用「重新打开文件选择框」冒充重试')
 
+/* ══════════ issue #1 中期项 B6：分片上传 / 断点续传（2026-11-10） ══════════
+ * 钉住四条容易被「顺手清理」掉的契约：
+ *   ① 四条路由存在；② 文件级 ACL 三处守卫登记（漏登记 = 静默绕过 ACL）；
+ *   ③ 分片落盘仍走 storage 加密流（不得直接 fs.writeFile）；
+ *   ④ 前端大文件确实走分片入口。 */
+console.log('\n── 分片上传 / 断点续传（issue #1 · B6） ──')
+
+ok(/\/privhub\/api\/upload\/init/.test(filesSrc) && /\/privhub\/api\/upload\/chunk/.test(filesSrc)
+  && /\/privhub\/api\/upload\/complete/.test(filesSrc) && /\/privhub\/api\/upload\/abort/.test(filesSrc),
+  'files 注册 init/chunk/complete/abort 四条分片上传路由')
+const aclSrc = readFileSync(join(ROOT, 'plugins', 'privhub-admin-acl', 'src', 'index.ts'), 'utf8')
+ok(/'\/privhub\/api\/upload\/init':\s*\{\s*POST:\s*\{\s*action:\s*'upload'/.test(aclSrc)
+  && /'\/privhub\/api\/upload\/chunk':\s*\{\s*POST:\s*\{\s*action:\s*'upload'/.test(aclSrc)
+  && /'\/privhub\/api\/upload\/complete':\s*\{\s*POST:\s*\{\s*action:\s*'upload'/.test(aclSrc),
+  '分片三路由登记进 GUARD_PATHS（新文件路由漏登记会静默绕过文件级 ACL）')
+ok(/createWriteStream\(tmp\)/.test(filesSrc) && /createReadStream\(chunkPath/.test(filesSrc),
+  '分片与合并都走 ctx.storage 加密流（不得裸 fs 写用户文件）')
+ok(/CHUNK_THRESHOLD/.test(uploadClientSrc) && /uploadChunked/.test(uploadClientSrc)
+  && /upload\/chunk\?/.test(uploadClientSrc),
+  '前端大文件走分片上传入口（阈值以上），小文件仍单次 POST')
+
 /* ══════════ S16：首屏可登录（防死锁） ══════════ */
 console.log('\n── S16 首屏可登录守卫 ──')
 
@@ -579,6 +600,23 @@ ok(ghostEvents.length === 0, `Webhook 事件目录不含没人发的事件${ghos
 const listenBlock = whkSrc.slice(whkSrc.indexOf('const LISTEN'), whkSrc.indexOf('] as const'))
 const notListened = [...catalogNames].filter((n) => !listenBlock.includes(`'${n}'`)).sort()
 ok(notListened.length === 0, `Webhook 对目录里每个事件都真的注册了监听${notListened.length ? '，漏：' + notListened.join(', ') : ''}`)
+
+/* 系统更新（privhub-update）：管理面板形态 + 服务端必须存在。
+ * 它本身不碰项目文件（只回连控制层），所以**不需要**登记 GUARD_PATHS；
+ * 但「面板挂上去了、服务端插件没被发现」会让面板永远显示 managed:false 以外的空状态，
+ * 和 Webhook 一样用四条静态契约钉住接线。 */
+console.log('\n── 系统更新面板接线 ──')
+
+ok(existsSync(join(ROOT, 'plugins', 'privhub-update', 'src', 'index.ts')), '系统更新服务端入口存在（L3 发现靠它）')
+ok(/export const name = 'privhub-update'/.test(readFileSync(join(ROOT, 'plugins', 'privhub-update', 'src', 'index.ts'), 'utf8')),
+  '系统更新服务端导出 name（装配期可识别）')
+const updManifest = readFileSync(join(ROOT, 'plugins', 'privhub-update', 'client', 'manifest.json'), 'utf8')
+ok(/"slots":\s*\[[^\]]*"admin-update"/.test(updManifest), '系统更新插件声明 admin-update slot')
+ok(/"view":\s*"admin-update"/.test(updManifest), '系统更新插件声明 admin-update 入口 barItem')
+ok(/"adminOnly":\s*true/.test(updManifest), '系统更新入口为 adminOnly（普通用户看不到）')
+ok(/"capFeature":\s*"admin\.update"/.test(updManifest), '系统更新入口受功能开关 admin.update 控制')
+ok(/entryOf:\s*'admin-update'/.test(acRoutesSrc), '管理控制台路由表含系统更新条目')
+ok(/slot:\s*'admin-update'/.test(acRoutesSrc), '管理控制台条目的 slot 指向 admin-update')
 
 /* 工作台（privhub-shell-home）同样是「主视图」形态，且它还是 client-only 插件 ——
  * 少一行挂载点就是白屏且不报错，把这四处钉成契约。 */

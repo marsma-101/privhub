@@ -136,6 +136,16 @@ ok(readFileSync(join(DATA, 'audit.jsonl'), 'utf8').startsWith('PHAUD1'),
 ok(readFileSync(join(DATA, 'logs', 'privhub-2026-01-01.log'), 'utf8').startsWith('[2026-01-01]'),
   '日志文件仍是明文追加可读的原样')
 
+/* REQ-5：目标根必须等于当前配置的权威系统数据根。
+ * 根指错（例如 PRIVHUB_DATA_ROOT 没设、按 cwd 解析）时，迁移绝不能去改另一棵树。 */
+const OUTSIDE = join(TESTROOT, 'outside-root', 'users.json')
+mkdirSync(dirname(OUTSIDE), { recursive: true })
+writeFileSync(OUTSIDE, '{"users":[]}\n', 'utf8')
+const offRoot = await svc.migrateFilesToEncrypted([OUTSIDE])
+ok(offRoot[0].status === 'refused' && /系统数据根/.test(offRoot[0].reason || ''),
+  `库根之外的路径拒绝迁移并指出当前根（实测 ${offRoot[0].status}：${offRoot[0].reason}）`)
+ok(readFileSync(OUTSIDE, 'utf8').startsWith('{"users"'), '库根之外的文件原样未动')
+
 /* 同前缀兄弟目录不能被误伤 */
 const sibling = await svc.migrateFilesToEncrypted([join(DATA, 'logs-extra', 'notes.json')])
 ok(sibling[0].status === 'migrated',

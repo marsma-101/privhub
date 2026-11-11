@@ -38,7 +38,7 @@
 | --- | --- | --- | --- |
 | privhub-core | ✅ | — | `ctx.privhub` 服务：持久化 + 权限判定 + HTTP 工具，供各域 inject 复用 |
 | privhub-auth | ✅ | ✅ `auth` | 登录 / 注册 / 会话 / me（4 路由） |
-| privhub-files | ✅ | — | 文件核心 API（10 路由：projects/list/preview/preview-raw/download/upload/mkdir/delete/rename/move） |
+| privhub-files | ✅ | — | 文件核心 API（14 路由：projects/list/preview/preview-raw/download/upload/upload-init/upload-chunk/upload-complete/upload-abort/mkdir/delete/rename/move） |
 | privhub-trash | ✅ | — | 回收站后端（4 路由：list/restore/purge 等），依赖 core 的 `moveToTrash` |
 | privhub-admin | ✅ | ✅ `admin` | 用户 / 角色 / 项目权限管理（6 路由） |
 | privhub-shell | ✅(server) | ✅ | 骨架枢纽：manifest 聚合接口 + `project-tabs` / `user-area` / `app-iconbar` / `welcome` / `auth` 五组件 |
@@ -47,7 +47,7 @@
 
 | 插件 | 后端 | 前端 | slots | 说明 |
 | --- | --- | --- | --- | --- |
-| privhub-admin-acl | ✅ | ✅ | `acl` | 细粒度 ACL 守卫（F14）：包装 `svc.route`，白名单 `GUARD_PATHS` 管辖 **37 条**文件相关路由（per-method 裁决 view/upload/edit/delete），另提供规则管理 API（adminOnly） |
+| privhub-admin-acl | ✅ | ✅ | `acl` | 细粒度 ACL 守卫（F14）：包装 `svc.route`，白名单 `GUARD_PATHS` 管辖 **41 条**文件相关路由（per-method 裁决 view/upload/edit/delete），另提供规则管理 API（adminOnly） |
 | privhub-admin-audit | ✅ | — | — | 审计数据（F13/B13）：写操作落 JSONL + CSV 导出 |
 | privhub-admin-audit-panel | — | ✅ | `audit` | 审计日志可视化（F15）：时间线 + 四维筛选（时间/操作/用户/项目）+ CSV，仅管理员 |
 | **privhub-admin-console**（v3.1.0） | — | ✅ | `admin-console` | **管理控制台外壳**（纯前端，16 模块）：顶部栏 + 管理侧栏 + 内容区；`#/admin/...` hash 路由；契约见 §1.1 |
@@ -70,7 +70,7 @@
 | privhub-files-search | ✅ | ✅ | `search-view` | 文件名搜索（B8）：全项目递归匹配，点击结果跳转 |
 | privhub-files-tags | ✅ | ✅ | `tags` | 文件标签（F19）：为选中文件打标签（联想已有标签），按标签筛选定位文件 |
 | privhub-files-template | ✅ | ✅ | `template` | 新建文档（F20）：选模板（会议记录/产品需求/工作日志等）→ 在当前目录创建 .md |
-| privhub-files-upload | — | ✅ | `upload` | 拖拽上传（B11）：拖入文件/文件夹递归上传，同名覆盖（**纯前端**） |
+| privhub-files-upload | — | ✅ | `upload` | 拖拽上传（B11/B6）：拖入文件/文件夹递归上传；**≥32MB 走分片 + 断点续传**（init→逐片→合并，XHR 进度与逐片重试），小文件仍单次 POST（**纯前端**） |
 | privhub-files-upload-queue | — | ✅ | `upload-queue` | 上传进度队列（B12）：底部抽屉，逐条进度/失败重试（**纯前端**） |
 | privhub-files-versions | ✅ | ✅ | `office-editor` | 通用文件版本历史：文本类快照/列表/预览/恢复（每文件 20 版） |
 | privhub-files-wiki | — | ✅ | `wiki` | 知识库视图（F22）：当前目录 README.md/index.md 渲染为 Wiki 页面，双链可点击定位（**纯前端**） |
@@ -122,7 +122,7 @@
 | 文件区（explorer-v3 声明） | `tree`（左面板目录树）· `panel`（中面板文件区）· `preview`（右侧详情面板） |
 | 功能面板 | `trash-view` · `search-view` · `fav-view` · `settings` · `admin` · `acl` · `audit` · `tags` · `template` · `kg` · `wiki` · `rag-view` |
 | 浮层 / 增强 | `upload` · `upload-queue` · `watermark` · `md-editor` · `office-editor` |
-| **管理控制台**（v3.1.0） | `admin-console`（外壳本体）· `admin-tags` · `admin-template` · `admin-trash` · `admin-settings`（**内容区别名**：同一组件实现、两处入口；由外壳按路由渲染） |
+| **管理控制台**（v3.1.0） | `admin-console`（外壳本体）· `admin-tags` · `admin-template` · `admin-trash` · `admin-settings`（**内容区别名**：同一组件实现、两处入口；由外壳按路由渲染）· `admin-update`（v3.5.0 系统更新） |
 | （闲置） | `tabs` —— 骨架仍在渲染，但已无插件声明（`shell-tabs` 已退役），可从骨架移除 |
 
 **同 slot 可多组件**（数组累积，#L789），实践中：
@@ -130,7 +130,7 @@
 `user-area` 挂 3 个（explorer-v3 / shell / shell-recent）；`auth` 挂 2 个（auth / shell）。
 
 **manifest 字段**：`id` / `title` / `icon` / `description` / `slots[]` / `entry`（由 shell 按目录名自动生成）/ `barItems[]`（图标栏项：`{ icon, title, slot, view, adminOnly }`）。
-`barItems[].view` 决定点击行为，当前实际 **13 个 view**：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag`。
+`barItems[].view` 决定点击行为，当前实际 **24 个 view**（2026-11-11 实测）：`files` `trash` `search` `favorites` `settings` `admin` `acl` `audit` `tags` `template` `kg` `wiki` `rag` `home` `taskboard` `calendar` `dashboard` `refcheck` `agent` `admin-cap` `admin-webhook` `admin-update` `mindmap` `mindmap-global`。
 （另有 `slot: "admin-nav"` 的管理导航声明，**不渲染进图标栏**，见 §1.1。）
 
 **client 默认导出形态（已验证）**：
@@ -217,7 +217,7 @@ export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component }
 
 ### 3.5 privhub-files · 文件管理枢纽
 - **职责**：目录树/文件面板/预览/上传，以及知识库主线（编辑、检索、图谱、标签、模板、导出、知识库视图、智能体 API 等）。
-- **基座能力**：后端 10 路由已落地（projects/list/preview/preview-raw/download/upload/mkdir/delete/rename/move），全部复用 `ctx.privhub`，含路径安全与权限判定。
+- **基座能力**：后端 14 路由已落地（projects/list/preview/preview-raw/download/upload/mkdir/delete/rename/move + 分片上传 upload/init|chunk|complete|abort），全部复用 `ctx.privhub`，含路径安全与权限判定。
 - **子插件挂载约定**：V3 布局挂 `tree`+`panel`+`preview`；上传/队列挂 `upload`/`upload-queue`；知识库类各自挂对应功能视图 slot（`md-editor`/`kg`/`tags`/`template`/`wiki`/`search-view` 等），零新增存储。
 - **状态**：✅ 后端 + client 均已落地（V3 由 `files-explorer-v3` 承载）；编辑/检索/图谱/标签/模板/导出/知识库视图/智能体均已实现。
 
@@ -276,7 +276,7 @@ export default { id: 'privhub-xxx', slots: { tree: Component, panel: Component }
 | B7 | 文件预览 | 🟢 | ✅ | 后端 preview/preview-raw 已落地；client 挂 `preview`；Office 由 `files-office` / `files-office-ui` / `files-office2` 三档承载（Markdown 转换 / 人工编辑 / 原生观感+独占锁） | 打开文件在中间内容区渲染；右侧详情面板显示类型/大小/时间/路径 |
 | B8 | 搜索（文件名） | 🟢 | ✅ | `privhub-files-search`（后端 1 路由 + `search-view`），复用 `listFiles` 递归；**必须带 project 参数**（防全局越权感） | 顶栏搜索入口开视图；输入即筛选当前项目文件 |
 | B10 | 批量操作 | 🟢 | ✅ | 复用 delete/rename/move；client 行首多选 + 顶部批量工具栏 | 勾选多个 → 批量移动/删除/下载 |
-| B11 | 拖拽上传 + 递归上传 | 🟢 | ✅ | 后端 upload 已落地（流式落盘，上限读 `settings.maxUploadMB`，默认 0=不限，超限回 413；同名覆盖）；client `privhub-files-upload`（纯前端，挂 `upload`）拖拽整个文件夹递归建目录并上传 | 拖文件夹进面板 → 保持目录结构上传 |
+| B11 | 拖拽上传 + 递归上传 | 🟢 | ✅ | 后端 upload 已落地（流式落盘，上限读 `settings.maxUploadMB`，默认 0=不限，超限回 413；同名文件回 409，不静默覆盖）；client `privhub-files-upload`（纯前端，挂 `upload`）拖拽整个文件夹递归建目录并上传；≥32MB 自动走 `upload/init|chunk|complete`（8MB 分片、断点续传、逐片重试） | 拖文件夹进面板 → 保持目录结构上传；大文件断网后重选同一文件可从已传分片继续 |
 | B12 | 上传进度队列 | 🟢 | ✅ | `privhub-files-upload-queue`（纯前端，挂 `upload-queue`）逐条进度，失败重试 | 上传时浮现队列抽屉，进度条 + 失败重试按钮 |
 | C14 | Markdown 在线编辑 | 🟠 | ✅ | `privhub-files-edit-md`（后端 4 路由 + `md-editor` slot）：frontmatter + 双链 + 版本历史 20 版 + 冲突检测 | 打开 .md 进编辑视图，左编辑右预览，Ctrl+S 保存生成版本 |
 | C15 | 内容全文搜索 | 🟠 | ✅ | `privhub-files-fulltext`（后端 1 路由）：BM25 + CJK bigram 索引，snippet 高亮，项目内检索 | 搜索视图切换"文件名/全文"，全文返回命中片段 |

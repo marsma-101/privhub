@@ -48,6 +48,7 @@ node tests/personal-ui.mjs
 node tests/audit-reliability.mjs
 node tests/integrity.mjs            # plugin/file contract completeness
 node tests/first-run.mjs
+node tests/store-config.mjs         # self-contained: spawns on 3193 (three roots / key safety)
 node tests/preview-limits.mjs       # self-contained: spawns its own instance on 3196
 node --import tsx/esm tests/rag-resilience.mjs   # self-contained: spawns on 3195
 ```
@@ -84,10 +85,14 @@ because cordis services must exist before their consumers `inject` them:
    Installing/removing a feature = adding/removing a directory. No edit to `main.ts`.
 
 `PRIVHUB_ROOT` anchors the **code** root (plugin discovery, frontend, `node_modules`).
-`PRIVHUB_DATA_ROOT` anchors every **data** path (`data/`, `data-files/`, `secret.key`);
-unset ⇒ `PRIVHUB_ROOT`, which in turn unset ⇒ `process.cwd()`. Blue-green slots run from
-different release dirs but must share one data root, so this split is load-bearing: never
-use `PRIVHUB_ROOT` for data paths in new code.
+`PRIVHUB_DATA_ROOT` anchors the **system data** root (`data/`: users/sessions/audit/
+trash/`secret.key`); `PRIVHUB_DATA_FILES` anchors the **library** root (projects and
+personal spaces, default `<dataRoot>/data-files`). Resolution is centralized in
+`privhub/src/store-paths.mjs` (env > `<home>/config/store.json` > default) and must run
+before any plugin import, because plugins read these env vars at module load. Blue-green
+slots run from different release dirs but must share the same roots, so this split is
+load-bearing: never use `PRIVHUB_ROOT` for data paths in new code, and never hardcode
+`data-files` — read `PRIVHUB_DATA_FILES` (or `ctx.privhub.dataRoot`) instead.
 
 Client-only plugins (a `client/` dir with no `src/index.ts`) are never mounted
 server-side; they contribute UI only.
