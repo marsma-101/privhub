@@ -1,0 +1,8 @@
+{
+  "name": "privhub-update",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "系统更新：读取蓝绿控制层的更新状态、一键检查/更新/回滚（管理控制台 → 系统运维）",
+  "main": "src/index.ts"
+}

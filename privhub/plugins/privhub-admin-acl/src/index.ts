@@ -61,6 +61,12 @@ const GUARD_PATHS: Record<string, Partial<Record<string, MethodGuard>>> = {
   '/privhub/api/preview-raw': { GET: { action: 'view' } },
   '/privhub/api/download': { GET: { action: 'view' } },
   '/privhub/api/upload': { POST: { action: 'upload' } },
+  /* B6 分片上传：init/chunk 只暂存分片，complete 才落最终文件；三段都按 upload 动作
+   * 走同一套目录级 ACL（abort 只删自己的会话，不碰项目目录，故不纳入）。
+   * chunk 的 project/path 在查询串里（与 /upload 一致），init/complete 在 JSON body 里。 */
+  '/privhub/api/upload/init': { POST: { action: 'upload', fromBody: true } },
+  '/privhub/api/upload/chunk': { POST: { action: 'upload' } },
+  '/privhub/api/upload/complete': { POST: { action: 'upload', fromBody: true } },
   '/privhub/api/mkdir': { POST: { action: 'upload', fromBody: true } },
   '/privhub/api/delete': { POST: { action: 'delete', fromBody: true } },
   '/privhub/api/rename': { POST: { action: 'edit', fromBody: true } },

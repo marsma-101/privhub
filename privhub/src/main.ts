@@ -10,6 +10,10 @@
  * @module src/main
  */
 
+/* 【必须先于所有插件 import】统一解析三类存储根，并把结果写回 process.env。
+ * 很多插件在模块加载期直接读 PRIVHUB_DATA_ROOT / PRIVHUB_DATA_FILES，若本模块
+ * 晚于它们求值，配置文件的设置就不会生效（GitHub issue #2 / REQ-1、REQ-3）。 */
+import { storePaths, describeStorePaths } from './store-paths.mjs'
 import { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { readdir } from 'node:fs/promises'
@@ -60,9 +64,9 @@ const CORE_PLUGINS = new Set([
   'privhub-admin', 'privhub-shell',
 ])
 
-const rootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-/** 数据根：蓝绿双槽共享的 data/ 与 data-files/ 所在目录；未设置时回落应用根，保持旧行为。 */
-const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || rootDir
+const rootDir = storePaths.codeRoot
+/** 系统数据根：其下 data/ 存放 users/sessions/audit/trash/secret.key（见 store-paths.mjs）。 */
+const dataRootDir = storePaths.dataRoot
 /** 监听地址：蓝绿槽由控制层指定回环地址（nginx 对外）；未设置时监听全部网卡（旧行为）。 */
 const listenHost = process.env.PRIVHUB_HOST?.trim() || ''
 
@@ -198,6 +202,8 @@ async function main(): Promise<void> {
    * 不在此处 process.exit：退出策略留给运维（进程守护 / 重启），擅自退出会掩盖真实原因。 */
   installFileLogger(dataRootDir)
   installProcessGuards()
+  /* 先把三类根打出来：配置错时，日志里第一屏就能看出它到底用了哪个库。 */
+  console.log(describeStorePaths())
   const ctx = new Context()
 
   /* 插件形态适配：export const name/inject/apply -> cordis 对象插件 */
@@ -222,7 +228,7 @@ async function main(): Promise<void> {
 
   /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
    *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
-  await mount(svcStorage, { enabled: true, keyFile: '', auditMagic: 'PHAUD1\0' })
+  await mount(svcStorage, { enabled: true, keyFile: storePaths.secretKey, auditMagic: 'PHAUD1\0' })
   /* E1 事件注册表（早于各业务插件挂载，供声明） */
   await mount(svcEvents)
   await mount(svcAudit, { file: '', retentionDays: 60 })
@@ -248,7 +254,7 @@ async function main(): Promise<void> {
   console.log('[startup] L2 服务装配完成 +' + (Date.now() - bootT0) + 'ms')
 
   /* 3. L1 六枢纽 */
-  await mount(core, { usersFile: '', dataRoot: '', sessionTtlDays: 7 })
+  await mount(core, { usersFile: '', dataRoot: storePaths.dataFiles, sessionTtlDays: 7 })
   /* F14 ACL 守卫必须在 auth/files/trash/admin 注册路由之前挂载（它包装 svc.route） */
   await mount(adminAcl)
   await mount(auth)
@@ -279,6 +285,43 @@ async function main(): Promise<void> {
    *    偶发「用户名或密码错误」；账号文件损坏时也应在此明确失败而非带病启动。 */
   await ctx.privhub.ready
   console.log('[startup] 核心数据就绪 +' + (Date.now() - bootT0) + 'ms')
+
+  /* 5.05 装配后存储自检（GitHub issue #2 / REQ-4）
+   *
+   * 「服务起来了、端口通了、库却是空的 / 密文解不开」是最贵的故障：用户先发现，
+   * 运维最后知道。这里在开始监听之前就把结果打出来：
+   *   - 文件库根是否存在、顶层项目数；
+   *   - 系统账号文件（密文）能否解密 —— 解不开即密钥错配。
+   * 默认只告警（新装空库是合法状态）；PRIVHUB_STORE_STRICT=1 / store.json
+   * `"strict": true` 时升级为拒绝启动。蓝绿控制层在切流量前还会再对新槽跑一次
+   * /runtime/store-check，不通过就不切换。
+   */
+  try {
+    const check = await ctx.privhub.storeCheck()
+    console.log('[store-check] 文件库 ' + check.library.dataFiles
+      + ' → 顶层项目 ' + check.library.projects + ' 个，个人空间 ' + check.library.personalSpaces + ' 个'
+      + '，抽样解密 ' + (check.sample.ok ? '通过' : '失败'))
+    for (const w of check.warnings) console.warn('[store-check] 警告：' + w)
+    /* 「新端口看不到老库」的现场提示：默认根 + 空库是最常见组合。 */
+    if (!storePaths.dataFilesExplicit && check.library.exists && check.library.entries === 0) {
+      console.warn('[store-check] 提示：当前使用默认文件库根（' + storePaths.dataFiles + '）且为空。'
+        + '若已有旧库，请设置 PRIVHUB_DATA_FILES，或在 ' + storePaths.configFile
+        + ' 写入 {"dataFiles":"<旧库路径>"} 后重启。')
+    }
+    if (!check.ok) {
+      console.error('[store-check] 未通过：' + (check.error || '未知原因'))
+    }
+    if (storePaths.strict && (!check.ok || !check.library.exists || check.library.entries === 0)) {
+      console.error('[store-check] 严格模式已开启：库不可见或为空，拒绝启动。'
+        + '请检查 PRIVHUB_DATA_FILES / config/store.json；如确为新库，关闭严格模式或先建一个项目。')
+      process.exit(1)
+    }
+  } catch (e) {
+    /* 自检本身失败不阻断非严格模式（例如权限导致的 stat 失败仍可只读服务），
+     * 但必须留下完整现场。严格模式下按未通过处理。 */
+    console.error('[store-check] 自检执行失败：' + (e instanceof Error ? e.message : String(e)))
+    if (storePaths.strict) process.exit(1)
+  }
 
   /* 5.1 蓝绿切流前的状态接力（仅控制层可调）。
    *

@@ -70,6 +70,7 @@ export const FEATURES: readonly FeatureSpec[] = [
   { id: 'admin.trash.clean', group: '管理', title: '清空回收站', desc: '彻底清空回收站（不可恢复）', userDefault: 'none' },
   { id: 'admin.lock', group: '管理', title: '锁管理', desc: '强制解锁他人占用、查看锁统计', userDefault: 'none' },
   { id: 'admin.settings', group: '管理', title: '系统设置', desc: '全局设置：读取对所有人开放，写入管理员专属', userDefault: 'read' },
+  { id: 'admin.update', group: '管理', title: '系统更新', desc: '检查 / 一键更新 / 回滚（仅蓝绿部署可用）', userDefault: 'none' },
 
   /* ---- 安全 ---- */
   { id: 'admin.audit', group: '安全', title: '审计日志', desc: '查看 / 导出操作流水', userDefault: 'none' },

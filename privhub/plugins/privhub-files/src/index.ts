@@ -7,10 +7,12 @@
  * @module privhub-files
  */
 
-import { writeFile, stat, rename, unlink } from 'node:fs/promises'
+import { writeFile, stat, rename, unlink, mkdir, readdir } from 'node:fs/promises'
 import { join, resolve, extname, sep, basename } from 'node:path'
 import { existsSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { once } from 'node:events'
+import type { Writable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
@@ -20,6 +22,35 @@ import { NEAR_MAX_BYTES } from '../../privhub-svc-dup/src/core'
 
 export const name = 'privhub-files'
 export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock', 'cap', 'dup']
+
+/* ---------- B6：分片上传 / 断点续传 ----------
+ *
+ * 为什么需要：单次整文件 POST 在局域网里传大视频时，任何一次断网/关标签都会
+ * 从 0 重传（issue #1 P0#1）。这里把大文件切成固定大小的分片，**每片独立
+ * 加密落盘**；客户端按 uploadId 只补缺失分片，合并时才生成最终文件。
+ *
+ * 会话元数据与会话分片都在 `data/.upload-sessions/`，24h 未活动即清理；
+ * 它们不属于用户文件，不参与索引/查重/回收站。
+ */
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+const UPLOAD_SESSION_TTL_MS = 24 * 3600 * 1000
+const UPLOAD_SESSION_CLEAN_INTERVAL_MS = 60 * 60 * 1000
+/** randomUUID 的固定形状；同时用于挡住把 uploadId 当路径用的穿越尝试。 */
+const UPLOAD_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+interface UploadSession {
+  id: string
+  user: string
+  project: string
+  subPath: string
+  name: string
+  size: number
+  key: string
+  chunkSize: number
+  createdAt: number
+  updatedAt: number
+  chunks: number[]
+}
 
 /** Y 批：名字级操作（重命名/移动/删除）撞上他人编辑锁时的统一文案。 */
 function busyMsg(holder: string): string {
@@ -122,6 +153,114 @@ export function apply(ctx: Context): void {
   const audit = async (u: { username: string }, action: string, target: string, detail?: string): Promise<void> => {
     const rec = await ctx.audit.log({ user: u.username, action, target, detail }).catch(() => null)
     if (rec) ctx.emit('audit:logged', rec)
+  }
+
+  /* ---------- 分片上传：会话存储 ---------- */
+
+  const sessionJson = (id: string): string => join(svc.uploadSessionDir, id + '.json')
+  const chunkPath = (id: string, index: number): string => join(svc.uploadSessionDir, id + '-' + index + '.chunk')
+  const totalChunks = (s: UploadSession): number => Math.max(1, Math.ceil(s.size / s.chunkSize))
+  const chunkBytes = (s: UploadSession, index: number): number => {
+    const last = totalChunks(s) - 1
+    return index < last ? s.chunkSize : Math.max(0, s.size - last * s.chunkSize)
+  }
+
+  /** 只做形状校验的读取（清理任务用，不绑定用户）。 */
+  const loadSessionAny = async (id: string): Promise<UploadSession | null> => {
+    if (!UPLOAD_SESSION_ID_RE.test(id)) return null
+    try {
+      const s = JSON.parse(await ctx.storage.readText(sessionJson(id))) as UploadSession
+      return s && s.id === id ? s : null
+    } catch { return null }
+  }
+
+  /** 按用户读取会话；不属于当前用户一律当「不存在」，不泄漏他人上传活动。 */
+  const loadSession = async (id: string, u: { username: string }): Promise<UploadSession | null> => {
+    const s = await loadSessionAny(id)
+    if (!s || s.user !== u.username) return null
+    if (Date.now() - s.updatedAt > UPLOAD_SESSION_TTL_MS) return null
+    return s
+  }
+
+  const saveSession = async (s: UploadSession): Promise<void> => {
+    await mkdir(svc.uploadSessionDir, { recursive: true })
+    await ctx.storage.writeText(sessionJson(s.id), JSON.stringify(s))
+  }
+
+  const removeSession = async (id: string): Promise<void> => {
+    if (!UPLOAD_SESSION_ID_RE.test(id)) return
+    await unlink(sessionJson(id)).catch(() => {})
+    const names = await readdir(svc.uploadSessionDir).catch(() => [] as string[])
+    for (const n of names) {
+      if (n.startsWith(id + '-')) await unlink(join(svc.uploadSessionDir, n)).catch(() => {})
+    }
+  }
+
+  /** 返回磁盘上确实存在的分片序号（会话里记过、但文件被清理掉的不算）。 */
+  const existingChunks = async (s: UploadSession): Promise<number[]> => {
+    const out: number[] = []
+    for (const i of s.chunks) {
+      const st = await stat(chunkPath(s.id, i)).catch(() => null)
+      /* 空文件只有一个 0 字节分片：存在即算到账（否则永远凑不齐）。 */
+      if (st && st.isFile() && (st.size > 0 || s.size === 0)) out.push(i)
+    }
+    return out.sort((a, b) => a - b)
+  }
+
+  /** 断点续传：同用户 + 同目标 + 同大小 + 同 key 的未过期会话直接复用。 */
+  const findResumableSession = async (
+    u: { username: string }, project: string, subPath: string, name: string, size: number, key: string,
+  ): Promise<UploadSession | null> => {
+    const names = await readdir(svc.uploadSessionDir).catch(() => [] as string[])
+    let best: UploadSession | null = null
+    for (const n of names) {
+      if (!n.endsWith('.json')) continue
+      const s = await loadSessionAny(n.slice(0, -5))
+      if (!s || s.user !== u.username) continue
+      if (Date.now() - s.updatedAt > UPLOAD_SESSION_TTL_MS) { await removeSession(s.id); continue }
+      if (s.project !== project || s.subPath !== subPath || s.name !== name || s.size !== size || s.key !== key) continue
+      if (!best || s.updatedAt > best.updatedAt) best = s
+    }
+    return best
+  }
+
+  /** 会话清理：每小时最多一次，按「最后活动时间」删过期会话与孤儿分片。 */
+  let lastSessionClean = 0
+  const cleanExpiredSessions = async (): Promise<void> => {
+    const now = Date.now()
+    if (now - lastSessionClean < UPLOAD_SESSION_CLEAN_INTERVAL_MS) return
+    lastSessionClean = now
+    const names = await readdir(svc.uploadSessionDir).catch(() => [] as string[])
+    for (const n of names) {
+      if (!n.endsWith('.json')) continue
+      const id = n.slice(0, -5)
+      const s = await loadSessionAny(id)
+      if (s && now - s.updatedAt <= UPLOAD_SESSION_TTL_MS) continue
+      await removeSession(id)
+    }
+  }
+
+  /**
+   * 上传完成后的旁路元数据：内容指纹 → 同项目查重 → 登记。
+   * 单次直传与分片合并共用一份实现，避免两条路径的查重口径漂移。
+   * 任何失败只记日志，绝不影响「文件已经落盘成功」这个事实。
+   */
+  const finalizeUploadMeta = (
+    u: { username: string }, project: string, subPath: string, name: string, size: number,
+    hasher: ReturnType<typeof createHash>, chunks: Buffer[], tooBigForNear: boolean,
+  ): { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null => {
+    let dup: { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null = null
+    try {
+      const rawHash = hasher.digest('hex')
+      const fp = tooBigForNear ? { h: rawHash, size } : ctx.dup.fingerprint(Buffer.concat(chunks), rawHash)
+      const relPath = (subPath ? subPath + '/' : '') + name
+      // 功能开关（dup.prompt）：关掉就不查、不回带（管理员恒可；普通用户默认开、可关）。
+      if (ctx.cap.can(u, 'dup.prompt', 'read')) dup = ctx.dup.check(project, relPath, fp)
+      ctx.dup.register(project, relPath, fp)
+    } catch (e) {
+      ctx.logger?.warn?.('[upload] 查重旁路失败（不影响上传）：' + (e instanceof Error ? e.message : String(e)))
+    }
+    return dup
   }
 
   /* 项目列表（当前用户可见） */
@@ -361,19 +500,8 @@ export function apply(ctx: Context): void {
         }).catch((e) => fail(e))
       }).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
       await rename(tmp, target)
-      /* Q6：算指纹 → 同项目内查重（只提示）→ 登记，供下次上传命中。
-       * 整段是旁路：失败只记日志，响应照旧 ok（上传已经成功落盘，不能因为提示失败而回错）。 */
-      let dup: { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null = null
-      try {
-        const rawHash = hasher.digest('hex')
-        const fp = tooBigForNear ? { h: rawHash, size } : ctx.dup.fingerprint(Buffer.concat(chunks), rawHash)
-        const relPath = (subPath ? subPath + '/' : '') + name
-        // 功能开关（dup.prompt）：关掉就不查、不回带（管理员恒可；普通用户默认开、可关）。
-        if (ctx.cap.can(u, 'dup.prompt', 'read')) dup = ctx.dup.check(project, relPath, fp)
-        ctx.dup.register(project, relPath, fp)
-      } catch (e) {
-        ctx.logger?.warn?.('[upload] 查重旁路失败（不影响上传）：' + (e instanceof Error ? e.message : String(e)))
-      }
+      /* Q6：算指纹 → 同项目内查重（只提示）→ 登记，供下次上传命中（与分片合并共用）。 */
+      const dup = finalizeUploadMeta(u, project, subPath, name, size, hasher, chunks, tooBigForNear)
       json(res, 200, { ok: true, size, ...(dup ? { duplicates: dup.exact, near: dup.near } : {}) })
       void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + size)
       changed(project, (subPath ? subPath + '/' : '') + name, 'created')
@@ -388,6 +516,244 @@ export function apply(ctx: Context): void {
       json(res, 400, { ok: false, error: uploadErrorText(e) })
     }
   }, 'upload')
+
+  /* ══════════ B6：分片上传（断点续传）══════════
+   *
+   * 三段式：init 建会话 → chunk 逐片上传（可乱序/重复，缺哪片补哪片）→ complete 合并。
+   * 与单次 POST 并存：小文件仍走 /upload，大文件走这里；两者最终落盘格式完全一致
+   * （仍是 storage.createWriteStream 的加密流），下游预览/检索/查重无需区分来源。
+   */
+
+  /* 建会话（幂等：同一文件再次 init 会拿回已有 uploadId 与已收分片） */
+  svc.route('/privhub/api/upload/init', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const project = String(body.project ?? '')
+    const subPath = String(body.path ?? '')
+    const name = String(body.name ?? '')
+    const size = Number(body.size)
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限上传到该项目' })
+    if (!svc.isValidName(name)) return json(res, 400, { ok: false, error: '文件名无效' })
+    if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) {
+      return json(res, 400, { ok: false, error: '文件名过长（中文约 60 字以内），请缩短后重试' })
+    }
+    if (!Number.isSafeInteger(size) || size < 0) return json(res, 400, { ok: false, error: '文件大小无效' })
+    const limitBytes = await svc.uploadLimitBytes()
+    if (limitBytes > 0 && size > limitBytes) {
+      void audit(u, 'upload_fail', project + '/' + (subPath ? subPath + '/' : '') + name,
+        'too_large size=' + size + ' limit=' + limitBytes)
+      return json(res, 413, {
+        ok: false,
+        error: '文件过大：文件大小 ' + formatUploadSize(size) + '，当前上限 ' + formatUploadSize(limitBytes)
+          + '。管理员可在「系统设置 → 单文件上传上限」调整（0 = 不限），或压缩后再传。',
+      })
+    }
+    const dir = await svc.resolveReal(project, subPath)
+    if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+    if (existsSync(join(dir, name))) {
+      return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+    }
+    /* key 由客户端按「项目/目录/文件名/大小/修改时间」生成（FNV 摘要即可）：
+     * 刷新页面后重新选择同一个文件，仍能命中未完成会话。 */
+    const key = String(body.key ?? '').slice(0, 200) || (project + '|' + subPath + '|' + name + '|' + size)
+    await cleanExpiredSessions()
+    const found = await findResumableSession(u, project, subPath, name, size, key)
+    if (found) {
+      found.chunks = await existingChunks(found)
+      found.updatedAt = Date.now()
+      await saveSession(found)
+      return json(res, 200, {
+        ok: true, uploadId: found.id, chunkSize: found.chunkSize,
+        uploaded: found.chunks, total: totalChunks(found), resumed: true,
+      })
+    }
+    const s: UploadSession = {
+      id: randomUUID(), user: u.username, project, subPath, name, size, key,
+      chunkSize: UPLOAD_CHUNK_SIZE, createdAt: Date.now(), updatedAt: Date.now(), chunks: [],
+    }
+    await saveSession(s)
+    json(res, 200, { ok: true, uploadId: s.id, chunkSize: s.chunkSize, uploaded: [], total: totalChunks(s), resumed: false })
+  }, 'upload-init')
+
+  /* 上传单个分片（原始字节 body；元数据走查询参数，与 /upload 一致） */
+  svc.route('/privhub/api/upload/chunk', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const url = new URL(req.url ?? '/', 'http://x')
+    const project = url.searchParams.get('project') ?? ''
+    const subPath = url.searchParams.get('path') ?? ''
+    const id = url.searchParams.get('id') ?? ''
+    const index = Number(url.searchParams.get('index'))
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限上传到该项目' })
+    const s = await loadSession(id, u)
+    if (!s) return json(res, 404, { ok: false, error: '上传会话不存在或已过期，请重新上传' })
+    if (s.project !== project || s.subPath !== subPath) {
+      return json(res, 403, { ok: false, error: '上传会话与目标目录不一致' })
+    }
+    const total = totalChunks(s)
+    if (!Number.isInteger(index) || index < 0 || index >= total) {
+      return json(res, 400, { ok: false, error: '分片序号无效' })
+    }
+    const expected = chunkBytes(s, index)
+    const declared = Number(req.headers['content-length'])
+    if (Number.isFinite(declared) && declared !== expected) {
+      return json(res, 400, { ok: false, error: '分片大小不符（期望 ' + expected + ' 字节）' })
+    }
+    const file = chunkPath(id, index)
+    const tmp = file + '.part'
+    try {
+      const { stream, done } = await ctx.storage.createWriteStream(tmp)
+      const w = stream as Writable
+      let written = 0
+      let overflow = false
+      await new Promise<void>((ok, fail) => {
+        let settled = false
+        const finish = (fn: (v?: unknown) => void, v?: unknown): void => { if (!settled) { settled = true; fn(v) } }
+        req.on('data', (c: Buffer) => {
+          written += c.length
+          /* 声明大小被突破：立刻停止落盘（继续消费请求但不再写），收尾后回错误。
+           * 不能 destroy 写流 —— storage 的密文流是「cipher → fileStream」管道，
+           * 只销毁 cipher 不会关闭底层文件句柄，会留下删不掉的 .part。 */
+          if (!overflow && written > expected) {
+            overflow = true
+            req.unpipe(w)
+            w.end()
+            void done.catch(() => {})
+            req.resume()
+          }
+        })
+        req.on('error', (e) => {
+          req.unpipe(w)
+          w.end()
+          void done.then(() => finish(fail, e), () => finish(fail, e))
+        })
+        req.pipe(w)
+        w.on('finish', () => { void done.then(() => finish(ok), (e) => finish(fail, e)) })
+      })
+      if (overflow || written !== expected) throw new Error('分片大小不符')
+      await rename(tmp, file)
+    } catch (e) {
+      await unlink(tmp).catch(() => {})
+      ctx.logger?.warn?.('[upload-chunk] 失败：' + (e instanceof Error ? e.message : String(e)))
+      return json(res, 400, { ok: false, error: '分片写入失败，请重试' })
+    }
+    /* 会话是「读 → 改 → 写」：用 core 的串行锁避免两个并发分片丢序号。 */
+    const after = await svc.withFileLock(sessionJson(id), async () => {
+      const cur = await loadSession(id, u)
+      if (!cur) return null
+      if (!cur.chunks.includes(index)) cur.chunks.push(index)
+      cur.chunks.sort((a, b) => a - b)
+      cur.updatedAt = Date.now()
+      await saveSession(cur)
+      return cur
+    })
+    if (!after) return json(res, 404, { ok: false, error: '上传会话已失效' })
+    json(res, 200, { ok: true, index, received: after.chunks.length, total })
+  }, 'upload-chunk')
+
+  /* 合并所有分片 → 按单次上传同样的加密格式落到目标文件 */
+  svc.route('/privhub/api/upload/complete', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const project = String(body.project ?? '')
+    const subPath = String(body.path ?? '')
+    const name = String(body.name ?? '')
+    const id = String(body.id ?? '')
+    if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限写入该项目' })
+    const s = await loadSession(id, u)
+    if (!s) return json(res, 404, { ok: false, error: '上传会话不存在或已过期，请重新上传' })
+    if (s.project !== project || s.subPath !== subPath || s.name !== name) {
+      return json(res, 403, { ok: false, error: '上传会话与目标文件不一致' })
+    }
+    const total = totalChunks(s)
+    const present = await existingChunks(s)
+    if (present.length !== total) {
+      const missing: number[] = []
+      for (let i = 0; i < total; i++) if (!present.includes(i)) missing.push(i)
+      return json(res, 409, { ok: false, error: '还有分片未上传（缺 ' + missing.length + ' 片）', missing, received: present.length, total })
+    }
+    const dir = await svc.resolveReal(project, subPath)
+    if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+    const target = join(dir, name)
+    if (existsSync(target)) {
+      return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+    }
+    let merged: { size: number; dup: ReturnType<typeof finalizeUploadMeta> }
+    try {
+      merged = await svc.withFileLock('upload-complete:' + id, async () => {
+        const cur = await loadSession(id, u)
+        if (!cur) throw new Error('上传会话已失效')
+        const now = await existingChunks(cur)
+        if (now.length !== total) throw new Error('分片不完整')
+        const tmp = target + '.part'
+        const hasher = createHash('sha256')
+        const chunks: Buffer[] = []
+        let buffered = 0
+        let tooBigForNear = false
+        let written = 0
+        const { stream, done } = await ctx.storage.createWriteStream(tmp)
+        try {
+          for (const idx of now) {
+            const rs = await ctx.storage.createReadStream(chunkPath(cur.id, idx))
+            for await (const c of rs) {
+              const buf = c as Buffer
+              written += buf.length
+              hasher.update(buf)
+              if (!tooBigForNear) {
+                if (buffered + buf.length > NEAR_MAX_BYTES) { tooBigForNear = true; chunks.length = 0; buffered = 0 }
+                else { chunks.push(buf); buffered += buf.length }
+              }
+              if (!(stream as Writable).write(buf)) await once(stream as Writable, 'drain')
+            }
+          }
+          ;(stream as Writable).end()
+          await done
+        } catch (e) {
+          /* 收尾而不是 destroy：密文写流必须走 end() 才会关闭底层文件句柄、
+           * 让 .part 在 Windows 上能被删除（见 chunk 路由同处注释）。 */
+          try { (stream as Writable).end() } catch { /* 已销毁 */ }
+          await done.catch(() => {})
+          await unlink(tmp).catch(() => {})
+          throw e
+        }
+        if (written !== cur.size) {
+          await unlink(tmp).catch(() => {})
+          throw new Error('分片总大小与声明不一致')
+        }
+        await rename(tmp, target)
+        const dup = finalizeUploadMeta(u, project, subPath, name, cur.size, hasher, chunks, tooBigForNear)
+        await removeSession(cur.id)
+        return { size: written, dup }
+      })
+    } catch (e) {
+      ctx.logger?.warn?.('[upload-complete] 失败：' + (e instanceof Error ? e.message : String(e)))
+      return json(res, 409, { ok: false, error: '合并失败：分片不完整或会话已失效，请重新上传' })
+    }
+    json(res, 200, { ok: true, size: merged.size, ...(merged.dup ? { duplicates: merged.dup.exact, near: merged.dup.near } : {}) })
+    void audit(u, 'upload', project + '/' + (subPath ? subPath + '/' : '') + name, 'size=' + merged.size + ' chunks=' + total)
+    changed(project, (subPath ? subPath + '/' : '') + name, 'created')
+  }, 'upload-complete')
+
+  /* 放弃上传（主动取消或客户端决定不再续传）；未完成会话到期也会被清理 */
+  svc.route('/privhub/api/upload/abort', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const id = String(body.id ?? '')
+    const s = await loadSession(id, u)
+    if (!s) return json(res, 200, { ok: true })  // 已不存在 = 目标状态
+    await removeSession(s.id)
+    json(res, 200, { ok: true })
+  }, 'upload-abort')
 
   /* 新建文件夹（支持在子路径 path 下创建） */
   svc.route('/privhub/api/mkdir', async (req, res) => {

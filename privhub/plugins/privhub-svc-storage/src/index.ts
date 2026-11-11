@@ -25,12 +25,12 @@
  */
 
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, rename, readdir, stat, rm } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename, readdir, stat, rm, open } from 'node:fs/promises'
 import { createReadStream as fsCreateReadStream, createWriteStream as fsCreateWriteStream, existsSync } from 'node:fs'
 import type { Dirent } from 'node:fs'
-import type { Readable, Writable } from 'node:stream'
+import type { Writable } from 'node:stream'
 import { join, dirname, relative, basename, resolve, sep } from 'node:path'
-import { Transform } from 'node:stream'
+import { Transform, Readable } from 'node:stream'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -71,6 +71,63 @@ declare module '@deepseek-ai/cordis' {
 }
 
 const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
+/** 文件库根：可与系统数据根分开（GitHub issue #2 / REQ-1）。 */
+const dataFilesDir = process.env.PRIVHUB_DATA_FILES?.trim() || join(dataRootDir, 'data-files')
+/** 密钥默认归属「系统数据根」；PRIVHUB_SECRET_KEY_FILE 可显式指定。 */
+const defaultKeyFile = process.env.PRIVHUB_SECRET_KEY_FILE?.trim() || join(dataRootDir, 'data', 'secret.key')
+
+/** 是否是 PrivHub 密文头（PHENC1 文件头 / PHAUD1 审计块）。 */
+function isCipherHead(head: Buffer): boolean {
+  if (head.length >= MAGIC.length && head.subarray(0, MAGIC.length).equals(MAGIC)) return true
+  // PHAUD1 后补 NUL/长度字段；只认 6 字节 ASCII 标记即可
+  return head.length >= 6 && head.subarray(0, 6).toString('latin1') === 'PHAUD1'
+}
+
+/**
+ * 在目录树里找第一个密文文件（有界：最多看 maxFiles 个文件，符号链接一律跳过）。
+ *
+ * 用途只有一个：**在密钥缺失时判断「这里是不是已经有密文」**。找到了就拒绝
+ * 自动生成新密钥——否则新密钥解不开旧数据，而且是不可逆的（GitHub issue #2 / REQ-2）。
+ * 真正的大库（72GB）不可能全扫；系统数据根（data/）文件少且关键，通常几百个文件内
+ * 就能命中 users.json / audit；库根只作补充抽样。
+ */
+async function findCiphertextFile(root: string, maxFiles = 500): Promise<string | null> {
+  let seen = 0
+  const stack = [root]
+  while (stack.length > 0) {
+    const dir = stack.pop() as string
+    let entries: Dirent[]
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const ent of entries) {
+      if (ent.isSymbolicLink()) continue // 与 listFiles 一致：防止经由 junction/symlink 跑出数据根
+      const full = join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (ent.name === 'node_modules' || ent.name === '.git') continue
+        stack.push(full)
+        continue
+      }
+      if (!ent.isFile()) continue
+      if (++seen > maxFiles) return null
+      try {
+        const fh = await open(full, 'r')
+        try {
+          const head = Buffer.alloc(8)
+          const { bytesRead } = await fh.read(head, 0, 8, 0)
+          if (bytesRead >= 6 && isCipherHead(head)) return full
+        } finally {
+          await fh.close()
+        }
+      } catch {
+        /* 单个文件读不了不影响判断：继续看下一个 */
+      }
+    }
+  }
+  return null
+}
 
 /** 一个仍以明文落盘的系统数据文件。 */
 export interface PlaintextFile {
@@ -97,6 +154,8 @@ function stamp(): string {
 
 export class StorageService extends Service {
   private key: Buffer | null = null
+  /** 密钥来源：env / file / generated（诊断与自检用）。 */
+  private keyOrigin: 'env' | 'file' | 'generated' | 'unknown' = 'unknown'
   /** 密钥加载单飞 Promise（并发首触发只执行一次，避免并发写同一密钥文件）。 */
   private keyPromise: Promise<Buffer> | null = null
   private readonly enabled: boolean
@@ -106,13 +165,23 @@ export class StorageService extends Service {
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'storage')
     this.enabled = config.enabled
-    this.keyFile = config.keyFile.trim() === '' ? join(dataRootDir, 'data', 'secret.key') : config.keyFile
+    this.keyFile = config.keyFile.trim() === '' ? defaultKeyFile : config.keyFile
     // 审计块 magic 固定 8 字节（不足补 NUL，与文件头对齐）
     this.auditMagic = Buffer.from((config.auditMagic || 'PHAUD1\0').padEnd(8, '\0'), 'utf8')
   }
 
   /** 是否启用加密（读路径不受影响：自动识别密文头）。 */
   get active(): boolean { return this.enabled }
+
+  /** 密钥诊断信息（自检 / verify-store 用；不含密钥本身）。 */
+  get keyInfo(): { source: 'env' | 'file' | 'generated' | 'unknown'; file: string; env: boolean } {
+    return { source: this.keyOrigin, file: this.keyFile, env: (process.env.PRIVHUB_SECRET || '').trim() !== '' }
+  }
+
+  /** 只读探测：目录树里是否存在既有密文（密钥守卫与体检脚本复用）。 */
+  findCiphertextFile(root: string, maxFiles = 500): Promise<string | null> {
+    return findCiphertextFile(root, maxFiles)
+  }
 
   /**
    * 加载/生成密钥。env PRIVHUB_SECRET 优先；否则 secret.key 文件。
@@ -146,15 +215,54 @@ export class StorageService extends Service {
     const env = process.env.PRIVHUB_SECRET
     if (env && env.trim() !== '') {
       this.key = createHash('sha256').update(env.trim(), 'utf8').digest()
+      this.keyOrigin = 'env'
       return this.key
     }
     await mkdir(dirname(this.keyFile), { recursive: true })
+
+    /* 【数据生死线】密钥缺失时，先确认这里是不是「已经有密文」（GitHub issue #2 / REQ-2）。
+     *
+     * 旧行为：secret.key 不存在就直接随机造一把。把系统数据根 / 库根指错（或从备份
+     * 恢复时漏了 secret.key）时，这会**悄悄**产出一把新密钥：旧密文从此永久解不开，
+     * 而服务看起来一切正常——比「看不见库」更不可逆。
+     *
+     * 规则：有密文 + 没密钥 ⇒ 拒绝启动并说清该把哪份 secret.key 放回来；
+     * 只有确认没有任何密文时才允许初始化新密钥。显式覆盖：PRIVHUB_ALLOW_NEW_KEY=1。
+     */
+    if (!existsSync(this.keyFile)) {
+      const override = ['1', 'true', 'yes'].includes((process.env.PRIVHUB_ALLOW_NEW_KEY || '').toLowerCase())
+      if (!override) {
+        const found = (await findCiphertextFile(join(dataRootDir, 'data'), 2000))
+          ?? (dataFilesDir !== join(dataRootDir, 'data') ? await findCiphertextFile(dataFilesDir, 500) : null)
+        if (found) {
+          throw new Error(
+            '检测到已有加密数据，但找不到对应密钥，拒绝自动生成新密钥。\n'
+            + '  密文样本：' + found + '\n'
+            + '  期望密钥：' + this.keyFile + '（系统数据根的 data/secret.key）\n'
+            + '新密钥无法解开旧密文，一旦写入会让数据永久不可恢复。请：\n'
+            + '  1) 把原部署的 data/secret.key 放回上面的位置；或\n'
+            + '  2) 设置环境变量 PRIVHUB_SECRET（内容与原密钥一致）；或\n'
+            + '  3) 用 PRIVHUB_DATA_ROOT 指向原系统数据根。\n'
+            + '确认这是一个没有任何密文的全新库、仍要初始化时，设置 PRIVHUB_ALLOW_NEW_KEY=1。',
+          )
+        }
+      }
+    }
+
+    let created = false
     try {
       // 原子创建：仅当文件不存在时成功，避免并发写互相截断
       await writeFile(this.keyFile, randomBytes(32), { mode: 0o600, flag: 'wx' })
+      created = true
     } catch (e) {
       if ((e as { code?: string }).code !== 'EEXIST') throw e
       // 已存在（可能是并发方刚创建）：继续走读取
+    }
+    this.keyOrigin = created ? 'generated' : 'file'
+    if (created) {
+      /* 新密钥是重大事件：日志必须留痕（备份 secret.key 是使用端的硬要求）。 */
+      console.warn('[storage] 已初始化新密钥：' + this.keyFile
+        + ' —— 请立即随数据一起备份；丢失该文件 = 现有密文永久不可恢复。')
     }
     let lastLen = -1
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -190,9 +298,39 @@ export class StorageService extends Service {
       const tag = data.subarray(data.length - 16)
       const decipher = createDecipheriv('aes-256-gcm', key, iv)
       decipher.setAuthTag(tag)
-      return Buffer.concat([decipher.update(body), decipher.final()])
+      try {
+        return Buffer.concat([decipher.update(body), decipher.final()])
+      } catch (e) {
+        throw this.explainKeyMismatch(e)
+      }
     }
     return data // 明文透传（未加密旧数据）
+  }
+
+  /**
+   * 把 Node/GCM 的原始错误翻译成运维能行动的话（GitHub issue #2 / REQ-2、REQ-4）。
+   * 原始信息是 "Unsupported state or unable to authenticate data" —— 它既不说是
+   * 密钥问题，也不说该去哪找密钥，结果只能靠猜。
+   */
+  private explainKeyMismatch(e: unknown): Error {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/authenticate|bad decrypt|Unsupported state|invalid|unable to/i.test(msg)) {
+      return e instanceof Error ? e : new Error(msg)
+    }
+    const info = this.keyInfo
+    const source = info.env ? '环境变量 PRIVHUB_SECRET' : '密钥文件 ' + info.file
+      + (info.source === 'generated' ? '（本次启动新生成）' : '')
+    const err = new Error(
+      '密文解密失败：当前密钥与数据不匹配。\n'
+      + '  当前密钥来源：' + source + '\n'
+      + '  这通常意味着系统数据根 / 文件库根指向了旧数据，但密钥不是同一把。\n'
+      + '  请把原部署 data/secret.key 放到当前系统数据根的 data/ 下，'
+      + '或设置 PRIVHUB_SECRET 与原密钥一致；不要把本目录当前密钥删掉重建。',
+    )
+    /* 明确类型名：readJsonEnc 等「读失败回退默认值」的调用方必须识别并重新抛出，
+     * 否则会把「密钥错配」当成「配置文件不存在」，随后用空配置覆盖真实数据。 */
+    err.name = 'PrivHubKeyMismatchError'
+    return err
   }
 
   /** 判断文件是否为密文（只读头部 20 字节，大文件不整读）。 */
@@ -406,6 +544,14 @@ export class StorageService extends Service {
     await tagFile.close()
     const decipher = createDecipheriv('aes-256-gcm', key, iv)
     decipher.setAuthTag(tag)
+    /* 空明文（0 字节文件）：密文只有 头 + tag，没有 body 区间。
+     * fs.createReadStream({start: HEADER_LEN, end: size-17}) 此时 end < start，
+     * 会异步抛 ERR_OUT_OF_RANGE —— 表现为「0 字节文件下载/合并必失败」。
+     * 这里显式验证 tag（空密文的认证）后返回空流，不绕过完整性校验。 */
+    if (s.size === HEADER_LEN + 16) {
+      decipher.final() // tag 不符会抛，交给调用方按损坏处理
+      return Readable.from([])
+    }
     const bodyStream = fsCreateReadStream(file, { start: HEADER_LEN, end: s.size - 17 })
     bodyStream.pipe(decipher)
     bodyStream.on('error', (e) => decipher.destroy(e))
@@ -419,7 +565,12 @@ export class StorageService extends Service {
     try {
       const plain = await this.readText(file)
       return JSON.parse(plain) as T
-    } catch { return fallback }
+    } catch (e) {
+      /* 密钥错配绝不能按「文件不存在」处理：调用方随后往往会把 fallback 写回，
+       * 那等于用空配置覆盖真实数据。其余损坏交给调用方按既有策略处理。 */
+      if (e instanceof Error && e.name === 'PrivHubKeyMismatchError') throw e
+      return fallback
+    }
   }
 
   async writeJsonEnc(file: string, value: unknown): Promise<void> {
@@ -541,6 +692,15 @@ export class StorageService extends Service {
     if (norm === resolve(this.keyFile)) return '这是密钥文件，加密它等于让所有密文永久不可恢复'
     if (basename(norm).toLowerCase().startsWith('audit')) {
       return '这是审计文件（自有 PHAUD1 加密块格式），再包一层 PHENC1 后 auditScan 读不出任何块'
+    }
+    /* REQ-5：迁移只能发生在「当前配置的权威系统数据根」里。
+     * 根指错时（最常见：忘了设 PRIVHUB_DATA_ROOT，进程按 cwd 解析），这里会去改
+     * 另一个目录里的同名文件，而备份、回读校验也都在那个错目录里完成 —— 每一步都
+     * 「成功」，用户真正的数据却根本没被迁到（或更糟：动了不该动的另一份）。
+     * 所以先确认目标在 <dataRoot>/data 下，不一致就拒绝并指出当前根。 */
+    if (!under(join(dataRootDir, 'data'))) {
+      return '目标不在当前配置的系统数据根下（' + join(dataRootDir, 'data')
+        + '），拒绝迁移；请先确认 PRIVHUB_DATA_ROOT / config/store.json 的 dataRoot 是否指对了库'
     }
     if (under(join(dataRootDir, 'data', 'logs'))) return '应用日志是明文追加的，加密后会与后续追加内容混成乱码'
     if (under(join(dataRootDir, 'data', 'git-backup'))) return '这是 git 仓库内部文件，加密会毁掉自动备份'

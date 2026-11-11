@@ -27,10 +27,12 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync,
   renameSync, cpSync, appendFileSync, openSync, closeSync, unlinkSync, symlinkSync,
+  createWriteStream, statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -41,6 +43,7 @@ const LOGS_DIR = resolve(process.env.PRIVHUB_LOGS_DIR?.trim() || join(HOME, 'log
 const RELEASES_DIR = resolve(process.env.PRIVHUB_RELEASES_DIR?.trim() || join(HOME, 'releases'))
 const TMP_DIR = resolve(process.env.PRIVHUB_TMP_DIR?.trim() || join(HOME, 'tmp'))
 const UPDATE_CONF = join(CONFIG_DIR, 'update.json')
+const UPDATE_STATE = join(CONFIG_DIR, 'update-state.json')
 const ACTIVE_FILE = join(CONFIG_DIR, 'active.json')
 const RUNTIME_CONF = join(CONFIG_DIR, 'runtime.json')
 const TOKEN_FILE = join(CONFIG_DIR, 'control.token')
@@ -78,6 +81,13 @@ function loadConfig() {
     branch: 'main',
     subdir: '',
     path: '',
+    /* http 源：指向一个 latest.json（可与 GitHub Release / 任意静态服务器配合）。 */
+    manifestUrl: '',
+    /* 守护是否自动切换；false 时只检查并写状态，由管理界面一键更新。 */
+    autoApply: true,
+    /* 清单没有 sha256 时是否仍允许更新（默认拒绝，避免下载到被替换的包）。 */
+    allowUnverified: false,
+    downloadTimeoutMs: 10 * 60 * 1000,
     intervalMinutes: DEFAULT_INTERVAL_MIN,
     requireNewer: true,
     linkModules: false,
@@ -94,10 +104,11 @@ function loadConfig() {
   }
   if (loaded) Object.assign(cfg, loaded)
   cfg.source = String(process.env.PRIVHUB_UPDATE_SOURCE || cfg.source || 'git')
-  if (cfg.source !== 'git' && cfg.source !== 'dir') {
-    fail('PRIVHUB_BAD_UPDATE_CONFIG', `update.json 的 source 只支持 git / dir，实际：${cfg.source}`)
+  if (cfg.source !== 'git' && cfg.source !== 'dir' && cfg.source !== 'http') {
+    fail('PRIVHUB_BAD_UPDATE_CONFIG', `update.json 的 source 只支持 git / dir / http，实际：${cfg.source}`)
   }
   cfg.intervalMinutes = Math.max(5, Number(cfg.intervalMinutes) || DEFAULT_INTERVAL_MIN)
+  cfg.downloadTimeoutMs = Math.max(30_000, Number(cfg.downloadTimeoutMs) || 10 * 60 * 1000)
   return cfg
 }
 
@@ -105,6 +116,7 @@ function loadConfig() {
 function assertSourceConfig(cfg) {
   if (cfg.source === 'git' && !cfg.remote) fail('PRIVHUB_BAD_UPDATE_CONFIG', 'git 源缺少 remote')
   if (cfg.source === 'dir' && !cfg.path) fail('PRIVHUB_BAD_UPDATE_CONFIG', 'dir 源缺少 path')
+  if (cfg.source === 'http' && !cfg.manifestUrl) fail('PRIVHUB_BAD_UPDATE_CONFIG', 'http 源缺少 manifestUrl')
 }
 
 function loadActive() {
@@ -147,6 +159,236 @@ function compareVersion(a, b) {
   return 0
 }
 
+/* ============ 更新状态（供管理界面轮询） ============ */
+
+/**
+ * 每次 check/apply 都把当前阶段写入 config/update-state.json。
+ * 控制层与管理界面只读这个文件 —— 更新器即使被切换过程重启，状态也不会丢。
+ */
+function writeState(patch) {
+  ensureDir(CONFIG_DIR)
+  const prev = readJson(UPDATE_STATE) || {}
+  const next = { ...prev, ...patch, at: new Date().toISOString() }
+  try { writeFileSync(UPDATE_STATE, JSON.stringify(next, null, 2) + '\n', 'utf8') } catch { /* 状态失败不影响更新 */ }
+  return next
+}
+
+/* ============ HTTP 发布源 ============ */
+
+/**
+ * 清单格式（latest.json）：
+ *   { "version": "3.6.0", "url": "privhub-3.6.0.zip", "sha256": "…",
+ *     "notes": "…", "publishedAt": "…" }
+ * 也接受 { "releases": [ … ] } / { "latest": { … } }，取版本号最高的一项。
+ * `url` 可相对清单地址（例如与 latest.json 放在同一静态目录）。
+ */
+function fetchTo(url, handler, timeoutMs, redirects = 5) {
+  return new Promise((done, reject) => {
+    let u
+    try { u = new URL(url) } catch { reject(new Error('更新地址不是合法 URL：' + url)); return }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      reject(new Error('更新地址只支持 http/https：' + url)); return
+    }
+    const mod = u.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = mod(u, {
+      method: 'GET',
+      timeout: timeoutMs,
+      headers: { 'user-agent': 'privhub-updater', accept: '*/*' },
+    }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
+        res.resume()
+        const next = new URL(res.headers.location, u).toString()
+        fetchTo(next, handler, timeoutMs, redirects - 1).then(done, reject)
+        return
+      }
+      if (res.statusCode !== 200) {
+        res.resume()
+        reject(new Error(`HTTP ${res.statusCode}：${url}`))
+        return
+      }
+      try { handler(res, done, reject) } catch (e) { reject(e) }
+    })
+    req.on('timeout', () => { req.destroy(new Error('更新请求超时：' + url)) })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function fetchText(url, timeoutMs) {
+  return fetchTo(url, (res, done, reject) => {
+    const chunks = []
+    let size = 0
+    res.on('data', (c) => {
+      size += c.length
+      if (size > 4 * 1024 * 1024) { reqAbort(res, reject, new Error('更新清单过大（>4MB）')); return }
+      chunks.push(c)
+    })
+    res.on('end', () => done(Buffer.concat(chunks).toString('utf8')))
+    res.on('error', reject)
+  }, timeoutMs)
+}
+
+function reqAbort(res, reject, err) {
+  try { res.destroy() } catch { /* ignore */ }
+  reject(err)
+}
+
+function fetchFile(url, dest, timeoutMs, onProgress) {
+  ensureDir(dirname(dest))
+  return fetchTo(url, (res, done, reject) => {
+    const total = Number(res.headers['content-length']) || 0
+    const hash = createHash('sha256')
+    let received = 0
+    res.on('data', (c) => {
+      received += c.length
+      hash.update(c)
+      if (onProgress) onProgress(received, total)
+    })
+    const out = createWriteStream(dest)
+    out.on('error', reject)
+    out.on('finish', () => {
+      let size = received
+      try { size = statSync(dest).size } catch { /* ignore */ }
+      done({ size, sha256: hash.digest('hex') })
+    })
+    res.on('error', reject)
+    res.pipe(out)
+  }, timeoutMs)
+}
+
+async function fetchHttpCandidate(cfg) {
+  const manifestUrl = String(cfg.manifestUrl)
+  const text = await fetchText(manifestUrl, Math.min(cfg.downloadTimeoutMs, 60_000))
+  let raw
+  try { raw = JSON.parse(text) } catch {
+    fail('PRIVHUB_BAD_MANIFEST', `更新清单不是合法 JSON：${manifestUrl}`)
+  }
+  let list = []
+  if (Array.isArray(raw?.releases)) list = raw.releases
+  else if (raw?.latest && typeof raw.latest === 'object') list = [raw.latest]
+  else if (raw?.release && typeof raw.release === 'object') list = [raw.release]
+  else list = [raw]
+
+  const candidates = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const version = String(item.version ?? '').replace(/^v/i, '').trim()
+    if (!VERSION_RE.test(version)) continue
+    const rawUrl = String(item.url ?? item.archive ?? item.downloadUrl ?? '').trim()
+    if (!rawUrl) continue
+    let archiveUrl
+    try { archiveUrl = new URL(rawUrl, manifestUrl).toString() } catch { continue }
+    candidates.push({
+      version,
+      archiveUrl,
+      sha256: String(item.sha256 ?? item.sha ?? '').trim().toLowerCase(),
+      notes: typeof item.notes === 'string' ? item.notes : '',
+      publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : '',
+      source: 'http',
+      appRoot: '',
+      cleanup: null,
+    })
+  }
+  if (candidates.length === 0) {
+    fail('PRIVHUB_BAD_MANIFEST', `更新清单里没有可用条目（需要 version + url）：${manifestUrl}`)
+  }
+  candidates.sort((a, b) => compareVersion(b.version, a.version))
+  const chosen = candidates[0]
+  if (!chosen.sha256 && !cfg.allowUnverified) {
+    fail('PRIVHUB_UNVERIFIED_RELEASE',
+      `更新清单缺少 sha256，拒绝下载（在清单里补上 sha256，或设置 allowUnverified=true 自行承担风险）`)
+  }
+  return chosen
+}
+
+function archiveExt(archiveUrl) {
+  try {
+    const name = new URL(archiveUrl).pathname
+    const m = name.match(/\.(zip|tar\.gz|tgz|tar)$/i)
+    return m ? m[0].toLowerCase() : '.zip'
+  } catch { return '.zip' }
+}
+
+/**
+ * 解包：Windows 优先用系统自带 bsdtar（System32\tar.exe，支持 zip/tar.gz），
+ * 没有则回落到 PowerShell Expand-Archive；POSIX 用 unzip / tar。
+ * 不引入任何第三方解压库 —— 稳定层只依赖 Node 内置模块。
+ */
+function extractArchive(archive, dest) {
+  ensureDir(dest)
+  const run = (cmd, args) => execFileSync(cmd, args, {
+    stdio: 'pipe', timeout: 15 * 60 * 1000, windowsHide: true,
+  })
+  const isZip = /\.zip$/i.test(archive)
+  if (process.platform === 'win32') {
+    const sysTar = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+    if (existsSync(sysTar)) { run(sysTar, ['-xf', archive, '-C', dest]); return }
+    if (!isZip) fail('PRIVHUB_EXTRACT_FAILED', 'Windows 上找不到 bsdtar，无法解压：' + archive)
+    const q = (s) => "'" + String(s).replace(/'/g, "''") + "'"
+    run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath ${q(archive)} -DestinationPath ${q(dest)} -Force`])
+    return
+  }
+  if (isZip) { run('unzip', ['-q', archive, '-d', dest]); return }
+  run('tar', ['-xf', archive, '-C', dest])
+}
+
+/** 归档根可能是「应用根本身」或「唯一顶层目录」，两种都接受。 */
+function detectAppRoot(dir) {
+  if (validReleaseDir(dir)) return dir
+  let entries = []
+  try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return '' }
+  const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+  if (dirs.length === 1) {
+    const q = join(dir, dirs[0].name)
+    if (validReleaseDir(q)) return q
+  }
+  for (const e of dirs) {
+    const q = join(dir, e.name)
+    if (validReleaseDir(q)) return q
+  }
+  return ''
+}
+
+async function materializeHttpCandidate(cfg, cand) {
+  ensureDir(TMP_DIR)
+  const work = join(TMP_DIR, 'update', `http-${cand.version}-${process.pid}`)
+  rmSync(work, { recursive: true, force: true })
+  ensureDir(work)
+  const archive = join(work, 'release' + archiveExt(cand.archiveUrl))
+  try {
+    writeState({ phase: 'downloading', candidate: cand.version, progress: 0, error: null })
+    let lastPct = -1
+    const got = await fetchFile(cand.archiveUrl, archive, cfg.downloadTimeoutMs, (received, total) => {
+      const pct = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0
+      if (pct >= lastPct + 5 || (total > 0 && pct === 100 && lastPct !== 100)) {
+        lastPct = pct
+        writeState({
+          phase: 'downloading', candidate: cand.version, progress: pct,
+          receivedBytes: received, totalBytes: total || null,
+        })
+      }
+    })
+    if (cand.sha256 && got.sha256.toLowerCase() !== cand.sha256) {
+      fail('PRIVHUB_CHECKSUM_MISMATCH',
+        `更新包校验失败：清单 ${cand.sha256}，实际 ${got.sha256}（文件可能损坏或被替换）`)
+    }
+    writeState({ phase: 'extracting', candidate: cand.version, progress: 100, downloadedBytes: got.size })
+    const xdir = join(work, 'x')
+    extractArchive(archive, xdir)
+    const appRoot = detectAppRoot(xdir)
+    if (!appRoot) fail('PRIVHUB_BAD_RELEASE', `更新包解压后找不到应用根（需要 package.json + src/main.ts + frontend/index.html）`)
+    const version = readReleaseVersion(appRoot)
+    if (version !== cand.version) {
+      fail('PRIVHUB_BAD_RELEASE', `更新包版本 ${version || '（缺失）'} 与清单 ${cand.version} 不一致`)
+    }
+    return { ...cand, appRoot, cleanup: () => rmSync(work, { recursive: true, force: true }) }
+  } catch (e) {
+    try { rmSync(work, { recursive: true, force: true }) } catch { /* ignore */ }
+    throw e
+  }
+}
+
 /* ============ 候选发现 ============ */
 
 function scanDirSource(dir) {
@@ -186,13 +428,20 @@ function cloneGitSource(cfg) {
   return { version: readReleaseVersion(appRoot), appRoot, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-function prepareCandidate(cfg) {
+async function discoverCandidate(cfg) {
   assertSourceConfig(cfg)
+  if (cfg.source === 'http') return await fetchHttpCandidate(cfg)
   return cfg.source === 'git' ? cloneGitSource(cfg) : scanDirSource(cfg.path)
 }
 
-function pickCandidate(cfg, current) {
-  const cand = prepareCandidate(cfg)
+/** http 源在版本比较之后才下载完整包；git/dir 源的候选已经带 appRoot。 */
+async function materializeCandidate(cfg, cand) {
+  if (cfg.source !== 'http' || cand.appRoot) return cand
+  return await materializeHttpCandidate(cfg, cand)
+}
+
+async function pickCandidate(cfg, current) {
+  const cand = await discoverCandidate(cfg)
   const newer = !current || compareVersion(cand.version, current) > 0
   return { ...cand, newer, accepted: cfg.requireNewer === false || newer }
 }
@@ -234,6 +483,40 @@ function checkDeps(cfg, candidateRoot, source, active) {
 }
 
 /* ============ 组装 release ============ */
+
+/**
+ * Windows 上「刚复制完的大目录」常被杀毒/索引进程短暂占用，直接 rename 会 EPERM。
+ * 目录内在没有其它写者的情况下，重试即可；非锁类错误立即抛出。
+ */
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } catch { /* 不支持时忙等 */ }
+}
+function renameWithRetry(src, dst, attempts = 20) {
+  let last = null
+  for (let i = 0; i < attempts; i++) {
+    try { renameSync(src, dst); return } catch (e) {
+      last = e
+      if (!e || !RENAME_RETRY_CODES.has(e.code)) throw e
+      sleepSync(250)
+    }
+  }
+  throw last
+}
+
+/**
+ * 把暂存 release 落到 releases/<version>。
+ * rename 原子且最快；Windows 上目录树被外部进程长期占用时会持续 EPERM，
+ * 此时退化为「复制 + 删除暂存」，结果一致（多一次磁盘拷贝）。
+ */
+function moveDirInto(src, dst) {
+  try { renameWithRetry(src, dst); return } catch (e) {
+    if (!e || !RENAME_RETRY_CODES.has(e.code)) throw e
+    log(`放置 release 时目录被占用，改用复制：${e.code}`)
+    cpSync(src, dst, { recursive: true, force: true, dereference: false, verbatimSymlinks: true })
+    try { rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) } catch { /* 暂存残留不影响 release */ }
+  }
+}
 
 const ENTRIES = ['src', 'frontend', 'plugins', 'mcp', 'package.json', 'package-lock.json', 'tsconfig.json', '部署说明.md']
 
@@ -289,7 +572,7 @@ function stageRelease(cfg, cand, active, version) {
       rmSync(staging, { recursive: true, force: true })
       return target
     }
-    renameSync(staging, target)
+    moveDirInto(staging, target)
     log(`release 已放置：${target}（${copied} 个顶层条目）`)
     return target
   } catch (e) {
@@ -431,20 +714,36 @@ function summary(cand, current) {
     candidate: cand.version,
     newer: cand.newer,
     accepted: cand.accepted,
-    source: cand.cleanup ? 'git' : 'dir',
+    source: cand.source || (cand.cleanup ? 'git' : 'dir'),
+    notes: cand.notes || '',
+    publishedAt: cand.publishedAt || '',
+    sha256: cand.sha256 || '',
   }
 }
 
 async function cmdCheck() {
   const cfg = loadConfig()
   const current = activeVersion()
-  const cand = pickCandidate(cfg, current)
+  writeState({ phase: 'checking', current: current || null, error: null })
+  let cand = null
   try {
+    cand = await pickCandidate(cfg, current)
+    writeState({
+      phase: 'idle', current: current || null, candidate: cand.version,
+      newer: cand.newer, accepted: cand.accepted, source: cand.source || cfg.source,
+      notes: cand.notes || '', checkedAt: new Date().toISOString(), error: null,
+    })
     console.log(JSON.stringify(summary(cand, current), null, 2))
+    return 0
+  } catch (e) {
+    writeState({
+      phase: 'error', current: current || null,
+      error: e.message, errorCode: e.code || null,
+    })
+    throw e
   } finally {
-    if (cand.cleanup) cand.cleanup()
+    if (cand?.cleanup) cand.cleanup()
   }
-  return 0
 }
 
 async function cmdApply() {
@@ -454,9 +753,13 @@ async function cmdApply() {
   const releaseLock = acquireLock()
   let cand = null
   try {
-    cand = prepareCandidate(cfg)
+    cand = await discoverCandidate(cfg)
     const newer = !current || compareVersion(cand.version, current) > 0
     if (cfg.requireNewer !== false && !newer) {
+      writeState({
+        phase: 'idle', current: current || null, candidate: cand.version,
+        newer: false, accepted: false, checkedAt: new Date().toISOString(), error: null,
+      })
       log(`没有更新的版本（当前 ${current || '无'}，候选 ${cand.version}）`)
       console.log(JSON.stringify({ ok: true, updated: false, current, candidate: cand.version }, null, 2))
       return 0
@@ -464,17 +767,29 @@ async function cmdApply() {
     if (!current) {
       fail('PRIVHUB_NO_ACTIVE', '控制层尚未建立 active 版本；请先用 node runtime/control.mjs serve 初始化')
     }
+    writeState({ phase: 'preparing', current, candidate: cand.version, newer: true, error: null })
+    cand = await materializeCandidate(cfg, cand)
     log(`发现新版本 ${cand.version}（当前 ${current}），开始组装`)
+    writeState({ phase: 'staging', current, candidate: cand.version })
     const releaseDir = stageRelease(cfg, cand, active, cand.version)
+    writeState({ phase: 'switching', current, candidate: cand.version })
     log(`调用控制层切换：${releaseDir}`)
     const r = await switchTo(releaseDir, cand.version)
     log(`切换完成：版本 ${r.version}，槽 ${r.slot}，端口 ${r.port}`)
     /* 清理失败不影响本次更新：磁盘清理是「顺带做」，不能把已成功的切换报成失败。 */
     let pruned = []
     try { pruned = pruneReleases(cfg) } catch (e) { log(`清理旧 release 出错：${e.message}`) }
+    writeState({
+      phase: 'done', current: r.version || cand.version, candidate: cand.version,
+      previous: current, updatedAt: new Date().toISOString(), error: null, pruned,
+    })
     console.log(JSON.stringify({ ok: true, updated: true, ...r, pruned }, null, 2))
     return 0
   } catch (e) {
+    writeState({
+      phase: 'error', current: current || null, candidate: cand?.version || null,
+      error: e.message, errorCode: e.code || null,
+    })
     log(`更新失败：${e.code || ''} ${e.message}`)
     console.error(JSON.stringify({ ok: false, code: e.code || null, error: e.message, active: current || null }, null, 2))
     return 1
@@ -488,12 +803,16 @@ async function cmdDaemon() {
   const cfg = loadConfig()
   log(`更新守护启动：source=${cfg.source}，每 ${cfg.intervalMinutes} 分钟检查一次`)
   const tick = async () => {
-    try { await cmdApply() } catch (e) { log(`守护检查异常：${e.message}`) }
+    try {
+      /* autoApply=false：只发现并写状态，由管理界面一键更新（使用版默认更稳妥）。 */
+      if (cfg.autoApply === false) await cmdCheck()
+      else await cmdApply()
+    } catch (e) { log(`守护检查异常：${e.message}`) }
+    /* 定时器必须保持 ref：unref 的话事件循环里没有任何 handle，守护会立刻
+     * 以 code=0 退出（控制层日志里表现为「启动后 0ms 就退出」），自动检查形同虚设。 */
     timer = setTimeout(tick, cfg.intervalMinutes * 60 * 1000)
-    if (typeof timer.unref === 'function') timer.unref()
   }
   let timer = setTimeout(tick, 60_000) // 启动后先等 1 分钟，避开控制层初始化
-  if (typeof timer.unref === 'function') timer.unref()
   const stop = () => { clearTimeout(timer); log('更新守护收到停止信号'); process.exit(0) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
@@ -509,11 +828,54 @@ async function cmdStatus() {
       .sort((a, b) => compareVersion(b, a))
   } catch { /* 目录不存在 */ }
   console.log(JSON.stringify({
-    ok: true, source: cfg.source, intervalMinutes: cfg.intervalMinutes, keepReleases: cfg.keepReleases,
+    ok: true,
+    source: cfg.source,
+    autoApply: cfg.autoApply !== false,
+    manifestUrl: cfg.manifestUrl || '',
+    intervalMinutes: cfg.intervalMinutes,
+    keepReleases: cfg.keepReleases,
+    state: readJson(UPDATE_STATE),
     active: active ? { version: active.version, slot: active.slot, releaseDir: active.releaseDir } : null,
     releases,
   }, null, 2))
   return 0
+}
+
+/**
+ * 回滚到上一版本。
+ *
+ * 为什么由独立进程执行而不是在槽里同步调用控制层：回滚会冻结并最终停掉
+ * **当前活跃槽**，而发起回滚的 HTTP 请求正跑在那个槽里。同步等待会把自己
+ * 计入「在途写」，永远排不空（PRIVHUB_DRAIN_TIMEOUT），即便勉强通过，响应
+ * 也出自即将被停掉的进程。与控制层 update/apply 一样，槽只负责发起，执行交给
+ * 稳定层的这个进程。
+ */
+async function cmdRollback() {
+  const active = loadActive()
+  const current = activeVersion()
+  const previous = active?.previous?.version || null
+  const releaseLock = acquireLock()
+  try {
+    writeState({ phase: 'switching', current: current || null, candidate: previous, newer: false, error: null })
+    log(`请求回滚：${current || '?'} → ${previous || '上一版本'}`)
+    const r = await controlRequest('/control/rollback', {}, 240_000)
+    writeState({
+      phase: 'done', current: r.version || previous, candidate: previous,
+      previous: current, rolledBack: true, updatedAt: new Date().toISOString(), error: null,
+    })
+    console.log(JSON.stringify({ ok: true, rolledBack: true, ...r }, null, 2))
+    return 0
+  } catch (e) {
+    writeState({
+      phase: 'error', current: current || null, candidate: previous,
+      error: e.message, errorCode: e.code || null,
+    })
+    log(`回滚失败：${e.code || ''} ${e.message}`)
+    console.error(JSON.stringify({ ok: false, code: e.code || null, error: e.message }, null, 2))
+    return 1
+  } finally {
+    releaseLock()
+  }
 }
 
 /** 人工清理旧 release（与更新成功后的自动清理共用同一保护规则）。 */
@@ -536,8 +898,9 @@ function usage() {
   console.log([
     '用法：node runtime/update.mjs <command>',
     '  check    检查是否有新版本（不修改任何东西）',
-    '  apply    发现新版本则组装 release 并调用控制层切换',
-    '  daemon   按 update.json 的 intervalMinutes 自动 check/apply',
+    '  apply    发现新版本则下载/组装 release 并调用控制层切换',
+    '  rollback 回滚到上一版本（由控制层切换，调用方进程不会随旧槽退出）',
+    '  daemon   按 update.json 的 intervalMinutes 自动检查（autoApply=false 时只检查）',
     '  status   当前活跃版本与本地 release 列表',
     '  prune    清理旧 release（保留 keepReleases 个 + 当前/上一版本）',
   ].join('\n'))
@@ -545,10 +908,16 @@ function usage() {
 
 const cmd = process.argv[2] || ''
 const run = {
-  check: cmdCheck, apply: cmdApply, daemon: cmdDaemon, status: cmdStatus, prune: cmdPrune,
+  check: cmdCheck, apply: cmdApply, rollback: cmdRollback, daemon: cmdDaemon, status: cmdStatus, prune: cmdPrune,
 }[cmd]
 if (!run) { usage(); process.exit(cmd ? 1 : 0) }
-run().then((code) => process.exit(Number(code) || 0), (e) => {
+run().then((code) => {
+  /* daemon 是常驻进程：它的函数只是装好定时器就返回，不能跟着 process.exit ——
+   * 否则控制层拉起的守护会在启动后 0ms 退出（日志里一条「退出 code=0」），
+   * 自动检查永远不会发生。退出由 SIGINT/SIGTERM 处理。 */
+  if (cmd === 'daemon') return
+  process.exit(Number(code) || 0)
+}, (e) => {
   if (e && e.code) {
     console.error(JSON.stringify({ ok: false, code: e.code, error: e.message }, null, 2))
     process.exit(1)

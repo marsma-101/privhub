@@ -87,6 +87,92 @@ function responseError(r) {
   return new UploadError(msg, { status, retryable: status >= 500 })
 }
 
+/* ---------- B6：分片上传 / 断点续传 ----------
+ *
+ * 超过阈值的文件不再一次性 POST，而是 init → 逐片上传 → complete：
+ * 单次断网只影响一个 8MB 分片，刷新页面后重新选择同一文件可从已传分片继续
+ * （服务端按 uploadId 记录到账分片，见 files 插件 /upload/chunk）。
+ * 阈值以下的文件继续走单次上传，避免小文件多付三次往返。 */
+const CHUNK_THRESHOLD = 32 * 1024 * 1024
+
+/**
+ * 断点续传用的文件身份：项目 + 目录 + 文件名 + 大小 + 修改时间。
+ * 不用内容哈希（读 10GB 文件算哈希本身就比上传慢）；同路径重新选同一个文件
+ * 才会命中，足以覆盖「关标签/断网后重来」这个真实场景。
+ */
+function fileUploadKey(project, sub, name, file) {
+  const s = project + '\u0000' + sub + '\u0000' + name + '\u0000' + file.size + '\u0000' + (file.lastModified || 0)
+  let h1 = 0x811c9dc5
+  let h2 = 0x01000193
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0
+    h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0
+  }
+  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0')
+}
+
+/** POST JSON（init / complete 用）；与 xhrUpload 同样的响应收敛方式。 */
+function xhrPostJson(url, payload, token) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url, true)
+    xhr.setRequestHeader('authorization', 'Bearer ' + token)
+    xhr.setRequestHeader('content-type', 'application/json')
+    xhr.onload = () => {
+      let body = null
+      try { body = JSON.parse(xhr.responseText) } catch { /* 非 JSON 响应 */ }
+      resolve({ status: xhr.status, body, text: xhr.responseText })
+    }
+    xhr.onerror = () => reject(new UploadError('网络中断', { retryable: true, status: 0 }))
+    xhr.ontimeout = () => reject(new UploadError('上传超时', { retryable: true, status: 0 }))
+    xhr.onabort = () => reject(new UploadError('上传已取消', { retryable: false, status: 0 }))
+    xhr.send(JSON.stringify(payload))
+  })
+}
+
+/** POST 一个分片（原始字节）；onProgress 给的是本片已发字节。 */
+function xhrPostBlob(url, blob, token, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url, true)
+    xhr.setRequestHeader('authorization', 'Bearer ' + token)
+    xhr.setRequestHeader('content-type', 'application/octet-stream')
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded) }
+    }
+    xhr.onload = () => {
+      let body = null
+      try { body = JSON.parse(xhr.responseText) } catch { /* 非 JSON 响应 */ }
+      resolve({ status: xhr.status, body, text: xhr.responseText })
+    }
+    xhr.onerror = () => reject(new UploadError('网络中断', { retryable: true, status: 0 }))
+    xhr.ontimeout = () => reject(new UploadError('上传超时', { retryable: true, status: 0 }))
+    xhr.onabort = () => reject(new UploadError('上传已取消', { retryable: false, status: 0 }))
+    xhr.send(blob)
+  })
+}
+
+/** 只重试「换一次可能成功」的失败；终态错误（413/409/401/403）立即抛出。 */
+async function withUploadRetry(fn, onRetry) {
+  let lastErr = null
+  for (let attempt = 1; attempt <= UPLOAD_RETRY_MAX; attempt++) {
+    try { return await fn() } catch (e) {
+      lastErr = e instanceof UploadError ? e : new UploadError('网络错误', { retryable: true, status: 0 })
+      if (!lastErr.retryable || attempt >= UPLOAD_RETRY_MAX) throw lastErr
+      const delay = UPLOAD_RETRY_DELAYS[attempt - 1] || 4000
+      if (onRetry) onRetry(lastErr, attempt, delay)
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+  throw lastErr || new UploadError('上传失败')
+}
+
+function okBody(r) {
+  if (r.status >= 200 && r.status < 300 && r.body && r.body.ok) return r.body
+  throw responseError(r)
+}
+
 const UploadController = {
   name: 'upload-controller',
   data() { return { nav, _dirTarget: null, _failed: [] } },
@@ -186,6 +272,79 @@ const UploadController = {
       }
       throw lastErr || new UploadError('上传失败')
     },
+    /**
+     * B6：分片上传（大文件）。返回与单次上传相同的响应体（含 duplicates/near）。
+     * 断点续传：init 回带的 uploaded 是服务端已收分片，这里只补缺失的；刷新页面后
+     * 重新选择同一文件（同项目/目录/名/大小/修改时间）会拿回同一个 uploadId。
+     */
+    async uploadChunked(file, project, sub, name, emitProgress) {
+      const key = fileUploadKey(project, sub, name, file)
+      const init = await withUploadRetry(async () => {
+        const r = await xhrPostJson('/privhub/api/upload/init',
+          { project, path: sub, name, size: file.size, key }, AUTH.token)
+        return okBody(r)
+      }, (err, attempt, delay) => {
+        bus.emit('upload:progress', {
+          name: file._uploadName, sub: file._uploadSub, status: 'uploading',
+          error: '第 ' + attempt + ' 次失败：' + err.message + '，' + Math.round(delay / 1000) + ' 秒后重试',
+        })
+      })
+      const chunkSize = Number(init.chunkSize) || 8 * 1024 * 1024
+      const total = Math.max(1, Number(init.total) || Math.ceil(file.size / chunkSize))
+      const sizeOf = (i) => i < total - 1 ? chunkSize : Math.max(0, file.size - (total - 1) * chunkSize)
+      const got = new Set((Array.isArray(init.uploaded) ? init.uploaded : []).map(Number))
+      let doneBytes = 0
+      for (const i of got) doneBytes += sizeOf(i)
+      if (got.size > 0) emitProgress(doneBytes, file.size)
+      const sendChunk = (i) => {
+        /* 续传时已到账的后续分片也计入进度基数，避免比例从 0 重新爬。 */
+        const base = doneBytes - (got.has(i) ? sizeOf(i) : 0)
+        return withUploadRetry(async () => {
+          const blob = file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize))
+          const url = '/privhub/api/upload/chunk?project=' + encodeURIComponent(project)
+            + '&path=' + encodeURIComponent(sub)
+            + '&id=' + encodeURIComponent(init.uploadId)
+            + '&index=' + i
+          const r = await xhrPostBlob(url, blob, AUTH.token, (loaded) => emitProgress(base + loaded, file.size))
+          return okBody(r)
+        }, (err, attempt, delay) => {
+          bus.emit('upload:progress', {
+            name: file._uploadName, sub: file._uploadSub, status: 'uploading',
+            percent: file.size ? Math.floor((base / file.size) * 100) : 0,
+            loaded: base, size: file.size,
+            error: '第 ' + attempt + ' 次失败：' + err.message + '，' + Math.round(delay / 1000) + ' 秒后重试',
+          })
+        }).then(() => {
+          if (!got.has(i)) { got.add(i); doneBytes += sizeOf(i) }
+        })
+      }
+      for (let i = 0; i < total; i++) {
+        if (got.has(i)) continue
+        await sendChunk(i)
+      }
+      /* complete：若服务端回「还缺分片」（分片在两次请求之间被清理），补传一轮再合并。 */
+      for (let round = 0; ; round++) {
+        try {
+          return await withUploadRetry(async () => {
+            const r = await xhrPostJson('/privhub/api/upload/complete',
+              { project, path: sub, name, id: init.uploadId }, AUTH.token)
+            if (r.status === 409 && r.body && Array.isArray(r.body.missing)) {
+              const err = responseError(r)
+              err.retryable = false
+              err.missing = r.body.missing
+              throw err
+            }
+            return okBody(r)
+          })
+        } catch (e) {
+          if (round === 0 && e && Array.isArray(e.missing) && e.missing.length) {
+            for (const i of e.missing) { got.delete(i); doneBytes = 0; for (const j of got) doneBytes += sizeOf(j); await sendChunk(i) }
+            continue
+          }
+          throw e
+        }
+      }
+    },
     async uploadAll(files, baseArg, projectArg) {
       const project = projectArg || nav.project
       if (!project) return
@@ -239,8 +398,9 @@ const UploadController = {
           nav.uploadDone++
           continue
         }
+        const fullSub = base ? base + (sub ? '/' + sub : '') : sub
         const url = '/privhub/api/upload?project=' + encodeURIComponent(project)
-          + '&path=' + encodeURIComponent(base ? base + (sub ? '/' + sub : '') : sub)
+          + '&path=' + encodeURIComponent(fullSub)
           + '&name=' + encodeURIComponent(name)
         /* 字节级进度：同一文件只在百分比变化或间隔 ≥500ms 时发事件，避免刷屏。 */
         let lastPct = -1; let lastAt = 0
@@ -256,7 +416,10 @@ const UploadController = {
           })
         }
         try {
-          const j = await this.uploadOne(f, url, emitProgress)
+          /* 大文件走分片（断点续传）；小文件仍一次 POST，少三次往返。 */
+          const j = f.size >= CHUNK_THRESHOLD
+            ? await this.uploadChunked(f, project, fullSub, name, emitProgress)
+            : await this.uploadOne(f, url, emitProgress)
           okCount++
           const nDup = (j.duplicates || []).length
           const nNear = (j.near || []).length

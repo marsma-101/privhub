@@ -1,11 +1,11 @@
 {
   "name": "privhub",
-  "version": "3.4.1",
+  "version": "3.5.0",
   "private": true,
   "type": "module",
   "description": "私域枢纽 PrivHub：纯 Cordis 底座 + 自研插件（文件管理系统）",
   "privhub": {
-    "runtimeCapabilities": ["freeze", "reload-state", "standby", "activate", "session-check"]
+    "runtimeCapabilities": ["freeze", "reload-state", "standby", "activate", "session-check", "store-check"]
   },
   "scripts": {
     "start": "start.bat",
@@ -13,6 +13,7 @@
     "runtime": "node runtime/control.mjs serve",
     "release": "node scripts/build-release.mjs",
     "update": "node runtime/update.mjs",
+    "verify-store": "node scripts/verify-store.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node tests/run-all.mjs --spawn",
     "check": "npm run typecheck && node tests/run-all.mjs --spawn"

@@ -1,0 +1,21 @@
+{
+  "id": "privhub-update",
+  "title": "系统更新",
+  "icon": "⬆️",
+  "description": "检查新版本、一键更新、回滚（依赖蓝绿运行时；单进程模式只显示说明）",
+  "slots": [
+    "admin-update"
+  ],
+  "barItems": [
+    {
+      "icon": "⬆️",
+      "title": "系统更新",
+      "slot": "admin-nav",
+      "view": "admin-update",
+      "adminOnly": true,
+      "capFeature": "admin.update",
+      "desc": "查看当前版本、检查更新源、一键热更新与回滚。",
+      "doc": "05-管理与运维.md"
+    }
+  ]
+}

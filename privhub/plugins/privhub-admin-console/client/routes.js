@@ -54,6 +54,8 @@ const ROUTES = [
    * 只认这个名字；插件没装载时该条目自动显示「未安装」而不是点开空白）。 */
   { key: 'ops/webhook', label: 'Webhook 订阅', short: 'Webhook', section: 'ops', icon: '🪝', view: 'admin-webhook', slot: 'admin-webhook', entryOf: 'admin-webhook', implemented: true },
   { key: 'ops/settings', label: '系统设置', short: '系统设置', section: 'ops', icon: '⚙️', view: 'settings', slot: 'settings', entryOf: 'settings', implemented: true },
+  /* 系统更新：视图与 slot 由 privhub-update 声明；蓝绿部署下可用，直连模式显示说明。 */
+  { key: 'ops/update', label: '系统更新', short: '系统更新', section: 'ops', icon: '⬆️', view: 'admin-update', slot: 'admin-update', entryOf: 'admin-update', implemented: true },
   { key: 'ops/backup', label: '自动备份', short: '自动备份', section: 'ops', icon: '💾', view: '', builtin: 'backup', adminOnly: true },
   { key: 'ops/watermark', label: '水印配置', short: '水印配置', section: 'ops', icon: '💧', view: '', builtin: 'watermark', adminOnly: true },
 ]

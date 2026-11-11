@@ -92,6 +92,37 @@ export interface Config {
   sessionTtlDays: number
 }
 
+/** 装配后存储自检结果（GitHub issue #2 / REQ-4）。 */
+export interface StoreCheckResult {
+  ok: boolean
+  /** 硬失败原因（库不可读 / 抽样解密失败）；ok=false 时必有值 */
+  error?: string
+  codeRoot: string
+  dataRoot: string
+  library: {
+    dataFiles: string
+    exists: boolean
+    /** 顶层可见条目（项目 + 个人空间） */
+    entries: number
+    projects: number
+    personalSpaces: number
+  }
+  key: { source: string; file: string; env: boolean }
+  sample: {
+    ok: boolean
+    label: string
+    file?: string
+    error?: string
+    /** 若抽样的是库内文件，这里是相对库根的路径 */
+    libraryFile?: string
+  }
+  /** 回收站根与配置库根的一致性（issue #2 / REQ-5） */
+  trash?: { dataFiles: string; trashDir: string; ok: boolean; reason: string }
+  warnings: string[]
+  strict: boolean
+  at: string
+}
+
 export const Config: z<Config> = z.object({
   usersFile: z.string().default(''),
   dataRoot: z.string().default(''),
@@ -100,12 +131,14 @@ export const Config: z<Config> = z.object({
 
 /** 项目根：由启动脚本注入 PRIVHUB_ROOT；缺省回退 cwd，兼容旧启动方式。 */
 const codeRootDir = process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-/** 数据根：蓝绿双槽共享的 data/ 与 data-files/ 所在目录；未设置时回落应用根。 */
+/** 系统数据根：其下 data/ 存 users/sessions/audit/trash；未设置时回落应用根。 */
 const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || codeRootDir
+/** 文件库根（项目 / 个人空间）：可独立于系统数据根（GitHub issue #2 / REQ-1、REQ-3）。 */
+const defaultDataFilesDir = process.env.PRIVHUB_DATA_FILES?.trim() || join(dataRootDir, 'data-files')
 
 function resolvePath(value: string, fallback: string): string {
   const t = value.trim()
-  return t === '' ? join(dataRootDir, fallback) : resolve(t)
+  return t === '' ? fallback : resolve(t)
 }
 
 /* ============ 蓝绿热更新（写入冻结） ============ */
@@ -124,6 +157,7 @@ const CONTROL_ROUTES = new Set([
   '/privhub/api/runtime/shutdown',
   '/privhub/api/runtime/reload',
   '/privhub/api/runtime/activate',
+  '/privhub/api/runtime/store-check',
 ])
 
 /** 应用版本：health 与 runtime 状态共用；异步读取，请求到来时通常已就绪。 */
@@ -344,6 +378,10 @@ export class PrivHubStore extends Service {
    */
   private retiredDirs: Map<string, string> = new Map()
   private readonly dataDir: string
+  /** 分片上传会话目录（`data/.upload-sessions/`）。
+   *  系统临时数据，不属于用户文件；由 privhub-files 读写，core 只负责给出
+   *  与 `PRIVHUB_DATA_ROOT` 同源的路径（避免插件各自拼数据根）。 */
+  readonly uploadSessionDir: string
   private readonly sessionsFile: string
   private readonly trashFile: string
   readonly trashDir: string
@@ -372,9 +410,10 @@ export class PrivHubStore extends Service {
 
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'privhub')
-    this.usersFile = resolvePath(config.usersFile, join('data', 'users.json'))
-    this.dataRoot = resolvePath(config.dataRoot, 'data-files')
+    this.usersFile = resolvePath(config.usersFile, join(dataRootDir, 'data', 'users.json'))
+    this.dataRoot = resolvePath(config.dataRoot, defaultDataFilesDir)
     this.dataDir = join(dataRootDir, 'data')
+    this.uploadSessionDir = join(this.dataDir, '.upload-sessions')
     this.sessionsFile = join(this.dataDir, 'sessions.json')
     this.trashFile = join(this.dataDir, 'trash.json')
     this.trashDir = join(this.dataRoot, '.trash')
@@ -481,9 +520,115 @@ export class PrivHubStore extends Service {
     })
   }
 
+  /**
+   * 装配后存储自检（只读）。启动时打印、蓝绿切流前由控制层调用（REQ-4）。
+   *
+   * 检查三件事，任何一项硬失败都让 ok=false：
+   *   1. 文件库根是否存在、顶层项目/个人空间数量；
+   *   2. 系统账号文件（通常是密文）能否读并通过 GCM 认证 —— 解不开即密钥错配；
+   *   3. 库内抽样一个密文文件整段解密（有界：最多看 300 个文件、≤8MB）。
+   *
+   * 「空库」不算硬失败（新装初始化是合法状态），只记警告；是否因此拒绝启动
+   * 由 PRIVHUB_STORE_STRICT / store.json strict 决定。
+   */
+  async storeCheck(): Promise<StoreCheckResult> {
+    const warnings: string[] = []
+    let hardError: string | null = null
+    const library: StoreCheckResult['library'] = {
+      dataFiles: this.dataRoot, exists: false, entries: 0, projects: 0, personalSpaces: 0,
+    }
+
+    try {
+      library.exists = existsSync(this.dataRoot)
+      if (library.exists) {
+        const ents = await readdir(this.dataRoot, { withFileTypes: true })
+        const personal = this.personalDirSet()
+        for (const ent of ents) {
+          if (!ent.isDirectory() || ent.name.startsWith('.')) continue
+          library.entries++
+          if (personal.has(ent.name)) library.personalSpaces++
+          else library.projects++
+        }
+      } else {
+        warnings.push('文件库根不存在：' + this.dataRoot)
+      }
+      if (library.exists && library.entries === 0) {
+        warnings.push('文件库根存在，但顶层没有任何项目或个人空间目录：' + this.dataRoot)
+      }
+      if (library.projects === 0 && library.personalSpaces > 0) {
+        warnings.push('文件库只有个人空间，没有可见项目')
+      }
+    } catch (e) {
+      hardError = '文件库根无法读取：' + (e instanceof Error ? e.message : String(e))
+      warnings.push(hardError)
+    }
+
+    const key = this.ctx.storage.keyInfo
+    const sample: StoreCheckResult['sample'] = { ok: true, label: '系统账号文件 users.json', file: this.usersFile }
+    try {
+      if (existsSync(this.usersFile)) {
+        const raw = await this.ctx.storage.readText(this.usersFile)
+        JSON.parse(raw)
+      } else {
+        warnings.push('系统账号文件不存在（新库首次启动尚未生成？）：' + this.usersFile)
+      }
+    } catch (e) {
+      sample.ok = false
+      sample.error = e instanceof Error ? e.message : String(e)
+      hardError = hardError || ('抽样解密失败：' + sample.error)
+    }
+
+    /* 库内抽样：只在系统账号文件抽查通过后追加；找不到密文（明文旧库/新库）不算失败。 */
+    if (sample.ok) {
+      try {
+        const found = await this.ctx.storage.findCiphertextFile(this.dataRoot, 300)
+        if (found) {
+          const st = await stat(found)
+          if (st.size <= 8 * 1024 * 1024) {
+            await this.ctx.storage.readBuffer(found)
+            sample.libraryFile = found.startsWith(this.dataRoot)
+              ? found.slice(this.dataRoot.length).replace(/^[\\/]+/, '')
+              : found
+          } else {
+            warnings.push('库内抽样文件超过 8MB，跳过整段解密：' + found)
+          }
+        } else {
+          warnings.push('库根内未抽样到密文文件（可能是明文旧库，或库为空）')
+        }
+      } catch (e) {
+        sample.ok = false
+        sample.error = e instanceof Error ? e.message : String(e)
+        hardError = hardError || ('库内文件抽样解密失败：' + sample.error)
+      }
+    }
+
+    /* 破坏性操作的根一致性（issue #2 / REQ-5）：回收站必须落在配置的库根下，
+     * 否则「清空回收站 / 定时清理」会在错误的库上删文件。这是硬失败，
+     * 因为它是「库根配错」在删除路径上的直接后果。 */
+    const trash = this.trashRootStatus()
+    if (!trash.ok) {
+      hardError = hardError || trash.reason
+      warnings.push(trash.reason)
+    }
+
+    const strictFlag = (process.env.PRIVHUB_STORE_STRICT || '').toLowerCase()
+    return {
+      ok: hardError === null,
+      ...(hardError ? { error: hardError } : {}),
+      codeRoot: codeRootDir,
+      dataRoot: dataRootDir,
+      library,
+      key,
+      sample,
+      trash,
+      warnings,
+      strict: ['1', 'true', 'yes'].includes(strictFlag),
+      at: new Date().toISOString(),
+    }
+  }
+
   /** 鉴权辅助：从请求解析登录用户；未登录时直接回 401 并返回 null。 */
-  requireUser(req: IncomingMessage, res: ServerResponse): UserRecord | null {
-    const u = this.me(tokenOf(req))
+  requireUser(req: IncomingMessage, res: ServerResponse): UserRecord | null {    const u = this.me(tokenOf(req))
     if (!u) { json(res, 401, { ok: false, error: '未登录' }); return null }
     return u
   }
@@ -1140,14 +1285,68 @@ export class PrivHubStore extends Service {
     })
   }
 
+  /**
+   * 破坏性操作的目标守卫（GitHub issue #2 / REQ-5）：物理删除只允许发生在
+   * `<库根>/.trash/` 之内。回收站记录来自磁盘 JSON，一旦库根被错配或记录被篡改，
+   * 一个越界路径就会让「清空回收站」变成「删别人的文件」。
+   */
+  private isInsideTrash(p: string): boolean {
+    const root = resolve(this.trashDir)
+    const target = resolve(p)
+    return target !== root && target.startsWith(root + sep)
+  }
+
+  /**
+   * 权威库根一致性检查（GitHub issue #2 / REQ-5 第二条）。
+   *
+   * `isInsideTrash()` 只能证明「删的是回收站目录里的东西」，它证明不了
+   * **这个回收站目录本身就在配置的库根下**。当 core 的 `dataRoot` 入参被传错
+   * （自定义装配、插件复用、将来有人改 mount 参数），`this.trashDir` 会跟着
+   * 变成另一个库的 `.trash` —— 此时包含判断依然成立，清理会毫无怨言地在
+   * 错误的库上执行，这正是 issue #2 里「自动任务的删除是最危险的放大器」。
+   *
+   * 因此：以启动时解析出来的权威库根（`PRIVHUB_DATA_FILES`，由
+   * `src/store-paths.mjs` 统一回写）为准，回收站目录必须落在它下面。
+   * 未设置该变量时（旧启动方式 / 单测直连）退化为「相信 dataRoot 入参」，
+   * 但这三种情况都会打日志，不静默。
+   */
+  private trashRootGuard(): { ok: boolean; reason: string } {
+    const authoritative = (process.env.PRIVHUB_DATA_FILES || '').trim()
+    if (!authoritative) return { ok: true, reason: '' } // 旧启动方式：没有权威根可比
+    const root = resolve(authoritative)
+    const trash = resolve(this.trashDir)
+    if (trash === root || trash.startsWith(root + sep)) return { ok: true, reason: '' }
+    return {
+      ok: false,
+      reason: '回收站目录不在配置的文件库根内，拒绝执行物理删除：'
+        + trash + ' 不在 ' + root + ' 下。'
+        + '（请检查 core 的 dataRoot 入参 / PRIVHUB_DATA_FILES 是否指对了库）',
+    }
+  }
+
+  /** 回收站根与被配置的库根是否一致（供 /runtime/store-check 与运维自查）。 */
+  trashRootStatus(): { dataFiles: string; trashDir: string; ok: boolean; reason: string } {
+    const g = this.trashRootGuard()
+    return { dataFiles: (process.env.PRIVHUB_DATA_FILES || '').trim(), trashDir: resolve(this.trashDir), ok: g.ok, reason: g.reason }
+  }
+
   /** 彻底删除回收站中的一条（物理删除）。D6：整段读改写持锁。 */
   async purgeTrash(id: string): Promise<boolean> {
+    const guard = this.trashRootGuard()
+    if (!guard.ok) {
+      console.error('[trash] ' + guard.reason)
+      return false
+    }
     return this.withFileLock(this.trashFile, async () => {
       const list = await this.loadTrash()
       const rec = list.find((r) => r.id === id)
       if (!rec) return false
       const src = join(this.trashDir, id + '_' + rec.name)
       if (existsSync(src)) {
+        if (!this.isInsideTrash(src)) {
+          console.error('[trash] 拒绝物理删除越界路径（不在回收站根内）：' + src)
+          return false
+        }
         const s = await stat(src)
         // D14：fs.rmdir(recursive) 已弃用（DEP0147），改用 fs.rm
         if (s.isDirectory()) await rm(src, { recursive: true, force: true })
@@ -1160,6 +1359,13 @@ export class PrivHubStore extends Service {
 
   /** 清理超过 30 天的回收站条目（物理删除）。D6：整段读改写持锁。 */
   async purgeExpiredTrash(ttlMs: number): Promise<number> {
+    const guard = this.trashRootGuard()
+    if (!guard.ok) {
+      /* 定时清理最危险：没人盯着，根错配时会在错误的库上静默删文件。
+       * 这里直接一条都不删（返回 0），并留下显式日志。 */
+      console.error('[trash] 定时清理已中止：' + guard.reason)
+      return 0
+    }
     return this.withFileLock(this.trashFile, async () => {
       const list = await this.loadTrash()
       const now = Date.now()
@@ -1167,6 +1373,10 @@ export class PrivHubStore extends Service {
       for (const rec of expired) {
         const src = join(this.trashDir, rec.id + '_' + rec.name)
         if (existsSync(src)) {
+          if (!this.isInsideTrash(src)) {
+            console.error('[trash] 跳过越界路径（不在回收站根内）：' + src)
+            continue
+          }
           try {
             const s = await stat(src)
             // D14：同上，弃用 fs.rmdir(recursive)
@@ -1218,7 +1428,7 @@ export function apply(ctx: Context, config: Config): void {
       standby: store.standby,
       /* 控制层据此判断该 release 是否支持「先预热、再冻结」的安全切换。
        * 旧 release 没有这些能力，控制层会自动回落到「先冻结、再启动」。 */
-      capabilities: ['freeze', 'reload-state', 'standby', 'activate', 'session-check'],
+      capabilities: ['freeze', 'reload-state', 'standby', 'activate', 'session-check', 'store-check'],
       uptimeSeconds: Math.floor((Date.now() - started) / 1000),
       /* JT-19：健康检查是匿名可达、且外部集成方最先 curl 的端点——
        * 在这里给一行智能体接入指路，直接解决「拿到密钥却不知道请求头与前缀」的
@@ -1258,6 +1468,18 @@ export function apply(ctx: Context, config: Config): void {
     }
     json(res, 200, store.runtimeState())
   }, 'runtime-state')
+
+  /* 存储自检（仅控制层）：切流量前对新槽跑一遍，失败则不切换、旧槽继续服务。
+   * 端点本身也在 CONTROL_ROUTES 中，冻结期间仍可调用。 */
+  store.route('/privhub/api/runtime/store-check', async (req, res) => {
+    if (!store.controlAllowed(req, res)) return
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      json(res, 405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    const check = await store.storeCheck()
+    json(res, check.ok ? 200 : 500, { ok: check.ok, error: check.error, check })
+  }, 'runtime-store-check')
 
   store.route('/privhub/api/runtime/freeze', async (req, res) => {
     if (!store.controlAllowed(req, res)) return

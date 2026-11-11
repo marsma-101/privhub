@@ -33,7 +33,7 @@ import { createConnection } from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync,
-  openSync, closeSync, rmSync, renameSync, appendFileSync,
+  openSync, closeSync, rmSync, renameSync, appendFileSync, statSync,
 } from 'node:fs'
 import { dirname, join, resolve, isAbsolute, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -59,18 +59,177 @@ const NGINX_CONF = join(CONFIG_DIR, 'nginx.conf')
 const NGINX_CONF_NEXT = join(CONFIG_DIR, 'nginx.conf.next')
 const SSE_CLIENTS = new Set()
 
+/** 配置文件绝对路径（相对路径按配置目录解析）。 */
+function resolveInConfigDir(p) {
+  return isAbsolute(p) ? resolve(p) : resolve(CONFIG_DIR, p)
+}
+
+/* ---- 稳定层存储配置（GitHub issue #2 / REQ-1、REQ-3）----
+ *
+ * `config/store.json` 位于代码树之外：`git pull` / 构建 release 都不会碰它。
+ * 三个根可以分别指向不同磁盘：
+ *   dataRoot   系统数据根（其下 data/ 存 users / audit / secret.key）
+ *   dataFiles  文件库根（项目 / 个人空间）
+ *   secretKey  密钥文件路径（可选；默认 <dataRoot>/data/secret.key）
+ *
+ * 坏 JSON 必须直接拒绝启动：静默回落默认值会把服务指向空库。
+ */
+const STORE_CONF_FILE = resolve(process.env.PRIVHUB_STORE_CONFIG?.trim() || join(CONFIG_DIR, 'store.json'))
+let storeConf = {}
+let storeConfLoaded = false
+if (existsSync(STORE_CONF_FILE)) {
+  try {
+    // 记事本 / PowerShell 5.1 写出的 UTF-8 常带 BOM；先剥掉再解析。
+    const parsed = JSON.parse(readFileSync(STORE_CONF_FILE, 'utf8').replace(/^\uFEFF/, ''))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('顶层必须是 JSON 对象')
+    storeConf = parsed
+    storeConfLoaded = true
+  } catch (e) {
+    console.error('[control] 存储配置解析失败：' + STORE_CONF_FILE + ' —— '
+      + (e instanceof Error ? e.message : String(e)) + '\n'
+      + '为避免用错数据根，拒绝启动。请修复该文件，或删除它改用环境变量。')
+    process.exit(1)
+  }
+}
+
+const CONF_DATA_ROOT = typeof storeConf.dataRoot === 'string' && storeConf.dataRoot.trim()
+  ? resolveInConfigDir(storeConf.dataRoot.trim()) : ''
+const CONF_DATA_FILES = typeof storeConf.dataFiles === 'string' && storeConf.dataFiles.trim()
+  ? resolveInConfigDir(storeConf.dataFiles.trim()) : ''
+
 /**
- * 数据根：默认落在 <home>/store；但旧布局（仓库里 data/ 与 data-files/ 直接在
- * 应用根）也自动识别，避免在开发机上凭空建一个空 store 把老数据「藏起来」。
+ * 数据根（系统数据 / 文件库的默认父目录）。
+ *
+ * 保守探测顺序：显式配置 → 已有 `<home>/store` → 旧单进程布局的 `<home>`。
+ * 三者都不存在时才视为「全新安装」并创建 `<home>/store`，且必须把这件事吼出来
+ * —— 不能静默造一个空 store 把老库「藏起来」（REQ-3）。
  */
 function detectStoreDir() {
-  const explicit = process.env.PRIVHUB_STORE_DIR?.trim() || process.env.PRIVHUB_DATA_ROOT?.trim()
+  const explicit = process.env.PRIVHUB_STORE_DIR?.trim()
+    || process.env.PRIVHUB_DATA_ROOT?.trim()
+    || CONF_DATA_ROOT
   if (explicit) return resolve(explicit)
   if (existsSync(join(HOME_DIR, 'store'))) return join(HOME_DIR, 'store')
   if (existsSync(join(HOME_DIR, 'data')) || existsSync(join(HOME_DIR, 'data-files'))) return HOME_DIR
+  console.warn('[control] 未发现 store/、data/、data-files/，也未配置数据根：'
+    + '按首次运行创建 ' + join(HOME_DIR, 'store') + '。'
+    + '若你已有旧库，请先写 ' + STORE_CONF_FILE + '（dataRoot / dataFiles）再启动，'
+    + '否则看到的是一个空库。')
   return join(HOME_DIR, 'store')
 }
 const STORE_DIR = detectStoreDir()
+
+/**
+ * 浅探测「能不能从旧单进程布局沿用根」（GitHub issue #2 / REQ-6 第二条）。
+ *
+ * 只探测、**不写盘**：模块加载期落盘会在 `--dry-run` 下也改文件，也会让
+ * 「只想看一眼 status」的调用产生副作用。真正的写入由 `adoptLegacyLayout()`
+ * 在显式命令或首次 serve 时执行。
+ *
+ * @returns {{feasible: boolean, dataRoot?: string, dataFiles?: string, publicPort?: number, notes: string[]}}
+ */
+function probeLegacyLayout() {
+  const notes = []
+  if (storeConfLoaded) return { feasible: false, notes: ['已有 config/store.json，不改动'] }
+  if (process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_DATA_FILES?.trim()
+    || process.env.PRIVHUB_STORE_DIR?.trim()) {
+    return { feasible: false, notes: ['已由环境变量指定根，不改动'] }
+  }
+  if (existsSync(join(HOME_DIR, 'store'))) return { feasible: false, notes: ['已是 store/ 布局，不改动'] }
+
+  const hasData = existsSync(join(HOME_DIR, 'data'))
+  const hasLibrary = existsSync(join(HOME_DIR, 'data-files'))
+  if (!hasData && !hasLibrary) return { feasible: false, notes: ['未发现旧单进程布局，按全新安装处理'] }
+
+  if (!hasLibrary) {
+    notes.push('检测到旧布局的 data/ 但 <home>/data-files 不存在：'
+      + '你的文件库可能在别的目录。请在 ' + STORE_CONF_FILE
+      + ' 里写 dataFiles，或设 PRIVHUB_DATA_FILES 后再启动 —— 这里不会替你猜一个库根。')
+    return { feasible: false, notes, needsLibraryHint: true, dataRoot: HOME_DIR }
+  }
+
+  /* 端口：沿用旧实例的对外端口。旧实例端口只能从环境变量见到，
+   * 控制层自己不知道，因此这里只做「有线索就用」的保守采纳。 */
+  const legacyPort = Number(process.env.PRIVHUB_LEGACY_PORT || process.env.PRIVHUB_PORT || 0)
+  const publicPort = Number.isFinite(legacyPort) && legacyPort > 0 ? legacyPort : null
+  return { feasible: true, dataRoot: HOME_DIR, dataFiles: join(HOME_DIR, 'data-files'), publicPort, notes }
+}
+
+/**
+ * 执行沿用：把探测结果写进 `config/store.json`。
+ * @param {{dryRun?: boolean}} [opts]
+ */
+function adoptLegacyLayout(opts = {}) {
+  const probe = probeLegacyLayout()
+  if (!probe.feasible) return { used: false, notes: probe.notes, ...probe }
+  if (opts.dryRun) {
+    return { ...probe, used: true, dryRun: true, notes: probe.notes.concat(['--dry-run：未写入 ' + STORE_CONF_FILE]) }
+  }
+  try {
+    writeJsonAtomic(STORE_CONF_FILE, { dataRoot: probe.dataRoot, dataFiles: probe.dataFiles })
+    probe.notes.push('已把沿用的根写入 ' + STORE_CONF_FILE)
+  } catch (e) {
+    probe.notes.push('写入 ' + STORE_CONF_FILE + ' 失败（仍按探测结果运行）：'
+      + (e instanceof Error ? e.message : String(e)))
+  }
+  return { ...probe, used: true }
+}
+
+/* 首次 serve（且完全没配置过）时自动沿用 —— 让主人少手工抄一遍三根。
+ * 已经配置过的一律不碰（probeLegacyLayout 里已判）。
+ *
+ * 注意：这里**不落盘、不改 storeConf**。模块加载发生在任何命令之前，
+ * 若在这里写文件，`status` / `help` 这类只读命令也会产生副作用。
+ * 真正的执行在 main() 里按命令分流（见 activateLegacyAdoption）。 */
+let LEGACY_ADOPT = { used: false, feasible: false, notes: [] }
+
+/** 在 serve / adopt-legacy 命令里真正执行沿用（会写 config/store.json）。 */
+function activateLegacyAdoption(opts = {}) {
+  const result = adoptLegacyLayout(opts)
+  LEGACY_ADOPT = result
+  if (result.used && !result.dryRun) {
+    storeConf = { dataRoot: result.dataRoot, dataFiles: result.dataFiles }
+    storeConfLoaded = true
+    console.log('[control] 首次以蓝绿启动，已沿用现有单进程实例的根：\n'
+      + '  系统数据根 : ' + result.dataRoot + '\n'
+      + '  文件库根   : ' + result.dataFiles + '\n'
+      + '  （写入了 ' + STORE_CONF_FILE + '；如需改动请直接编辑该文件）')
+  }
+  return result
+}
+
+
+/**
+ * 文件库根：可独立于系统数据根。显式配置（env / store.json）优先；
+ * 否则沿用「store 内 data-files」或旧布局的 `<home>/data-files`。
+ *
+ * 这里是**函数而非常量**：沿用旧实例（REQ-6）会在启动流程中补上 store.json
+ * 的等价配置，常量会让那次改动对后续代码不可见（库根还停在旧值 → 空库）。
+ */
+function computeDataFiles() {
+  const envFiles = process.env.PRIVHUB_DATA_FILES?.trim()
+  if (envFiles) return { explicit: true, dir: resolve(envFiles) }
+  if (CONF_DATA_FILES) return { explicit: true, dir: CONF_DATA_FILES }
+  if (existsSync(join(STORE_DIR, 'data-files'))) return { explicit: false, dir: join(STORE_DIR, 'data-files') }
+  if (existsSync(join(HOME_DIR, 'data-files'))) return { explicit: false, dir: join(HOME_DIR, 'data-files') }
+  return { explicit: false, dir: join(STORE_DIR, 'data-files') }
+}
+
+/** 显式配置的库根必须真实存在：拼错时宁可不启动，也不要给用户一个空库假象。 */
+function validateStoreRoots() {
+  const { explicit, dir } = computeDataFiles()
+  if (!explicit) return
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+    const hint = existsSync(join(dir, 'data-files'))
+      ? '\n提示：你配置的像是父目录，真正的库在其下 data-files/（' + join(dir, 'data-files') + '）'
+      : ''
+    throw httpError(500,
+      '配置文件库根不存在或不是目录：' + dir + '\n'
+      + '请检查 ' + STORE_CONF_FILE + ' 的 dataFiles 或环境变量 PRIVHUB_DATA_FILES。'
+      + hint,
+      'PRIVHUB_DATA_FILES_MISSING')
+  }
+}
 
 function defaultRuntimeConfig() {
   return {
@@ -136,6 +295,12 @@ function loadRuntimeConfig() {
   const cfg = { ...defaults, ...(loaded && typeof loaded === 'object' ? loaded : {}) }
   cfg.publicPort = Number(process.env.PRIVHUB_PUBLIC_PORT || cfg.publicPort)
   cfg.controlPort = Number(process.env.PRIVHUB_CONTROL_PORT || cfg.controlPort)
+  /* REQ-6：首次从旧单进程布局接管时，沿用旧实例的对外端口（LAN 用户不用改地址）。
+   * 只在「没有 runtime.json 也没设 PRIVHUB_PUBLIC_PORT」时生效，绝不覆盖显式配置。 */
+  if (!loaded && !process.env.PRIVHUB_PUBLIC_PORT?.trim() && LEGACY_ADOPT.used && LEGACY_ADOPT.publicPort) {
+    cfg.publicPort = LEGACY_ADOPT.publicPort
+    console.log('[control] 对外端口沿用旧实例：' + cfg.publicPort)
+  }
   if (!Array.isArray(cfg.slots) || cfg.slots.length !== 2) cfg.slots = defaults.slots
   cfg.slots = cfg.slots.map((s, i) => ({
     id: String(s?.id || defaults.slots[i].id),
@@ -216,6 +381,7 @@ function buildActive(slot, info, previous) {
     port: slot.port,
     releaseDir: info.dir,
     dataRoot: STORE_DIR,
+    dataFiles: computeDataFiles().dir,
     switchedAt: new Date().toISOString(),
     previous: previous ? snapshotActive(previous) : null,
   }
@@ -466,19 +632,30 @@ function attachExit(slot, child) {
 function spawnSlot(slot, dir, { standby = false } = {}) {
   const out = openSync(slotLog(slot.id), 'a')
   const err = openSync(slotLog(slot.id), 'a')
+  /** 只有显式配置时才下发 PRIVHUB_DATA_FILES：否则 store-paths 会把「默认路径」
+   *  当成显式配置，首次安装时因目录尚不存在而拒绝启动。 */
+  const env = {
+    ...process.env,
+    PRIVHUB_ROOT: dir,
+    PRIVHUB_DATA_ROOT: STORE_DIR,
+    PRIVHUB_CONFIG_DIR: CONFIG_DIR,
+    PRIVHUB_STORE_CONFIG: STORE_CONF_FILE,
+    PRIVHUB_HOST: '127.0.0.1',
+    PRIVHUB_CONTROL_TOKEN: CONTROL_TOKEN,
+    /* 管理界面（release 内的 privhub-update 插件）据此找到稳定层与控制接口。 */
+    PRIVHUB_HOME: HOME_DIR,
+    PRIVHUB_CONTROL_PORT: String(CONFIG.controlPort),
+    PRIVHUB_SLOT: slot.id,
+    /* 待命槽在旧槽仍服务时预热：不跑后台写任务，等控制层 reload + activate。
+     * 显式写 '0' 防止控制层自身环境里的同名变量被继承。 */
+    PRIVHUB_STANDBY: standby ? '1' : '0',
+  }
+  const df = computeDataFiles()
+  if (df.explicit) env.PRIVHUB_DATA_FILES = df.dir
+  if (typeof storeConf.strict === 'boolean') env.PRIVHUB_STORE_STRICT = storeConf.strict ? '1' : '0'
   const child = spawn(nodeBinary(), ['--import', 'tsx/esm', 'src/main.ts', '--port', String(slot.port)], {
     cwd: dir,
-    env: {
-      ...process.env,
-      PRIVHUB_ROOT: dir,
-      PRIVHUB_DATA_ROOT: STORE_DIR,
-      PRIVHUB_HOST: '127.0.0.1',
-      PRIVHUB_CONTROL_TOKEN: CONTROL_TOKEN,
-      PRIVHUB_SLOT: slot.id,
-      /* 待命槽在旧槽仍服务时预热：不跑后台写任务，等控制层 reload + activate。
-       * 显式写 '0' 防止控制层自身环境里的同名变量被继承。 */
-      PRIVHUB_STANDBY: standby ? '1' : '0',
-    },
+    env,
     stdio: ['ignore', out, err],
     detached: true,
     windowsHide: true,
@@ -843,8 +1020,44 @@ async function stopNginx() {
 
 /* ============ 切换 / 回滚 ============ */
 
+/**
+ * 切流量前的「库可见 + 可解密」自检（GitHub issue #2 / REQ-4）。
+ *
+ * 在旧槽仍在服务时对新槽执行；不通过就抛错，由 performSwitch 的清理逻辑
+ * 停掉新槽、解冻旧槽，旧版本继续服务。旧 release 没有该端点/能力时只告警跳过
+ * （与 freeze 能力协商同理，不能让首次升级卡死）。
+ */
+async function storeCheckSlot(slot) {
+  const h = await healthCheck(slot.port, 3000)
+  const caps = Array.isArray(h.body?.capabilities) ? h.body.capabilities : []
+  if (!caps.includes('store-check')) {
+    log(`警告：目标槽 ${slot.id} 不支持 store-check（旧 release），跳过切流前存储自检`)
+    return { skipped: true }
+  }
+  let r
+  try {
+    r = await runtimeRequest(slot.port, '/privhub/api/runtime/store-check', { method: 'GET', timeoutMs: 120_000 })
+  } catch (e) {
+    throw httpError(409,
+      '新槽存储自检请求失败，已取消切换（旧槽继续服务）：' + e.message,
+      'PRIVHUB_STORE_CHECK_FAILED')
+  }
+  const check = r?.check
+  if (!r?.ok || check?.ok !== true) {
+    const detail = check?.error || (Array.isArray(check?.warnings) ? check.warnings.join('；') : '') || '未知原因'
+    throw httpError(409,
+      '新槽存储自检未通过，已取消切换（旧槽继续服务）：' + detail,
+      'PRIVHUB_STORE_CHECK_FAILED')
+  }
+  const library = check.library || {}
+  log(`新槽 ${slot.id} 存储自检通过：项目 ${library.projects ?? '?'} 个、`
+    + `个人空间 ${library.personalSpaces ?? '?'} 个，抽样解密通过`)
+  return check
+}
+
 async function performSwitch({ releaseArg, version, slotId, reason }) {
   if (busy) throw httpError(409, '已有切换操作进行中，请稍后重试', 'PRIVHUB_BUSY')
+  validateStoreRoots()
   busy = true
   try {
     const info = version ? findReleaseByVersion(version) : resolveReleaseArg(releaseArg)
@@ -868,6 +1081,8 @@ async function performSwitch({ releaseArg, version, slotId, reason }) {
         await ensureSlot(target, info.dir, info.version, { standby: true })
         newStarted = true
         log(`新槽 ${target.id} 已待命预热（${info.version}）`)
+        /* 切流前体检：此时旧槽仍完整服务，失败只需停掉新槽。 */
+        await storeCheckSlot(target)
       }
 
       /* 2) 冻结旧槽并等在途写排空。
@@ -900,6 +1115,9 @@ async function performSwitch({ releaseArg, version, slotId, reason }) {
       if (!canPrewarm) {
         await ensureSlot(target, info.dir, info.version, { standby: false })
         newStarted = true
+        /* 旧槽已冻结（能力协商的保守路径），但尚未切流量；体检失败会走统一回滚：
+         * 解冻旧槽、停掉新槽。 */
+        await storeCheckSlot(target)
       } else {
         /* 4) 排空后先把新槽内存态刷新到盘上最新版本，再解除待命；
          *    之后才让 nginx 切流量。顺序反了会让新槽带着旧用户/会话/ACL 先服务。 */
@@ -1022,6 +1240,8 @@ async function statusSnapshot() {
     active: active ? snapshotActive(active) : null,
     busy,
     dataRoot: STORE_DIR,
+    dataFiles: computeDataFiles().dir,
+    storeConfig: { file: STORE_CONF_FILE, loaded: storeConfLoaded, dataFilesExplicit: computeDataFiles().explicit },
     nginx: {
       available: nginxAvailable(),
       running: nginxRunning(),
@@ -1162,6 +1382,42 @@ async function handleControlRequest(req, res) {
       setTimeout(() => { void shutdownAll().then(() => process.exit(0)) }, 50)
       return
     }
+    /* ---- 更新管理（管理界面经槽内插件代理到本机控制接口） ---- */
+    if (path === '/control/update/status') {
+      if (req.method !== 'GET') return jsonReply(res, 405, { ok: false, error: 'method not allowed' })
+      return jsonReply(res, 200, updateStatusSnapshot())
+    }
+    if (path === '/control/update/check') {
+      if (req.method !== 'POST') return jsonReply(res, 405, { ok: false, error: 'method not allowed' })
+      await readJsonBody(req)
+      if (updateCheckRunning) return jsonReply(res, 409, { ok: false, error: '已有检查任务正在运行', code: 'PRIVHUB_UPDATE_BUSY' })
+      updateCheckRunning = true
+      try {
+        const r = await runUpdaterCommand('check', 15 * 60 * 1000)
+        const parsed = parseJsonOutput(r.stdout) || parseJsonOutput(r.stderr)
+        if (r.code !== 0) {
+          return jsonReply(res, 200, parsed && parsed.ok === false
+            ? parsed
+            : { ok: false, error: (r.stderr || r.stdout || `更新检查失败（退出码 ${r.code}）`).trim().slice(-2000) })
+        }
+        return jsonReply(res, 200, parsed || { ok: true })
+      } finally { updateCheckRunning = false }
+    }
+    if (path === '/control/update/apply') {
+      if (req.method !== 'POST') return jsonReply(res, 405, { ok: false, error: 'method not allowed' })
+      await readJsonBody(req)
+      return jsonReply(res, 200, { ok: true, ...startUpdateApply() })
+    }
+    if (path === '/control/update/config') {
+      if (req.method !== 'POST') return jsonReply(res, 405, { ok: false, error: 'method not allowed' })
+      const body = await readJsonBody(req)
+      return jsonReply(res, 200, { ok: true, config: saveUpdateConfig(body) })
+    }
+    if (path === '/control/update/rollback') {
+      if (req.method !== 'POST') return jsonReply(res, 405, { ok: false, error: 'method not allowed' })
+      await readJsonBody(req)
+      return jsonReply(res, 200, { ok: true, ...startUpdateRollback() })
+    }
     return jsonReply(res, 404, { ok: false, error: 'not found' })
   } catch (e) {
     const status = Number(e?.status) || 500
@@ -1227,6 +1483,10 @@ function startUpdater() {
       detached: false,
       windowsHide: true,
     })
+    updaterChild.on('error', (e) => {
+      updaterChild = null
+      log(`更新守护启动失败：${e?.message || e}`)
+    })
     updaterChild.on('exit', (code, signal) => {
       updaterChild = null
       log(`更新守护退出 code=${code} signal=${signal ?? ''}（如需恢复请检查 logs/update.log）`)
@@ -1243,6 +1503,221 @@ function stopUpdater() {
   if (!updaterChild) return
   try { updaterChild.kill() } catch { /* Windows 上子进程已退出 */ }
   updaterChild = null
+}
+
+/* ============ 更新管理（供 release 内的管理界面调用） ============ */
+
+const UPDATE_CONF = join(CONFIG_DIR, 'update.json')
+const UPDATE_STATE = join(CONFIG_DIR, 'update-state.json')
+let updateApplyChild = null
+let updateApplyStartedAt = 0
+let updateCheckRunning = false
+
+function tailFile(file, n) {
+  try {
+    const text = readFileSync(file, 'utf8').trimEnd()
+    if (!text) return ''
+    return text.split(/\r?\n/).slice(-n).join('\n')
+  } catch { return '' }
+}
+
+/**
+ * 远程地址可能带凭据，回给浏览器前遮蔽用户名/密码。
+ * **查询串必须原样保留**：清单地址常带 `?token=…`，管理界面会把 status 里的 config
+ * 回填到表单，遮掉查询串后再保存就会把真实地址写坏。
+ */
+function maskUrl(v) {
+  if (!v) return ''
+  try {
+    const u = new URL(String(v))
+    if (u.username || u.password) { u.username = '***'; u.password = '***' }
+    return u.toString()
+  } catch { return String(v) }
+}
+
+function updaterEnv() {
+  return {
+    ...process.env,
+    PRIVHUB_HOME: HOME_DIR,
+    PRIVHUB_CONFIG_DIR: CONFIG_DIR,
+    PRIVHUB_LOGS_DIR: LOGS_DIR,
+    PRIVHUB_RELEASES_DIR: RELEASES_DIR,
+    PRIVHUB_TMP_DIR: join(HOME_DIR, 'tmp'),
+  }
+}
+
+function updateConfigSummary() {
+  const conf = readJson(UPDATE_CONF) || {}
+  return {
+    exists: existsSync(UPDATE_CONF),
+    enabled: conf.enabled !== false,
+    source: conf.source || 'git',
+    manifestUrl: maskUrl(conf.manifestUrl),
+    remote: maskUrl(conf.remote),
+    branch: conf.branch || 'main',
+    subdir: conf.subdir || '',
+    path: conf.path || '',
+    autoApply: conf.autoApply !== false,
+    intervalMinutes: Number(conf.intervalMinutes) || 360,
+    keepReleases: Number(conf.keepReleases) || 3,
+    requireNewer: conf.requireNewer !== false,
+  }
+}
+
+function updateStatusSnapshot() {
+  return {
+    ok: true,
+    managed: true,
+    current: active?.version ?? null,
+    switchedAt: active?.switchedAt ?? null,
+    config: updateConfigSummary(),
+    state: readJson(UPDATE_STATE),
+    daemon: { running: !!updaterChild, pid: updaterChild?.pid ?? null },
+    applying: !!updateApplyChild,
+    applyStartedAt: updateApplyStartedAt || null,
+    logTail: tailFile(join(LOGS_DIR, 'update.log'), 40),
+  }
+}
+
+/** 跑一次 update.mjs 子命令并收集输出（check 可能因 git clone 较慢）。 */
+function runUpdaterCommand(command, timeoutMs) {
+  return new Promise((done, reject) => {
+    const child = spawn(nodeBinary(), [join(RUNTIME_DIR, 'update.mjs'), command], {
+      cwd: HOME_DIR,
+      env: updaterEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (c) => { stdout += c })
+    child.stderr.on('data', (c) => { stderr += c })
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* ignore */ }
+      reject(httpError(504, `更新命令超时（${Math.round(timeoutMs / 1000)}s）：${command}`, 'PRIVHUB_UPDATE_TIMEOUT'))
+    }, timeoutMs)
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      try { appendFileSync(join(LOGS_DIR, 'update.log'), stdout + stderr, 'utf8') } catch { /* ignore */ }
+      done({ code, stdout, stderr })
+    })
+  })
+}
+
+function parseJsonOutput(text) {
+  const s = String(text || '').trim()
+  if (!s) return null
+  try { return JSON.parse(s) } catch { /* 可能包含日志前缀 */ }
+  const i = s.indexOf('{')
+  const j = s.lastIndexOf('}')
+  if (i >= 0 && j > i) { try { return JSON.parse(s.slice(i, j + 1)) } catch { /* ignore */ } }
+  return null
+}
+
+/**
+ * 后台启动一个 update.mjs 任务（apply / rollback），立刻返回。
+ * 进度由 update-state.json + SSE 反映；`applying` 统一由 updateApplyChild 表示，
+ * 因此更新与回滚互斥（同一时间只允许一个切换动作）。
+ */
+function startUpdaterTask(command, label) {
+  if (updateApplyChild) {
+    throw httpError(409, '已有更新任务正在运行，请等待完成', 'PRIVHUB_UPDATE_BUSY')
+  }
+  const out = openSync(join(LOGS_DIR, 'update.log'), 'a')
+  try {
+    const child = spawn(nodeBinary(), [join(RUNTIME_DIR, 'update.mjs'), command], {
+      cwd: HOME_DIR,
+      env: updaterEnv(),
+      stdio: ['ignore', out, out],
+      detached: false,
+      windowsHide: true,
+    })
+    updateApplyChild = child
+    updateApplyStartedAt = Date.now()
+    /* spawn 失败（找不到 node / 权限）是异步 emitted 的 'error'；没有监听器会让
+     * 常驻控制层直接崩溃 —— 更新失败可以重试，控制层挂掉就全站失联。 */
+    child.on('error', (e) => {
+      updateApplyChild = null
+      updateApplyStartedAt = 0
+      log(`${label}进程启动失败：${e?.message || e}`)
+    })
+    child.on('exit', (code, signal) => {
+      updateApplyChild = null
+      updateApplyStartedAt = 0
+      log(`${label}进程退出 code=${code} signal=${signal ?? ''}`)
+    })
+    log(`${label}已启动 pid=${child.pid}`)
+    return { started: true, pid: child.pid ?? null }
+  } catch (e) {
+    throw httpError(500, `${label}进程启动失败：` + e.message, 'PRIVHUB_UPDATE_SPAWN_FAILED')
+  } finally {
+    try { closeSync(out) } catch { /* ignore */ }
+  }
+}
+
+/** 一键更新：后台启动 apply，立刻返回；进度由 update-state.json + SSE 反映。 */
+function startUpdateApply() {
+  const conf = readJson(UPDATE_CONF)
+  if (!conf) {
+    throw httpError(400, '尚未配置更新源（config/update.json）', 'PRIVHUB_NO_UPDATE_CONFIG')
+  }
+  return startUpdaterTask('apply', '一键更新')
+}
+
+/**
+ * 回滚同样交给独立进程。**不能**在调用方的槽里同步等待 performRollback()：
+ * 回滚会冻结、最终停掉当前活跃槽，而发起请求的 handler 就跑在那个槽里 ——
+ * 它会把自己算作「在途写」，排空永远等不到，且响应出自即将被停掉的进程。
+ */
+function startUpdateRollback() {
+  if (!active?.previous) {
+    throw httpError(404, '没有可回滚的上一版本', 'PRIVHUB_NO_ROLLBACK')
+  }
+  return startUpdaterTask('rollback', '回滚')
+}
+
+const UPDATE_CONFIG_KEYS = new Set([
+  'enabled', 'source', 'remote', 'branch', 'subdir', 'path', 'manifestUrl',
+  'autoApply', 'intervalMinutes', 'keepReleases', 'requireNewer', 'allowUnverified',
+])
+
+function saveUpdateConfig(body) {
+  const src = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const conf = {}
+  for (const key of UPDATE_CONFIG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(src, key)) conf[key] = src[key]
+  }
+  if (conf.source !== undefined && !['git', 'dir', 'http'].includes(String(conf.source))) {
+    throw httpError(400, 'source 只支持 git / dir / http', 'PRIVHUB_BAD_UPDATE_CONFIG')
+  }
+  if (conf.manifestUrl) {
+    try {
+      const u = new URL(String(conf.manifestUrl))
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('protocol')
+    } catch {
+      throw httpError(400, 'manifestUrl 必须是 http(s) 地址', 'PRIVHUB_BAD_UPDATE_CONFIG')
+    }
+  }
+  for (const key of ['intervalMinutes', 'keepReleases']) {
+    if (conf[key] !== undefined) {
+      const n = Number(conf[key])
+      if (!Number.isFinite(n) || n < 0) throw httpError(400, `${key} 必须是非负数字`, 'PRIVHUB_BAD_UPDATE_CONFIG')
+      conf[key] = n
+    }
+  }
+  ensureDir(CONFIG_DIR)
+  const tmp = UPDATE_CONF + '.tmp'
+  writeFileSync(tmp, JSON.stringify(conf, null, 2) + '\n', 'utf8')
+  renameSync(tmp, UPDATE_CONF)
+  /* 配置改变后重启守护：否则它仍按启动时的旧源检查。 */
+  stopUpdater()
+  setTimeout(() => { try { startUpdater() } catch (e) { log(`重启更新守护失败：${e.message}`) } }, 200)
+  log(`更新源配置已写入：${UPDATE_CONF}（source=${conf.source || '未指定'}）`)
+  return updateConfigSummary()
 }
 
 /* ============ 启停 ============ */
@@ -1263,6 +1738,7 @@ async function shutdownAll() {
 }
 
 async function serve({ releaseArg, slotId }) {
+  validateStoreRoots()
   ensureBaseDirs()
   await initialise({ releaseArg, slotId })
   await ensureActiveRunning()
@@ -1276,7 +1752,12 @@ async function serve({ releaseArg, slotId }) {
   await startControlServer()
   startUpdater()
   broadcastVersion(active)
-  log(`运行时就绪：版本 ${active.version}，槽 ${active.slot}（127.0.0.1:${active.port}），数据根 ${STORE_DIR}`)
+  log(`运行时就绪：版本 ${active.version}，槽 ${active.slot}（127.0.0.1:${active.port}）`)
+  {
+    const df = computeDataFiles()
+    log(`存储根：系统数据 ${STORE_DIR}；文件库 ${df.dir}`
+      + `（${df.explicit ? '显式配置' : '默认'}）；配置文件 ${STORE_CONF_FILE}${storeConfLoaded ? '' : '（不存在）'}`)
+  }
   if (nginxAvailable()) {
     log(`对外入口：http://${CONFIG.publicHost}:${CONFIG.publicPort}（nginx）`)
   } else {
@@ -1318,6 +1799,7 @@ async function cliStatus() {
       error: '控制服务未运行：' + e.message,
       active: a ? snapshotActive(a) : null,
       dataRoot: STORE_DIR,
+      dataFiles: computeDataFiles().dir,
       nginx: { available: nginxAvailable(), running: nginxRunning() },
     }, null, 2))
     return 1
@@ -1341,6 +1823,8 @@ async function main() {
   const argv = process.argv.slice(2)
   const cmd = argv.find((a) => !a.startsWith('--')) || 'serve'
   const flags = parseArgs(argv)
+  /* adopt-legacy --dry-run 需要重跑一次探测（模块加载时没看见这个参数）。 */
+  if (cmd === 'adopt-legacy' && flags['dry-run']) process.env.PRIVHUB_ADOPT_DRY_RUN = '1'
 
   if (cmd === 'help' || flags.help) {
     console.log([
@@ -1355,11 +1839,15 @@ async function main() {
       '  stop                                          停止整个运行时',
       '  render-config                                 重新生成并测试 nginx 配置',
       '  init --release <dir> [--slot blue|green]      只写 active.json（不启动进程）',
+      '  adopt-legacy [--dry-run]                      从当前单进程实例沿用库根/端口，写入 config/store.json',
     ].join('\n'))
     return 0
   }
 
   if (cmd === 'serve') {
+    /* REQ-6：首次以蓝绿启动、且完全没配置过根时，沿用现有单进程实例的根。
+     * 放在 serve 之前（不是模块加载期），避免 status/help 这类只读命令产生副作用。 */
+    activateLegacyAdoption()
     await serve({ releaseArg: flags.release, slotId: typeof flags.slot === 'string' ? flags.slot : undefined })
     return null // 常驻
   }
@@ -1381,6 +1869,26 @@ async function main() {
     if (!a) throw httpError(409, 'active.json 不存在，无法生成配置', 'PRIVHUB_NOT_INITIALISED')
     await prepareNginxConfig(a)
     console.log(JSON.stringify({ ok: true, config: NGINX_CONF, tested: nginxAvailable() }, null, 2))
+    return 0
+  }
+
+  if (cmd === 'adopt-legacy') {
+    /* 显式体检式入口：主人可以随时跑一次，看「会不会沿用、沿用成什么」，
+     * 而不必真的起服务。--dry-run 只报告不落盘。 */
+    const dryRun = Boolean(flags['dry-run'])
+    const result = activateLegacyAdoption({ dryRun })
+    console.log(JSON.stringify({
+      ok: true,
+      home: HOME_DIR,
+      storeConfig: STORE_CONF_FILE,
+      adopted: Boolean(result.used && !result.dryRun),
+      feasible: Boolean(result.feasible),
+      dataRoot: result.dataRoot || null,
+      dataFiles: result.dataFiles || null,
+      publicPort: result.publicPort || null,
+      notes: result.notes || [],
+      dryRun,
+    }, null, 2))
     return 0
   }
 

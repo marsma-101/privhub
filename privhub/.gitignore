@@ -14,5 +14,7 @@ Thumbs.db
 /store/
 /logs/
 /tmp/
+# 发布产物（build-release --package / build-standalone 的输出）
+/dist/
 # 本地蓝绿联调用的隔离根（端口 348x / 独立 store，绝不指向真实数据）
 /.runtime-test/

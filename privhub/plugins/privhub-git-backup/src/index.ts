@@ -29,7 +29,9 @@ export const name = 'privhub-git-backup'
 export const inject = ['storage', 'privhub', 'acl']
 
 const dataRootDir = process.env.PRIVHUB_DATA_ROOT?.trim() || process.env.PRIVHUB_ROOT?.trim() || process.cwd()
-const DATA_FILES = join(dataRootDir, 'data-files')
+/* 文件库根可独立于系统数据根（GitHub issue #2 / REQ-1）；否则会把「空目录」当库镜像，
+ * 自动备份看起来在跑、实际什么都没备份。 */
+const DATA_FILES = process.env.PRIVHUB_DATA_FILES?.trim() || join(dataRootDir, 'data-files')
 const REPO = join(dataRootDir, 'data', 'git-backup')
 const MIRROR = join(REPO, 'mirror')
 const POLL_MS = 60 * 1000
@@ -179,6 +181,13 @@ export function apply(ctx: Context): void {
       console.error(msg)
       return
     }
+    /* 文件库根不存在时，备份会「看起来在跑、实际什么都没备份」。
+     * 显式根缺失在启动阶段已被 store-paths 拦下；这里覆盖默认根被指到别处的情况。 */
+    if (!existsSync(DATA_FILES)) {
+      const msg = '[gitbackup] 文件库根不存在：' + DATA_FILES
+        + '（用户文件备份将为空；请确认 PRIVHUB_DATA_FILES / config/store.json 的 dataFiles 指向真实库）'
+      console.warn(msg)
+    }
     try { await ensureRepo() } catch (e) {
       ctx.logger?.error?.('[gitbackup] 仓库初始化失败: ' + (e instanceof Error ? e.message : String(e)))
     }
@@ -216,7 +225,8 @@ export function apply(ctx: Context): void {
       ok: true,
       gitAvailable: has,
       autoBackup: has && timer !== null,
-      scope: { files: 'data-files/', system: SYSTEM_BACKUP_FILES },
+      scope: { files: DATA_FILES, system: SYSTEM_BACKUP_FILES },
+      libraryMissing: !existsSync(DATA_FILES),
       note: has ? undefined : '未检测到 git，自动备份未运行',
     })
   }, 'gitbackup-status')
