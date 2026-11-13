@@ -31,6 +31,8 @@ import { isAbsolute, join, resolve } from 'node:path'
  * @property {string} dataRoot        系统数据根（其下 data/ 为系统数据）
  * @property {string} dataFiles       文件库根
  * @property {boolean} dataFilesExplicit 文件库根是否由 env / 配置文件显式指定
+ * @property {string} publicLinkDir   直读/软连接地址（默认与文件库根相同）
+ * @property {string} tempUploadDir   上传分片临时目录（默认与文件库根相同）
  * @property {string} secretKey       密钥文件默认路径
  * @property {boolean} strict         严格模式：库为空/不可见时拒绝启动
  */
@@ -92,6 +94,24 @@ const strictFlag = env('PRIVHUB_STORE_STRICT').toLowerCase()
 const strict = strictFlag === '1' || strictFlag === 'true' || strictFlag === 'yes' || fileConfig.strict === true
 
 /**
+ * `publicLinkDir` / `tempUploadDir`：设置面板里的另外两项路径。
+ *
+ * 它们此前**只存在于设置面板**（校验、保存、提示「需重启生效」），但没有任何代码
+ * 读它们 —— 用户填了绝对路径、保存成功、重启，行为毫无变化。这是「看着能配、
+ * 实际不生效」，比没有这个开关更糟。
+ *
+ * 现在两者都由这里解析，并回写到 process.env，供消费方读取：
+ *   · `publicLinkDir`  —— nginx 直读/软连接地址；空 = 与文件库根相同
+ *   · `tempUploadDir`  —— 上传分片临时目录；空 = 与文件库根相同
+ *
+ * 不做「目录必须已存在」的强校验：这两个是**可选的优化项**，
+ * 首次使用时由消费方按需创建；而 `dataFiles` 必须存在，因为空库会让用户
+ * 以为「文件全丢了」—— 两者的严格程度不同是刻意的。
+ */
+const publicLinkDir = pick('PRIVHUB_PUBLIC_LINK_DIR', 'publicLinkDir', dataFiles)
+const tempUploadDir = pick('PRIVHUB_TEMP_UPLOAD_DIR', 'tempUploadDir', dataFiles)
+
+/**
  * 显式配置的库根必须存在且是目录 —— 这是「新端口看不到老库」的正面拦截点。
  * 以前路径写错只会得到一个空列表；现在启动即失败，并把「是不是少写了一层」直接点出来。
  * 确需首次初始化一个空目录时设置 PRIVHUB_ALLOW_INIT_DATA_FILES=1。
@@ -124,6 +144,8 @@ process.env.PRIVHUB_STORE_CONFIG = configFile
 process.env.PRIVHUB_DATA_ROOT = dataRoot
 process.env.PRIVHUB_DATA_FILES = dataFiles
 process.env.PRIVHUB_SECRET_KEY_FILE = secretKey
+process.env.PRIVHUB_PUBLIC_LINK_DIR = publicLinkDir
+process.env.PRIVHUB_TEMP_UPLOAD_DIR = tempUploadDir
 
 /** @type {StorePaths} */
 export const storePaths = {
@@ -135,6 +157,8 @@ export const storePaths = {
   dataRoot,
   dataFiles,
   dataFilesExplicit,
+  publicLinkDir,
+  tempUploadDir,
   secretKey,
   strict,
 }
@@ -145,6 +169,8 @@ export function describeStorePaths() {
     '[store] 代码根   : ' + codeRoot,
     '[store] 系统数据 : ' + join(dataRoot, 'data') + '（其下 secret.key / users / audit）',
     '[store] 文件库   : ' + dataFiles + (dataFilesExplicit ? '（显式配置）' : '（默认）'),
+    '[store] 直读地址 : ' + publicLinkDir + (publicLinkDir === dataFiles ? '（同文件库）' : '（单独配置）'),
+    '[store] 临时目录 : ' + tempUploadDir + (tempUploadDir === dataFiles ? '（同文件库）' : '（单独配置）'),
     '[store] 配置文件 : ' + configFile + (configLoaded ? '' : '（不存在，使用环境变量/默认值）'),
     '[store] 严格模式 : ' + (strict ? '开（库不可见/为空将拒绝启动）' : '关（仅告警）'),
   ]

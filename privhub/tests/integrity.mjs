@@ -47,7 +47,18 @@ function ok(cond, msg) {
 console.log('\n── O1 部署包一致性 ──')
 
 if (!existsSync(DEPLOY)) {
-  ok(false, '部署包目录不存在：' + DEPLOY)
+  /* 部署包是**构建产物**（`deploy/` 在 .gitignore 里，由 scripts/build-deploy.ps1 生成）。
+   * 平时没构建过它是正常状态，不是缺陷 —— 把它判成失败会让回归永远带着一条红，
+   * 真正的失败就淹在里面了。
+   *
+   * 但准备发布时必须存在：`--release` 下仍然硬失败，因为那时「没有部署包」
+   * 意味着要发的东西根本没打出来。 */
+  if (RELEASE_GATE) {
+    ok(false, '发布模式要求部署包存在，但目录不存在：' + DEPLOY)
+  } else {
+    console.log('  ⏭️  跳过：部署包未构建（' + DEPLOY + '）')
+    console.log('     需要校验时先运行 scripts/build-deploy.ps1，或加 --release')
+  }
 } else {
   const countPlugins = (dir) => {
     const p = join(dir, 'plugins')

@@ -27,6 +27,7 @@
 /* 载荷类型取自各自权威定义，不复制字段——避免"再抄一份"的老毛病。
  * type-only 导入：编译期存在、运行期被擦除，不引入运行时依赖或环。 */
 import type { AuditEntry } from '../../privhub-svc-audit/src/index'
+import type { Context } from '@deepseek-ai/cordis'
 
 /** 文件发生变化（增删改移）时广播。action 为 upload/delete/rename/mkdir/restore/saved/created 等。 */
 export interface FileChangedPayload {
@@ -35,6 +36,65 @@ export interface FileChangedPayload {
   action: string
   /** 重命名/移动后的新路径（仅 action 为 rename/move 类时给出）。 */
   newPath?: string
+  /**
+   * 主索引里的稳定文件 ID（`ctx.fileindex` 条目的 `id`）。
+   *
+   * 为什么放进事件：`project + path` 是**会变的身份**（改名即断），而 ID 不变。
+   * 带上它之后，凡按 ID 关联的侧车状态（评论/标签/版本/收藏/最近/全文/RAG/KG）
+   * 都不必各自再写一套「改名跟随」的搬迁逻辑。
+   *
+   * **可选、尽力而为**：索引是派生数据，未挂载/未就绪/查不到条目时这里就是
+   * undefined。消费方必须把「没有 fileId」当作必须支持的正常情况。
+   */
+  fileId?: string
+  /** 该文件当前是否在回收站里（仅 delete/restore/purge 类动作给出，其余省略）。 */
+  trashed?: boolean
+}
+
+/** 主索引服务对事件方要求的最小面（只用到 getByPath，避免拖入 svc-fileindex 的运行时依赖）。 */
+interface FileIndexLookup {
+  getByPath(project: string, virtualPath: string): { id?: string } | null
+}
+
+/**
+ * 查主索引拿条目的稳定 ID，供 `file:changed` 的 `fileId` 用。
+ *
+ * ## 容错是硬要求
+ *
+ * 索引是**派生数据**（文件本身才是事实）。因此下面五种情况一律返回
+ * `undefined`，**绝不抛错**，调用方（各写路径）绝不因此失败：
+ *   1. `ctx.fileindex` 未挂载（例如装卸插件、单测直连、将来的精简装配）；
+ *   2. 服务已注册但尚未就绪（`ready` 还没 resolve）；
+ *   3. 索引里没有这条（老库尚未扫描 / 条目被淘汰 / 路径对不上）；
+ *   4. 条目存在但 id 为空；
+ *   5. 查询本身抛异常（索引损坏、内部实现变更……）。
+ *
+ * ## 为什么用 `ctx.reflect.get` 而不是 `ctx.fileindex`
+ *
+ * cordis 的上下文代理对**未 inject 的服务**是「取就抛」
+ * （`cannot get property "x" without inject`）。而这里的需求恰好相反：
+ * 拿不到就当没有。`ctx.reflect.get(name, false)` 直接读服务表、缺失返回
+ * undefined、不触发依赖判定。第二个参数 `false` = 不要求提供方 fiber 处于
+ * active 态：索引是纯内存派生数据，待命/切换中的槽读它没有副作用。
+ *
+ * 直取 `ctx.fileindex` 作为兜底分支，只为兼容「reflect 被裁剪」的极端装配；
+ * 它可能抛，所以整段包在 try/catch 里。
+ */
+export function lookupFileId(ctx: Context, project: string, path: string): string | undefined {
+  try {
+    let idx: FileIndexLookup | undefined
+    try {
+      idx = ctx.reflect?.get?.('fileindex', false) as FileIndexLookup | undefined
+    } catch { idx = undefined }
+    if (!idx) idx = (ctx as unknown as { fileindex?: FileIndexLookup }).fileindex
+    if (!idx || typeof idx.getByPath !== 'function') return undefined
+    const entry = idx.getByPath(project, path)
+    const id = entry?.id
+    return typeof id === 'string' && id !== '' ? id : undefined
+  } catch {
+    /* 索引出任何问题都只让 fileId 留空，不影响写文件。 */
+    return undefined
+  }
 }
 
 /** 文本类文件保存成功（供全文索引 / RAG 语料增量更新）。doc 为落盘后的文本内容。 */
@@ -78,6 +138,14 @@ export interface TaskChangedPayload {
   columnId?: string
   /** 移动前所在列（仅 card-move 且**确实跨列**时给出；列内排序不带）。 */
   fromColumnId?: string
+  /**
+   * 审核动作（仅 `card-review` 时给出）：`submit` 提交审核 / `approve` 通过 / `reject` 退回。
+   *
+   * 为什么必须在这里声明：task-board 一直在发这个字段，但契约里没有它 ——
+   * 于是 TS 的过量属性检查把 emit 判成不匹配（编译期报错），而运行期事件照发，
+   * 消费方（webhook）收到一个「文档里不存在」的字段。声明后两端口径一致。
+   */
+  review?: string
 }
 
 /** 项目看板（纵向分区页）变更。 */

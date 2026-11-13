@@ -1218,8 +1218,51 @@
       }
       return map[t] || '📄'
     }
+    /* ---------- 文件内容 URL（前端**第二处**同名口径，见下） ----------
+     * 骨架不能 import 插件模块（no-build + 插件 client 只许引用同目录文件），
+     * 所以这里有一份与 `plugins/privhub-files-explorer-v3/client/utils.js` 的
+     * `fileContentUrl` / `contentUrlFor` **逐字同口径**的镜像。改口径时两处一起改。
+     *
+     * 读路径两条：
+     *   ① `/f/<fileId>.<ext>` —— nginx 按主索引给的不透明 ID 直读（新）；
+     *   ② `/privhub/api/preview-raw?project=&path=` —— **必须保留**的老路。
+     *      条目没有 id（老数据 / 索引未就绪 / 索引服务没挂）时走它，否则存量文件会打不开。
+     * 选择只有 `fileContentUrl` 一处做（拿不到合法 ID 就回空串 ⇒ 调用方自动走老路）。
+     *
+     * ⚠ 必须带扩展名：nginx 在 `X-Accel-Redirect` 后**按 URL 扩展名重算 Content-Type，
+     *   忽略上游给的那个**。裸 `/f/<id>` 会退化成 application/octet-stream ——
+     *   图片不显示、视频不播放（且只在使用明文提速时出现，默认降级路径测不出来）。
+     */
+    const FILE_ID_RE = /^[A-Za-z0-9_-]+$/
+    /* 取扩展名（小写、不含点），与后端 fileindex/core.ts 的 extOf 同口径。 */
+    function extOfName(name) {
+      const n = typeof name === 'string' ? name : ''
+      const i = n.lastIndexOf('.')
+      if (i <= 0 || i === n.length - 1) return ''
+      return n.slice(i + 1).toLowerCase()
+    }
+    function fileContentUrl(fileId, name) {
+      const id = typeof fileId === 'string' ? fileId.trim() : ''
+      if (id === '' || !FILE_ID_RE.test(id)) return ''
+      const ext = extOfName(name)
+      return '/f/' + id + (ext ? '.' + ext : '')
+    }
+    /* 当前目录里按文件名查主索引 ID。查不到就回空串 —— 那不是错误，
+     * 只是这个条目该走老路（例如索引还在首次扫描中）。 */
+    function idOfEntry(name) {
+      const list = (nav && nav.entries) || []
+      for (const e of list) {
+        if (e && e.name === name && typeof e.id === 'string') return e.id
+      }
+      /* 兜底：当前目录列表里没有（例如右侧预览显示的是别处的选中项）就看选中项。 */
+      const s = nav && nav.selected
+      if (s && s.name === name && typeof s.id === 'string') return s.id
+      return ''
+    }
     function previewImageUrl(name) {
       const rel = nav.path ? nav.path + '/' + name : name
+      const direct = fileContentUrl(idOfEntry(name), name)
+      if (direct) return direct
       return '/privhub/api/preview-raw?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(rel)
     }
     function previewPdfUrl(name) {
@@ -1305,6 +1348,12 @@
 
     /* ============ 插件桥 ============ */
     window.PrivHub = { api, AUTH, THEME, VERSION, applyTheme, logout, toast, bus, nav, fileIcon, previewImageUrl, previewPdfUrl, sortedEntries }
+    /* 文件内容 URL 工厂也挂上桥：插件侧（explorer-v3/utils.js）会优先保留"先到者"的实现，
+     * 于是全站只有一套口径可查 —— 谁想拼 `/f/<id>` 都从 `window.PrivHub.fileContentUrl` 取，
+     * 不许在自己文件里再写一份字面量。 */
+    window.PrivHub.fileContentUrl = fileContentUrl
+    window.PrivHub.previewImageUrl = previewImageUrl
+    window.PrivHub.previewPdfUrl = previewPdfUrl
     /* 图标栏角标（插件更新，骨架渲染） */
     window.PrivHub.badges = reactive({ trash: 0 })
     /* 图标栏条目与分发（barItems 来自各插件 manifest；view 决定点击行为，契约扩展） */

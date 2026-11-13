@@ -21,7 +21,7 @@
 import { readFile, writeFile, mkdir, readdir, stat, rename, unlink, rm, realpath } from 'node:fs/promises'
 import { join, resolve, extname, sep, dirname, basename } from 'node:path'
 import { existsSync } from 'node:fs'
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -341,6 +341,107 @@ export function fmtSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
+/**
+ * `listFiles` 的返回项（`/api/list` 直接透传给前端）。
+ *
+ * v6 新增 `id`（主索引的稳定文件 ID）：
+ *   · 前端用它拼 nginx 直读地址 `/f/<id>`；没有 id 时自动回退老的
+ *     `/api/preview-raw?project=&path=`（见前端 utils.js 的 contentUrlFor）；
+ *   · **磁盘回退分支拿不到 id**（那些条目还不在索引里，比如老库没扫描、
+ *     或刚上传还没登记）——此时字段缺省，前端走回退，语义不变。
+ *
+ * 为什么不把 id 设成必填：磁盘分支本来就不产生它，设必填等于逼着那条路径
+ * 编一个假 ID 出来 —— 编出来的 ID 拼进 `/f/` 就是 404，比缺省更糟。
+ */
+export interface FileListEntry {
+  name: string
+  isDir: boolean
+  size: number
+  sizeText: string
+  mtime: string
+  type: string
+  /** 主索引稳定 ID；磁盘分支没有（老数据/未登记）。前端据此决定走直读还是回退。 */
+  id?: string
+}
+
+/**
+ * 列目录的排序口径：**目录优先，再按名称 `localeCompare`**。
+ *
+ * 抽成模块级函数是因为现在有两个产出点（索引分支 / 磁盘分支），
+ * 两处必须逐字一致 —— 界面已有「先文件夹后文件」的肌肉记忆，换了顺序会被当成 bug。
+ */
+export function compareFileListEntries(a: FileListEntry, b: FileListEntry): number {
+  return a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1
+}
+
+/**
+ * 主索引服务（`ctx.fileindex`）在 core 侧需要的**最小**结构契约。
+ *
+ * 为什么不 import `FileIndexService` 的类类型：那是 L2 服务的实现，core 引它就把
+ * 「派生索引」写成编译期依赖；而这里只需要一个**可选**的读能力。用结构类型 +
+ * `reflect.get` 取值，索引被拆掉时 core 照样编译、照样跑（回退磁盘实现）。
+ *
+ * 字段声明为 `unknown` 是刻意的：索引里的数据来自磁盘，读侧一律当**不可信**来源
+ * 逐项裁决（形状不对就跳过这一条），与 svc-links/svc-dup 的「宽容读取」同口径。
+ */
+interface FileIndexLike {
+  listDirItems(project: string, subPath?: string): ReadonlyArray<{
+    name?: unknown
+    isDir?: unknown
+    size?: unknown
+    mtime?: unknown
+    /** 稳定文件 ID（前端拼 `/f/<id>` 用）。形状也要裁决：非字符串一律当没有。 */
+    id?: unknown
+  }>
+  /** v6 扁平池：池目录绝对路径（上传/读取都按它定位物理字节）。 */
+  poolDir?: string
+  /** v6 扁平池：按虚拟路径取条目（`resolveReal` 靠它把虚拟路径翻译成池路径）。 */
+  getByPath?(project: string, virtualPath: string): unknown
+  /** v6 扁平池：确保池目录存在并返回它（上传落盘用）。 */
+  ensurePoolDir?(): Promise<string>
+  /** v6 扁平池：登记一个刚写入的新文件。 */
+  createFile?(input: {
+    project: string
+    virtualPath: string
+    physicalId: string
+    size?: number
+    mtime?: number
+    sha256?: string
+  }): { id?: unknown } | null
+  /** v6 扁平池：登记一个目录条目（项目根、子目录）。位置参数，与 fileindex 一致。 */
+  createDir?(project: string, virtualPath: string): { id?: unknown } | null
+  /** v6 扁平池：按 id 改名。成功返回条目（对象），失败返回 null。 */
+  renameEntry?(id: string, newName: string): unknown
+}
+
+/** 物理 ID 形状：32 位小写十六进制（与 fileindex 的 `newPhysicalId` 同格式）。
+ *  这里做形状校验是因为索引是**派生数据**，被手工改过也不能让它拼出越界路径。 */
+const PHYSICAL_ID_RE = /^[0-9a-f]{32}$/
+
+/* ---------------- v6 上传目标解析用的小工具 ---------------- */
+
+/** 把相对目录规范成 `a/b` 形式（去首尾斜杠、反斜杠转正斜杠、折叠重复分隔符）。 */
+function normalizeRel(p: string): string {
+  return String(p ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/')
+}
+
+/** 把父目录与名字拼成虚拟路径（`a/b` 形式）。空父目录就是顶层。 */
+function joinVirtualPath(dir: string, name: string): string {
+  const d = normalizeRel(dir)
+  return d === '' ? name : d + '/' + name
+}
+
+/** 取扩展名（小写、不含点）。与 fileindex 的 `extOf` 同口径：只取最后一个点之后。 */
+function extOfName(name: string): string {
+  const i = name.lastIndexOf('.')
+  return i > 0 && i < name.length - 1 ? name.slice(i + 1).toLowerCase() : ''
+}
+
+/** 物理文件名用的 ID：32 位小写十六进制（与 fileindex 的 `newPhysicalId` 同格式）。 */
+function newPhysicalId(): string {
+  return randomUUID().replace(/-/g, '')
+}
+
 /* ============ 共享存储服务 ============ */
 
 declare module '@deepseek-ai/cordis' {
@@ -439,7 +540,13 @@ export class PrivHubStore extends Service {
       const mb = Number((JSON.parse(raw) as { maxUploadMB?: unknown }).maxUploadMB)
       if (!Number.isFinite(mb) || mb <= 0) return 0
       return Math.floor(mb) * 1024 * 1024
-    } catch {
+    } catch (e) {
+      /* 配置损坏 → 保守回落 2GB，方向是对的（绝不因读不到配置就放开上限）。
+       * 但**必须留痕**：否则管理员会遇到「明明设了 8GB，传 3GB 却 413」，
+       * 而日志里什么都没有 —— 这类"静默降级"最难排查。
+       * 自检（doctor）会读同一条线索，把它变成可见的问题项。 */
+      console.error('[upload-limit] 读取 settings.json 失败，上传上限回落为 2GB：'
+        + (e instanceof Error ? e.message : String(e)))
       return MAX_UPLOAD_BYTES
     }
   }
@@ -846,6 +953,29 @@ export class PrivHubStore extends Service {
     return this.retiredDirs.get(name) ?? null
   }
 
+  /**
+   * 删除账号**之前**调用：把该账号的个人空间名登记进退休表。
+   *
+   * 为什么必须有：个人空间的「私有」身份完全来自 `users[].personalDir` 这条登记。
+   * 账号一删，登记没了，`ownerOfPersonalDir()` 返回 null ⇒ 该目录退回普通项目身份
+   * ⇒ `canAccess` 对管理员放行，管理员（以及任何被授权的项目成员）就能读到
+   * 一个已离职同事的全部私人文件。而文件本身按设计是**永不自动删除**的。
+   *
+   * 所以删除账号必须先把目录名「退休」，让它继续保持「只有原主可见」的语义 ——
+   * 原主已不存在，因此谁都不再能访问，但文件安全地留在磁盘上。
+   *
+   * @returns 退休的目录名（该账号没有个人空间时返回 null）
+   */
+  async retirePersonalDirOnDelete(username: string): Promise<string | null> {
+    const u = this.users.get(username)
+    if (!u) return null
+    const d = String(u.personalDir ?? '').trim()
+    if (d === '') return null
+    this.retiredDirs.set(d, username)
+    await this.saveUsers()
+    return d
+  }
+
   /** 本人个人空间目录名；未开通或目录不存在返回 null。 */
   personalDirOf(user: UserRecord): string | null {
     const d = (user.personalDir ?? '').trim()
@@ -890,6 +1020,13 @@ export class PrivHubStore extends Service {
     const owner = this.ownerOfPersonalDir(n)
     if (owner !== null && owner !== username) return false
     await mkdir(resolve(this.dataRoot, n), { recursive: true })
+    /* 个人空间同样要进主索引登记根条目：扁平池下「目录是否存在」只认索引，
+     * 不登记的话它下面的子目录永远建不出来、文件也传不进去（实测：
+     * 往个人空间的子目录上传一律 400「目标目录不存在」）。 */
+    const fiBind = this.fileIndexOrNull()
+    if (fiBind && typeof fiBind.createDir === 'function') {
+      try { fiBind.createDir(n, '') } catch { /* 索引异常不阻断开通 */ }
+    }
     u.personalDir = n
     return true
   }
@@ -946,6 +1083,16 @@ export class PrivHubStore extends Service {
         return { ok: false, reason: '改名失败：' + (e instanceof Error ? e.message : String(e)) }
       }
     }
+    /* 扁平池下「个人空间」只是索引条目上的 project 字段，磁盘上通常没有目录
+     * 可 rename。不同步索引的话，改名后「文件夹还在、文件全没了」（实测）。
+     * 索引操作是纯内存的，失败不影响磁盘结果，所以放在 rename 之后、落盘之前。 */
+    if (willRename) {
+      const fiRen = this.fileIndexOrNull() as
+        { renameProject?: (a: string, b: string) => number } | null
+      if (fiRen && typeof fiRen.renameProject === 'function') {
+        try { fiRen.renameProject(oldDir, newName) } catch { /* 索引异常不阻断改名 */ }
+      }
+    }
     // 幂等：改名成功后目录已在；旧目录缺失时补建，保证个人空间始终可用
     if (hasSpace) await mkdir(newAbs, { recursive: true })
 
@@ -966,6 +1113,14 @@ export class PrivHubStore extends Service {
       u.personalDir = prevPersonal
       this.retiredDirs = retiredSnapshot
       if (renamedDir) await rename(newAbs, oldAbs).catch(() => { /* 回滚尽力而为 */ })
+      /* 索引也要回滚，否则会留下「磁盘叫旧名、索引叫新名」的半改状态。 */
+      if (willRename) {
+        const fiRb = this.fileIndexOrNull() as
+          { renameProject?: (a: string, b: string) => number } | null
+        if (fiRb && typeof fiRb.renameProject === 'function') {
+          try { fiRb.renameProject(newName, oldDir) } catch { /* 尽力而为 */ }
+        }
+      }
       return { ok: false, reason: '保存账号失败：' + (e instanceof Error ? e.message : String(e)) }
     }
     return { ok: true, oldName, newName, renamedDir }
@@ -973,15 +1128,64 @@ export class PrivHubStore extends Service {
 
   /* ---------- 项目列表与权限 ---------- */
 
-  /** 所有「真正的项目」——不含任何个人空间（管理员界面与索引类功能都以此为准）。 */
+  /** 所有「真正的项目」——不含任何个人空间（管理员界面与索引类功能都以此为准）。
+   *
+   * v6 扁平化后**磁盘上不再有项目目录**（字节全在 `.pool/`，项目只是索引里的一个字段），
+   * 所以「有哪些项目」必须改成「磁盘 ∪ 索引」的并集：
+   *   · 老库 / 未迁移数据：磁盘上还有目录 → 靠 readdir 拿到；
+   *   · 已扁平化数据：磁盘上没有目录 → 靠索引的 project 字段拿到；
+   *   · 过渡期两者都有 → 并集去重。
+   * 只取索引会让「还没扫描的老库」看不见；只取磁盘会让「已扁平化」看不见 —— 两种都试过。
+   */
   async allProjects(): Promise<string[]> {
-    if (!existsSync(this.dataRoot)) return []
-    const ents = await readdir(this.dataRoot, { withFileTypes: true })
+    const names = new Set<string>()
+    /* ① 磁盘（老布局 / 混合库） */
+    if (existsSync(this.dataRoot)) {
+      try {
+        const ents = await readdir(this.dataRoot, { withFileTypes: true })
+        for (const e of ents) {
+          if (e.isDirectory() && !e.name.startsWith('.')) names.add(e.name)
+        }
+      } catch { /* 目录读不了就只靠索引 */ }
+    }
+    /* ② 索引（扁平化布局） */
+    const fi = this.projectNamesFromIndex()
+    if (fi) for (const n of fi) names.add(n)
     const personal = this.personalDirSet()
-    return ents
-      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !personal.has(e.name))
-      .map((e) => e.name)
+    return [...names]
+      .filter((n) => !personal.has(n))
       .sort()
+  }
+
+  /**
+   * 从主索引拿「有哪些项目」。
+   *
+   * 走 `ctx.reflect.get('fileindex', false)` 而非 `ctx.fileindex`：cordis 对未 inject
+   * 的服务是**取值即抛**（连可选链都拦不住），而 core 不能 inject 它 —— 索引是派生
+   * 数据，它缺失时 core 必须还能工作。索引不可用时返回 null，由调用方回退磁盘。
+   */
+  private projectNamesFromIndex(): string[] | null {
+    const fi = (this.ctx as unknown as { reflect?: { get?: (n: string, strict?: boolean) => unknown } })
+      .reflect?.get?.('fileindex', false) as { all?: () => ReadonlyArray<{ project?: string; trashed?: boolean; parentId?: unknown }> } | undefined
+    if (!fi || typeof fi.all !== 'function') return null
+    try {
+      const out = new Set<string>()
+      /* 【必须排除回收站条目】扁平化后「项目存在」完全由索引决定：一个项目之所以
+       * 存在，是因为索引里还有属于它的条目。而删除项目会把**目录条目本身**
+       * （`project=P, relPath=''`、`isDir=true`）放进回收站 —— 那条记录仍然带着
+       * `project=P`，若不排除，删掉的项目会永远留在项目列表里。
+       *
+       * 实测过这个缺陷：删除一个空项目后接口返回 `{ok:true}`、回收站里也确有那条
+       * 目录记录，但 `/api/projects` 依旧列出它，点进去是空目录 —— 用户会以为
+       * 「删不掉」。这不是显示问题，是「什么算存在」的判定漏了一维。 */
+      for (const e of fi.all()) {
+        if (!e || typeof e.project !== 'string' || e.project === '') continue
+        if (e.trashed === true) continue
+        if (!this.isValidProjectName(e.project)) continue
+        out.add(e.project)
+      }
+      return [...out]
+    } catch { return null }
   }
 
   /**
@@ -1010,13 +1214,18 @@ export class PrivHubStore extends Service {
   /**
    * 文件访问判定。个人空间优先级最高：只有归属者本人可以访问，
    * 管理员同样不可访问（管理员对个人空间的可见性仅限审计记录，不含文件内容）。
+   *
+   * 入参用**结构化的最小契约**而非 `UserRecord`：判定只看 `username` / `role` /
+   * `projects` 三项，与密码、显示名无关。写成 `UserRecord` 会逼调用方构造（或强转）
+   * 出带 `password` 的完整对象 —— 那是把敏感字段塞进一个只读判定里，
+   * 类型上也不诚实（files-lock / refcheck 就是因为这个才报错的）。
    */
-  canAccess(user: UserRecord, project: string): boolean {
+  canAccess(user: { username: string; role: string; projects?: readonly string[] }, project: string): boolean {
     if (!this.isValidProjectName(project)) return false
     const owner = this.ownerOfPersonalDir(project)
     if (owner !== null) return user.username === owner
     if (user.role === 'admin') return true
-    return user.projects.includes(project)
+    return (user.projects ?? []).includes(project)
   }
 
   /** A8：会话 TTL + 滑动续期。过期删除；剩余不足一半时续期（内存更新 + 异步落盘）。 */
@@ -1047,10 +1256,150 @@ export class PrivHubStore extends Service {
     return target
   }
 
-  /** 安全解析 + realpath 防 junction/symlink 穿越（读取/写入类接口调用）。
+  /**
+   * 取主索引（容错）。索引未挂载 / 抛异常一律返回 null，调用方必须能走回退路径。
+   * 统一入口，避免每处各写一遍 reflect.get + try/catch。
+   */
+  fileIndexOrNull(): FileIndexLike | null {
+    try {
+      const fi = (this.ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+        .reflect?.get?.('fileindex', false) as FileIndexLike | undefined
+      return fi ?? null
+    } catch { return null }
+  }
+
+  /**
+   * v6 扁平化：解析**上传/新建文件**的落盘目标。
+   *
+   * 与 `resolveReal` 的区别：扁平化后磁盘上不再有「项目目录」，
+   * 新文件必须落到 `.pool/<physicalId>.<ext>`，虚拟路径只存在于索引里。
+   * 所以上传不能再用 `resolveReal(project, subPath)` —— 那会永远返回
+   * 「目标目录不存在」（目录本来就不该存在）。
+   *
+   * 返回：
+   * - `{ dir, target }` 传统布局（索引不可用 / 索引未启用）→ 调用方按原逻辑写
+   * - `{ dir, target, physicalId, flat: true }` 扁平池 → 调用方写完后须登记索引
+   * - `null` 越界或参数非法
+   *
+   * **不改上传语义**：仍然由调用方决定写什么、怎么写；这里只回答「写到哪个路径」。
+   */
+  /**
+   * 解析上传落点。
+   *
+   * 返回值用**带原因的联合类型**而不是 `null`：`null` 无法区分
+   * 「目录不存在」（400，用户操作问题）和「所有存储卷都写不了」（507，
+   * 运维问题）。两者都回 400 会让管理员去查用户，都回 507 会让用户以为
+   * 服务器坏了 —— 猜错方向比不报错更浪费时间。
+   */
+  async resolveUploadTarget(
+    project: string,
+    subPath: string,
+    name: string,
+    needBytes = 0,
+  ): Promise<
+    | { ok: true; dir: string; target: string; physicalId?: string; flat: boolean; volumeId?: string | null }
+    | { ok: false; reason: 'invalid' | 'no-dir' | 'no-space' }
+  > {
+    const relDir = normalizeRel(subPath)
+    if (!this.isValidProjectName(project)) return { ok: false, reason: 'invalid' }
+    if (!this.isValidName(name)) return { ok: false, reason: 'invalid' }
+
+    const fi = this.fileIndexOrNull()
+    if (fi && typeof fi.ensurePoolDir === 'function') {
+      try {
+        /* 扁平池下「目录是否存在」只存在于索引里，磁盘上没有对应目录可 stat，
+         * 所以必须显式问索引，否则「上传到不存在的目录」会静默成功，
+         * 在索引里留下一条父目录不存在的孤儿条目。
+         *
+         * **只校验子目录，不校验项目本身**：项目是否存在由调用方的
+         * `canAccess` / 权限层负责；而且老部署里「公共」这类项目是首次运行时
+         * 由用户授权名隐含出来的，磁盘和索引里都可能没有对应条目，
+         * 在这里硬判存在性会把「往项目根上传」全部打成 400（实测 8 条用例）。 */
+        if (relDir !== '' && typeof fi.getByPath === 'function') {
+          const dirEntry = fi.getByPath(project, relDir) as { isDir?: unknown } | null | undefined
+          if (!dirEntry || dirEntry.isDir !== true) return { ok: false, reason: 'no-dir' }
+        }
+        /* 多卷：先问卷服务「这次写哪块盘」。拿不到卷服务（单卷部署）就走原路径。 */
+        const vols = this.volumesOrNull()
+        let poolDir: string
+        let volumeId: string | null = null
+        if (vols && typeof vols.pickForWrite === 'function') {
+          const picked = await vols.pickForWrite(needBytes)
+          if (picked === null) {
+            /* 有卷配置但**一块都写不了**（全满 / 全离线 / 全停用）。
+             * 必须明确失败，绝不静默回落到默认库根 —— 那会让数据堆在系统盘上，
+             * 而用户以为分层生效了。 */
+            return { ok: false, reason: 'no-space' }
+          }
+          poolDir = picked.dir
+          const v = picked.volume as { id?: unknown } | null
+          volumeId = v && typeof v.id === 'string' ? v.id : null
+        } else {
+          poolDir = await fi.ensurePoolDir()
+        }
+        if (typeof poolDir === 'string' && poolDir !== '') {
+          const ext = extOfName(name)
+          const physicalId = newPhysicalId()
+          const target = join(poolDir, physicalId + (ext ? '.' + ext : ''))
+          /* 越界自证：池目录之外一律拒绝（防 poolDir 被配到别处后拼出怪路径）。 */
+          const rp = resolve(poolDir)
+          if (!resolve(target).startsWith(rp + sep)) return { ok: false, reason: 'invalid' }
+          return { ok: true, dir: poolDir, target, physicalId, flat: true, volumeId }
+        }
+      } catch { /* 索引异常 → 回落传统布局，绝不因索引故障导致不能上传 */ }
+    }
+
+    const dir = await this.resolveReal(project, relDir)
+    if (dir === null || !existsSync(dir)) return { ok: false, reason: 'no-dir' }
+    return { ok: true, dir, target: join(dir, name), flat: false }
+  }
+
+  /**
+   * 卷服务（多卷部署时存在）。单卷部署返回 null，调用方按原路径处理。
+   *
+   * 用 reflect 而不是 inject：core 是 L1 枢纽，inject 一个可选服务会让
+   * 「卷服务出问题」升级成「整个 core 起不来」，方向反了。
+   */
+  private volumesOrNull(): {
+    pickForWrite?: (needBytes?: number) => Promise<{ volume: unknown; dir: string } | null>
+    poolDirOf?: (id: string | null) => string
+    resolveDir?: (id: string | null) => { dir: string; online: boolean }
+  } | null {
+    const c = this as unknown as { ctx?: { reflect?: { get?: (k: string, d?: unknown) => unknown } } }
+    const v = c.ctx?.reflect?.get?.('volumes', false)
+    return (v ?? null) as never
+  }
+
+  /**
+   * 安全解析 + realpath 防 junction/symlink 穿越（读取/写入类接口调用）。
    *  字符串校验通过后仍可能经 junction 指向数据根之外（如 data/），必须二次校验。
-   *  目标不存在时（新建场景）校验其父目录，父目录安全即放行。 */
+   *  目标不存在时（新建场景）校验其父目录，父目录安全即放行。
+   *
+   * **v6 扁平化**：磁盘上不再有「项目目录」，文件的物理字节在 `.pool/<physicalId>.<ext>`。
+   * 所以先问主索引：命中 `source='pool'` 的条目就返回池路径 —— 这样所有按
+   * `resolveReal` 读文件的调用点（office / versions / rag / export / fulltext / kg …）
+   * 不用逐个改就能继续工作。索引不可用或条目不存在时才走原来的物理布局逻辑。
+   */
   async resolveReal(project: string, relPath: string): Promise<string | null> {
+    /* 扁平池优先：只对**文件条目**生效。relPath='' 表示项目根目录本身，
+     * 那不是文件，扁平化后也不该存在，交给下面原逻辑处理（返回 null 是对的）。 */
+    const rel = normalizeRel(relPath)
+    if (rel !== '') {
+      const fi = this.fileIndexOrNull()
+      if (fi && typeof fi.getByPath === 'function') {
+        try {
+          const e = fi.getByPath(project, rel) as
+            { source?: unknown; physicalId?: unknown; isDir?: unknown } | undefined
+          if (e && e.isDir !== true && e.source === 'pool' && typeof e.physicalId === 'string'
+            && PHYSICAL_ID_RE.test(e.physicalId)) {
+            const ext = extOfName(rel)
+            const poolFile = join(this.fileIndexPoolDir(fi), e.physicalId + (ext ? '.' + ext : ''))
+            if (existsSync(poolFile)) return poolFile
+          }
+        } catch { /* 索引异常 → 回落物理布局 */ }
+      }
+    }
+
     const target = this.resolveInProject(project, relPath)
     if (target === null) return null
     try {
@@ -1071,10 +1420,24 @@ export class PrivHubStore extends Service {
     } catch { return null }
   }
 
+  /** 取扁平池目录（不建目录，只算路径）。索引没给出就回落到 `<dataRoot>/.pool`。
+   *  注意 `this.dataRoot` 是**文件库根**（data-files），不是系统数据根。 */
+  private fileIndexPoolDir(fi: FileIndexLike): string {
+    const p = typeof fi.poolDir === 'string' ? fi.poolDir : ''
+    return p !== '' ? p : join(this.dataRoot, '.pool')
+  }
+
   /** A14/A22：并行 stat（Promise.all，千级目录不串行卡顿）；mtime 返回完整 ISO 时间戳。 */
-  async listFiles(project: string, subPath = ''): Promise<{ name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[]> {
+  async listFiles(project: string, subPath = ''): Promise<FileListEntry[]> {
+    /* 路径安全先判：`resolveInProject` 是纯字符串包含性检查（不碰磁盘），
+     * 保持「越界即空」的既有语义，也让下面两条分支共用同一个裁决结果。 */
     const dir = this.resolveInProject(project, subPath)
-    if (dir === null || !existsSync(dir)) return []
+    if (dir === null) return []
+    /* ① 主索引优先（v6 §3.2）：查表出列表，零磁盘 I/O。
+     *   返回 null = 索引不可用/没这个目录 → 落到 ② 的原实现。 */
+    const fromIndex = this.listFilesFromIndex(project, subPath)
+    if (fromIndex !== null) return fromIndex
+    if (!existsSync(dir)) return []
     // 防 junction/symlink 目录穿越：不跟随符号链接条目（Windows junction 的 isSymbolicLink() 为 true）
     const ents = await readdir(dir, { withFileTypes: true })
     const stats = await Promise.all(ents.map(async (e) => {
@@ -1088,7 +1451,7 @@ export class PrivHubStore extends Service {
         return { name: e.name, isDir: s.isDirectory(), size, mtime: s.mtime.toISOString() }
       } catch { return null }
     }))
-    const out: { name: string; isDir: boolean; size: number; sizeText: string; mtime: string; type: string }[] = []
+    const out: FileListEntry[] = []
     for (const s of stats) {
       if (!s) continue
       out.push({
@@ -1100,7 +1463,73 @@ export class PrivHubStore extends Service {
         type: s.isDir ? '文件夹' : (extname(s.name).slice(1).toUpperCase() || '文件'),
       })
     }
-    return out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
+    return out.sort(compareFileListEntries)
+  }
+
+  /**
+   * `listFiles` 的索引分支。放到主索引里查一次表，**不碰磁盘**。
+   *
+   * 返回 `null` 的三种情况，都表示「这次别用索引，走磁盘原实现」：
+   *   · 主索引服务不存在（被卸载 / 装配顺序变化）；
+   *   · 该目录在索引里一条都没有 —— **这是关键**：老库还没扫描时索引必然是空的，
+   *     而「空目录」与「索引里没有这个目录」在语义上不可区分。无条件优先会让
+   *     升级后打开就是空目录，那是最坏的第一印象；
+   *   · 读取过程中抛错（索引是派生数据，坏了绝不能挡住列目录）。
+   *
+   * 形状裁决：索引里的数据来自磁盘，逐项当**不可信**来源校验，单条不合法就跳过
+   * 这一条（与 svc-links/svc-dup 的宽容读取同口径）。
+   */
+  private listFilesFromIndex(project: string, subPath: string): FileListEntry[] | null {
+    let items: ReadonlyArray<{ name?: unknown; isDir?: unknown; size?: unknown; mtime?: unknown }>
+    try {
+      /* 【不要写成 `this.ctx.fileindex`】cordis 的 Context 代理对「未 inject 的服务」
+       * 是**取值即抛**（`cannot get property "fileindex" without inject`），可选链也拦不住。
+       * 而给 core 加 `inject: ['fileindex']` 更糟：索引缺失会连带 core 装配失败，
+       * 整个文件功能跟着停摆 —— 索引是可重建的派生数据，不该有这个否决权。
+       * `reflect.get(name, false)` 直接读服务表：缺失返回 undefined，不触发依赖判定。 */
+      const fi = this.ctx.reflect.get('fileindex', false) as FileIndexLike | undefined
+      if (!fi || typeof fi.listDirItems !== 'function') return null
+      items = fi.listDirItems(project, subPath)
+    } catch (e) {
+      console.warn('[core] 主索引列目录失败，回退磁盘实现：' + (e instanceof Error ? e.message : String(e)))
+      return null
+    }
+    if (!Array.isArray(items) || items.length === 0) return null
+    const out: FileListEntry[] = []
+    for (const it of items) {
+      if (!it || typeof it.name !== 'string' || it.name === '') continue
+      /* 点开头条目与磁盘分支一致地隐藏（历史行为：`listFiles` 过滤 `.` 开头，
+       * 全文搜索等消费方都建立在这个口径上）。 */
+      if (it.name.startsWith('.')) continue
+      const isDir = it.isDir === true
+      const size = isDir ? 0 : (typeof it.size === 'number' && Number.isFinite(it.size) ? it.size : 0)
+      out.push({
+        name: it.name,
+        isDir,
+        size,
+        sizeText: isDir ? '—' : fmtSize(size),
+        mtime: typeof it.mtime === 'string' ? it.mtime : '',
+        type: isDir ? '文件夹' : (extname(it.name).slice(1).toUpperCase() || '文件'),
+        /* v6：把主索引的稳定 ID 透给前端，让它能拼 `/f/<id>` 直读。
+         * 形状裁决：非字符串/空串一律当没有（脏 id 拼进 URL 只会得到 404，
+         * 不如让前端走 preview-raw 回退）。 */
+        ...(typeof it.id === 'string' && it.id !== '' ? { id: it.id } : {}),
+      })
+    }
+    /* 一条都没通过裁决 → 等同于「索引没这个目录」，回退。 */
+    if (out.length === 0) return null
+    /* 排序在 core 侧再排一次：界面语义（目录优先 + localeCompare）由 core 保证，
+     * 不依赖 L2 服务内部实现是否变更。一页最多几百条，代价可忽略。 */
+    /* ⚠ 符号链接：本分支不做 `isSymbolicLink()` 过滤，这是**有意接受**的，不是遗漏。
+     *   · 索引里本来就不应该有符号链接条目：来源只有两处 —— 上传（新文件）与老库扫描，
+     *     而扫描的 walk 里已有 `if (st.isSymbolicLink()) continue`，直接把链接跳掉。
+     *   · 若有人手工往索引 JSON 里塞一条指向 junction 的行，下游 `resolveReal()`（读/写
+     *     路由都会调，走 realpath 二次校验）是第二道闸，会拒绝它。
+     *   · 反过来说，给 FileEntry 加 `isLink` 字段意味着每次列出都要重新 stat 一遍，
+     *     把「索引免扫盘」的收益吃掉一部分 —— 为一个几乎不可能出现的场景牺牲主路径
+     *     性能不划算。所以按现状固化：索引里不应有符号链接条目；若人工篡改，由下游
+     *     resolveReal 兜底。 */
+    return out.sort(compareFileListEntries)
   }
 
   /** 读取文件内容用于预览（仅允许数据根内部）
@@ -1112,7 +1541,10 @@ export class PrivHubStore extends Service {
    *  ⚠ 音视频（`media`）只保证"这是音视频"，**不保证浏览器能播** ——
    *  能不能原生解码由前端那份白名单判（见 `file-exts.ts` 的 `AUDIO_EXTS` 注释）。 */
   async readFileForPreview(project: string, relPath: string): Promise<{ data: string; type: string; size?: number; limit?: number } | null> {
-    const target = this.resolveInProject(project, relPath)
+    /* v6 扁平化：必须先问索引要真实路径。`resolveInProject` 只是字符串拼接，
+     * 扁平池下项目目录并不存在 ⇒ 永远 `existsSync=false` ⇒ 所有预览都 404。
+     * `resolveReal` 已经是扁平感知的（内部先查索引、再回退物理），复用它即可。 */
+    const target = await this.resolveReal(project, relPath)
     if (target === null || !existsSync(target)) return null
     const s = await stat(target)
     if (s.isDirectory()) return null
@@ -1162,6 +1594,18 @@ export class PrivHubStore extends Service {
     if (!this.isValidProjectName(project)) return false
     // 不允许与任何个人空间同名：顶层目录撞名会让权限判定无法区分二者
     if (this.isPersonalDir(project)) return false
+    /* v6 扁平化：项目在磁盘上没有目录了，它只是索引里的一个字段。
+     * 但「项目存在」这件事仍需要一个可判定的凭据 —— 否则新建的空项目
+     * 既不在磁盘、也不在索引，`/api/list` 会判它「不存在」，
+     * 建完就 404（实测）。所以在索引里登记一条**项目根目录条目**（virtualPath=''）。
+     * 索引不可用时回落到原来的物理目录逻辑，保持老部署行为。 */
+    const fi = this.fileIndexOrNull()
+    if (fi && typeof fi.createDir === 'function') {
+      try {
+        const created = fi.createDir(project, '')
+        if (created !== null && created !== undefined) return true
+      } catch { /* 索引异常 → 回落物理目录 */ }
+    }
     const dir = resolve(this.dataRoot, project)
     if (existsSync(dir)) return false
     await mkdir(dir, { recursive: true })
@@ -1189,6 +1633,18 @@ export class PrivHubStore extends Service {
   /** 在项目内某子目录下新建文件夹 */
   async createFolder(project: string, subPath: string, name: string): Promise<boolean> {
     if (!this.isValidName(name)) return false
+    /* v6 扁平化：目录是纯虚拟的，磁盘上不建任何东西，只在索引里登记。
+     * 父目录的存在性也要问索引（磁盘上没有项目目录，existsSync 永远 false）。 */
+    const fi = this.fileIndexOrNull()
+    if (fi && typeof fi.createDir === 'function') {
+      try {
+        const vp = joinVirtualPath(subPath, name)
+        const dup = typeof fi.getByPath === 'function' ? fi.getByPath(project, vp) : null
+        if (dup) return false
+        const created = fi.createDir(project, vp)
+        if (created !== null && created !== undefined) return true
+      } catch { /* 索引异常 → 回落物理目录 */ }
+    }
     const parent = this.resolveInProject(project, subPath)
     if (parent === null || !existsSync(parent)) return false
     const dir = join(parent, name)
@@ -1197,6 +1653,26 @@ export class PrivHubStore extends Service {
     return true
   }
   async renameEntry(project: string, relPath: string, newName: string): Promise<boolean> {
+    /* v6 扁平化：改的是索引里的 virtualPath，物理池文件按 physicalId 命名，
+     * 不受改名影响 —— 这正是扁平化的好处之一（改名零字节搬动）。 */
+    if (!this.isValidName(newName)) return false
+    const fi = this.fileIndexOrNull()
+    if (fi && typeof fi.renameEntry === 'function') {
+      try {
+        const rel = normalizeRel(relPath)
+        const parentDir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
+        const vp = joinVirtualPath(parentDir, newName)
+        const dup = typeof fi.getByPath === 'function' ? fi.getByPath(project, vp) : null
+        if (dup) return false
+        const e = typeof fi.getByPath === 'function' ? fi.getByPath(project, rel) : null
+        const id = (e as { id?: unknown } | null)?.id
+        if (typeof id === 'string' && id !== '') {
+          /* fileindex.renameEntry 返回 FileEntry（成功）或 null（失败），不是计数。 */
+          const renamed = (fi.renameEntry as (x: string, y: string) => unknown)(id, newName)
+          if (renamed !== null && renamed !== undefined) return true
+        }
+      } catch { /* 索引异常 → 回落物理改名 */ }
+    }
     const base = resolve(this.dataRoot, project)
     const target = resolve(base, relPath)
     if (target === base || !target.startsWith(base + sep) || !this.isValidName(newName)) return false
@@ -1235,8 +1711,29 @@ export class PrivHubStore extends Service {
   }
 
   /** 软删除：把项目内条目移入 .trash，并记一条回收站记录。
-   *  D6：整段「读列表 → 追加 → 写回」持锁，否则并发删除会互相覆盖记录。 */
+   *  D6：整段「读列表 → 追加 → 写回」持锁，否则并发删除会互相覆盖记录。
+   *
+   *  v6：**索引优先** —— 主索引里能找到该条目时，删除只是打 trashed 标记，
+   * 物理字节一个都不动（用户拍板：「文件实际上还在原先的物理位置」）。
+   *  这样少两次磁盘搬迁，且「新旧对比」天然可做（索引记着 trashedFrom）。
+   *  索引不可用 / 查不到（老数据、索引未扫描）时，回退到原来的物理实现 ——
+   *  **否则存量文件会无法删除**。 */
   async moveToTrash(project: string, relPath: string, operator: string): Promise<boolean> {
+    /* ① 虚拟回收站：只标记，不搬字节。 */
+    const fi = (this.ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+      .reflect?.get?.('fileindex', false) as
+      { getByPath?: (p: string, v: string) => { id?: unknown; trashed?: unknown } | null; trashEntry?: (id: string, op: string) => number } | undefined
+    if (fi && typeof fi.getByPath === 'function' && typeof fi.trashEntry === 'function') {
+      try {
+        const e = fi.getByPath(project, relPath)
+        if (e && typeof e.id === 'string' && e.trashed !== true) {
+          const n = fi.trashEntry(e.id, operator)
+          if (n > 0) return true
+        }
+      } catch { /* 索引异常 → 走物理回退，绝不因索引故障而删不掉文件 */ }
+    }
+
+    /* ② 物理回退（改造前实现，原样保留）。 */
     const base = resolve(this.dataRoot, project)
     const target = resolve(base, relPath)
     if (target === base || !target.startsWith(base + sep) || !existsSync(target)) return false
@@ -1359,13 +1856,42 @@ export class PrivHubStore extends Service {
 
   /** 清理超过 30 天的回收站条目（物理删除）。D6：整段读改写持锁。 */
   async purgeExpiredTrash(ttlMs: number): Promise<number> {
+    /* 守卫必须**第一个**执行，先于任何删除动作（含索引条目）。
+     * 这是「无人盯着的最危险路径」：定时器自己跑，根错配时会在错误的库上
+     * 静默删文件。索引那一轮虽然只动元数据，但它会 `releasePhysical` 删池里
+     * 的字节 —— 那也是真删。所以顺序是「先验根，再删」，不能反。 */
     const guard = this.trashRootGuard()
     if (!guard.ok) {
-      /* 定时清理最危险：没人盯着，根错配时会在错误的库上静默删文件。
-       * 这里直接一条都不删（返回 0），并留下显式日志。 */
       console.error('[trash] 定时清理已中止：' + guard.reason)
       return 0
     }
+
+    /* v6 虚拟回收站：条目只在索引里（`trashed=true`），字节还在池里。
+     * 物理循环看不到它们，所以必须单独扫一遍索引，否则「回收站到期自动清理」
+     * 对扁平化之后的文件**完全不生效** —— 池只会越来越大。 */
+    let indexPurged = 0
+    try {
+      const fi = this.fileIndexOrNull() as
+        { listTrash?: () => unknown[]; removeEntry?: (id: string) => unknown; releasePhysical?: (pid: string) => unknown } | null
+      if (fi && typeof fi.listTrash === 'function' && typeof fi.removeEntry === 'function') {
+        const now = Date.now()
+        const rows = fi.listTrash()
+        for (const r of rows) {
+          const e = r as { id?: unknown; trashedAt?: unknown; physicalId?: unknown }
+          const at = typeof e.trashedAt === 'number' && Number.isFinite(e.trashedAt) ? e.trashedAt : 0
+          if (at === 0 || now - at <= ttlMs) continue
+          const id = typeof e.id === 'string' ? e.id : ''
+          if (id === '') continue
+          try {
+            fi.removeEntry(id)
+            const pid = typeof e.physicalId === 'string' ? e.physicalId : ''
+            if (pid !== '' && typeof fi.releasePhysical === 'function') fi.releasePhysical(pid)
+            indexPurged++
+          } catch { /* 单条失败不影响其余 */ }
+        }
+      }
+    } catch { /* 索引故障不阻断物理清理 */ }
+
     return this.withFileLock(this.trashFile, async () => {
       const list = await this.loadTrash()
       const now = Date.now()
@@ -1388,7 +1914,7 @@ export class PrivHubStore extends Service {
       if (expired.length > 0) {
         await this.saveTrash(list.filter((r) => now - r.deletedAt <= ttlMs))
       }
-      return expired.length
+      return expired.length + indexPurged
     })
   }
 }

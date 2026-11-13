@@ -251,6 +251,19 @@ const CSS = `
 .ad-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--admin-text-muted); cursor: pointer; }
 .ad-dim { font-size: 12px; color: var(--admin-text-muted); }
 
+/* ============ 表单字段（存储迁移等自渲染面板复用） ============ */
+.ad-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.ad-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--admin-text-muted); }
+.ad-field .ad-input { width: 100%; box-sizing: border-box; }
+.ad-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+/* 悬停说明图标：只做提示，不抢焦点 */
+.ad-help { cursor: help; opacity: .7; font-size: 12px; }
+.ad-help:hover { opacity: 1; }
+
+/* ============ 进度条 ============ */
+.ad-progress { height: 8px; border-radius: 4px; background: var(--admin-border); overflow: hidden; margin-top: 6px; }
+.ad-progress-bar { height: 100%; background: var(--admin-primary); transition: width .3s ease; }
+
 /* ============ 概览卡片 ============ */
 .ad-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .ad-card {
@@ -517,6 +530,23 @@ const CSS = `
   .admin-root .ad-ld.show-detail .ad-ld-detail { display: flex; }
   .admin-root .ad-detail-toggle { display: inline-flex; }
 }
+
+/* ---- 存储卷面板 ---- */
+.st-bar-track {
+  height: 8px;
+  background: var(--ad-line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.st-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width .3s ease;
+}
+.st-bar-ok { background: #3aa76d; }
+.st-bar-warn { background: #d9a441; }
+.st-bar-danger { background: #d9534f; }
+.st-bar-off { background: #999; width: 100% !important; opacity: .35; }
 `
 
 /* import 即注入：<style> 只插一次（同插件的模块可能被多次 import）。 */

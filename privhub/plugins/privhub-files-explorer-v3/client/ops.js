@@ -8,7 +8,7 @@
  */
 
 import { api, nav, bus, AUTH } from './deps.js'
-import { tabKey, isEditableText, relPath, uiZoom, EXT } from './utils.js'
+import { tabKey, isEditableText, relPath, uiZoom, EXT, downloadUrl } from './utils.js'
 import { store } from './store.js'
 import { persistTabs, openTab, activateTab } from './tabs.js'
 import { loadContent } from './content.js'
@@ -114,7 +114,7 @@ async function doCopyHere() {
   const ext = dot > 0 ? m.entry.name.slice(dot) : ''
   const copyName = base + '（副本）' + ext
   try {
-    const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(m.project) + '&path=' + encodeURIComponent(rel), {
+    const r = await fetch(downloadUrl(m.project, rel), {
       headers: { authorization: 'Bearer ' + AUTH.token },
     })
     if (!r.ok) { window.PrivHub.toast('复制失败（HTTP ' + r.status + '）', 'error'); return }
@@ -206,7 +206,7 @@ async function doDownload() {
   closeMenu()
   if (!m || m.entry.isDir) return
   try {
-    const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(m.project) + '&path=' + encodeURIComponent(relPath(m.project, m.dirPath, m.entry.name)), {
+    const r = await fetch(downloadUrl(m.project, relPath(m.project, m.dirPath, m.entry.name)), {
       headers: { authorization: 'Bearer ' + AUTH.token },
     })
     if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }

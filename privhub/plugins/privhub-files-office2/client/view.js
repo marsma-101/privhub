@@ -5,9 +5,55 @@
   const project = QS.get('project') || ''
   const path = QS.get('path') || ''
   const name = QS.get('name') || path.split('/').pop() || 'file'
+  const fileId = QS.get('id') || ''
   const ext = (name.split('.').pop() || '').toLowerCase()
   const token = localStorage.getItem('privhub_token') || ''
   const $ = (id) => document.getElementById(id)
+
+  /* ---------- 文件内容 URL（本插件**唯一**一处；与 explorer-v3/utils.js 同口径） ----------
+   *
+   * 读路径两条：
+   *   ① `/f/<fileId>` —— nginx 按主索引的稳定 ID 直读（新）。URL 里只有不透明 ID，
+   *      没有项目名/虚拟路径 ⇒ 无需编码，改名移动也不换地址。
+   *   ② `/privhub/api/office2/raw?project=&path=` —— **必须保留**的老路：
+   *      `id` 缺省（老标签 / 索引未就绪 / 宿主没传）时必须走它，否则存量文件打不开。
+   *
+   * 为什么不能 import explorer-v3 的 utils.js：no-build + `tests/integrity.mjs` 要求
+   * 插件 client 模块只引用**同目录**文件；而本文件还不是模块（是 view.html 里的普通脚本）。
+   * 于是这里放一份同口径镜像，三处（utils.js / frontend/index.html / 本文件）互相点名。
+   * ⚠ 直读路由若还没在该部署的 nginx 上生效，`/f/` 会 404 或给出解不了的字节 ——
+   * 所以 `fetchBytes` 在失败时**自动回退**老接口，用户只会多等一次请求。 */
+  const FILE_ID_RE = /^[A-Za-z0-9_-]+$/
+  function fileContentUrl(id) {
+    const s = typeof id === 'string' ? id.trim() : ''
+    if (s === '' || !FILE_ID_RE.test(s)) return ''
+    return '/f/' + s
+  }
+  const legacyRawUrl = () => '/privhub/api/office2/raw?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
+  /* 下载仍走 `/api/download`（要文件名 / Content-Disposition / 服务端解密），
+   * 和 explorer-v3/utils.js 的 `downloadUrl` 同口径 —— 本页也不能各自拼一份。 */
+  const downloadUrl = () => '/privhub/api/download?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
+
+  /**
+   * 取原始字节（ArrayBuffer）。直读优先、老接口兜底。
+   * 回退条件只看 HTTP 成败：`/f/` 是 404（路由没上）或 403（授权没过）都回老路 ——
+   * 老路上服务端会给出**具体的**中文原因，比这里猜有用。
+   */
+  async function fetchBytes() {
+    const direct = fileContentUrl(fileId)
+    if (direct) {
+      try {
+        const r = await fetch(direct, { credentials: 'same-origin' })
+        if (r.ok) return await r.arrayBuffer()
+        console.warn('[office2] 直读 ' + direct + ' 返回 HTTP ' + r.status + '，回退 /api/office2/raw')
+      } catch (e) {
+        console.warn('[office2] 直读 ' + direct + ' 网络失败，回退 /api/office2/raw：', e)
+      }
+    }
+    const r = await fetch(legacyRawUrl(), { headers: { authorization: 'Bearer ' + token } })
+    if (!r.ok) throw new Error('读取失败 HTTP ' + r.status)
+    return await r.arrayBuffer()
+  }
 
   /* 单独打开本页时才显示文件名——被 V3 内容区以 iframe 嵌入时，文件名由标签栏承担，
    * 本页再显示一次就会形成重复（用户反馈的「三层顶栏、文件名三次」）。 */
@@ -184,7 +230,7 @@
   /* ---------- 按钮绑定 ---------- */
   $('btn-download').onclick = () => {
     const a = document.createElement('a')
-    a.href = '/privhub/api/download?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
+    a.href = downloadUrl()
     a.download = name
     a.click()
   }
@@ -227,11 +273,7 @@
     $('loading').style.display = 'flex'
     $('docx').style.display = 'none'
     try {
-      const r = await fetch('/privhub/api/office2/raw?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path), {
-        headers: { authorization: 'Bearer ' + token },
-      })
-      if (!r.ok) throw new Error('读取失败 HTTP ' + r.status)
-      const buf = await r.arrayBuffer()
+      const buf = await fetchBytes()
       await docx.renderAsync(buf, $('docx'), null, { inWrapper: true, ignoreWidth: false, ignoreHeight: false })
       $('loading').style.display = 'none'
       $('docx').style.display = 'block'

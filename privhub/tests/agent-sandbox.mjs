@@ -215,7 +215,12 @@ export function build() {
      * 第一版用例只用了 Agent 写入，于是「去掉 RAG 的个人空间拦截」这个变异
      * 测试依然全绿（敏感性验证实测到了这个假保险）。 */
     const name = PFX + 'leak-canary.md'
-    const up = await uploadFile(userToken, realName, PROJECT, name, '# 私人内容 ' + rand)
+    /* 上传到个人空间的**根**（path=''）。
+     * 早期这里传的是 PROJECT（'公共'）当子目录，靠老布局 `mkdir -p` 的隐式副作用
+     * 才建得出来；扁平化后「目录是否存在」由主索引裁决，不存在的子目录按 JT-05
+     * 的约定返回 400。本用例要验的是「个人空间不进 RAG」，与子目录无关，
+     * 所以直接用根目录，不依赖任何隐式建目录行为。 */
+    const up = await uploadFile(userToken, realName, '', name, '# 私人内容 ' + rand)
     ok(up.json && up.json.ok, '网页上传到个人空间失败：' + up.text.slice(0, 160))
 
     const corpus = await GET('/privhub/api/rag/corpus', { token: admin })
@@ -231,7 +236,7 @@ export function build() {
     ok(!leaked, '个人空间目录名【不得】出现在 RAG 语料清单里（管理员端可见该清单）')
 
     // 断言有效性自检：文件确实躺在个人空间里（否则"没泄露"可能只是因为压根没上传成功）
-    const rl = await GET('/privhub/api/list?' + new URLSearchParams({ project: realName, path: PROJECT }), { token: userToken })
+    const rl = await GET('/privhub/api/list?' + new URLSearchParams({ project: realName, path: '' }), { token: userToken })
     ok((rl.json?.entries || []).some((e) => e.name === name), '金丝雀文件确实在个人空间内（保证上条断言不是空断言）')
 
     // 同时确认索引侧也没有：全文检索不应命中个人空间

@@ -83,18 +83,26 @@ const GUARD_PATHS: Record<string, Partial<Record<string, MethodGuard>>> = {
   '/privhub/api/versions/snapshot': { POST: { action: 'view', fromBody: true } },
   '/privhub/api/versions/restore': { POST: { action: 'edit', fromBody: true } },
 
-  /* trash：恢复=写回项目（edit），彻底删除=delete；按 trash 记录 id 定位原路径 */
+  /* trash：恢复=写回项目（edit），彻底删除=delete；按 trash 记录 id 定位原路径
+   *
+   * v6：回收站条目可能只在**主索引**里（虚拟回收站 —— 物理字节留在池里，
+   * 只有索引标记 trashed）。所以先查物理 trash.json，查不到再查索引，
+   * 两处都没有才交回原 handler。只查物理会让虚拟条目全部落到「无法解析」分支。 */
   '/privhub/api/trash-list': { GET: { action: 'view' } },
   '/privhub/api/trash-restore': {
     POST: { action: 'edit', fromBody: true, bodyField: 'id', resolve: async (svc, body) => {
-      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === String(body?.id ?? ''))
-      return rec ? { project: rec.project, path: rec.relPath ?? '' } : null
+      const id = String(body?.id ?? '')
+      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === id)
+      if (rec) return { project: rec.project, path: rec.relPath ?? '' }
+      return resolveIndexTrash(svc, id)
     } },
   },
   '/privhub/api/trash-purge': {
     POST: { action: 'delete', fromBody: true, bodyField: 'id', resolve: async (svc, body) => {
-      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === String(body?.id ?? ''))
-      return rec ? { project: rec.project, path: rec.relPath ?? '' } : null
+      const id = String(body?.id ?? '')
+      const rec = (await svc.loadTrash()).find((r: { id: string }) => r.id === id)
+      if (rec) return { project: rec.project, path: rec.relPath ?? '' }
+      return resolveIndexTrash(svc, id)
     } },
   },
   // trash-clean：adminOnly（清空回收站）——不纳入文件级 ACL
@@ -127,7 +135,41 @@ const GUARD_PATHS: Record<string, Partial<Record<string, MethodGuard>>> = {
   '/privhub/api/publish/list': { GET: { action: 'view' } },
 }
 
+/**
+ * v6 虚拟回收站：按记录 id 在**主索引**里定位被删条目。
+ *
+ * 索引里的条目 id 就是 fileId（`F...`），`trashedFrom` 是删除前所在目录。
+ * 用 `ctx.reflect.get('fileindex', false)` 而不是注入：索引是可选能力，
+ * 老部署没有它也必须能跑（此时返回 null，走物理分支）。
+ *
+ * 模块级 holder 是因为 GUARD_PATHS 是模块常量，拿不到 apply 里的 ctx。
+ */
+let aclCtxRef: Context | null = null
+
+async function resolveIndexTrash(
+  _svc: unknown,
+  id: string,
+): Promise<{ project: string; path: string } | null> {
+  if (id === '') return null
+  try {
+    const fi = (aclCtxRef as unknown as {
+      reflect?: { get?: (n: string, s?: boolean) => unknown }
+    } | null)?.reflect?.get?.('fileindex', false) as
+      { get?: (x: string) => unknown } | undefined
+    const e = fi?.get?.(id) as
+      { project?: unknown; trashed?: unknown; trashedFrom?: unknown; virtualPath?: unknown } | undefined
+    if (!e || e.trashed !== true) return null
+    const project = typeof e.project === 'string' ? e.project : ''
+    if (project === '') return null
+    const dir = typeof e.trashedFrom === 'string' ? e.trashedFrom : ''
+    const vp = typeof e.virtualPath === 'string' ? e.virtualPath : ''
+    /* ACL 要判定的是「原本所在目录」：恢复动作等价于往那个目录写。 */
+    return { project, path: dir !== '' ? dir : vp }
+  } catch { return null }
+}
+
 export function apply(ctx: Context): void {
+  aclCtxRef = ctx
   const svc = ctx.privhub
   const acl = ctx.acl
   const web = ctx.webServer as unknown as {
@@ -153,9 +195,23 @@ export function apply(ctx: Context): void {
         const raw = await readBody(req).catch(() => '')
         let body: any = null
         try { body = JSON.parse(raw) } catch { /* 非 JSON：交回原 handler 报 400 */ }
+        /* 重放 body：原 handler 的 readBody 在 PassThrough 上正常工作。
+         * 必须**无条件**重放 —— req 已经被上面 readBody 读空，任何「交回原 handler」
+         * 的分支若不重放，原 handler 的 readBody 就永远等不到数据，请求会挂死到超时
+         * （不是 400，是没有任何响应）。v6 虚拟回收站条目不在物理 trash.json 里，
+         * resolve 返回 null 正好走这条路径，实测就是挂死。 */
+        const replay = (): void => {
+          const stream = new PassThrough()
+          stream.write(raw, 'utf8')
+          stream.end()
+          ;(stream as unknown as { url?: string }).url = req.url
+          ;(stream as unknown as { method?: string }).method = req.method
+          ;(stream as unknown as { headers?: unknown }).headers = req.headers
+          void handler(stream, res)
+        }
         if (spec.resolve && body) {
           const r = await spec.resolve(svc, body).catch(() => null)
-          if (!r) return handler(req, res) // 无法解析（条目不存在等）：交回原 handler（404/403）
+          if (!r) { replay(); return } // 无法解析（条目不存在等）：交回原 handler（404/403）
           project = r.project
           relPath = r.path
         } else {
@@ -164,14 +220,8 @@ export function apply(ctx: Context): void {
         }
         const d = acl.can(u, spec.action, project, relPath)
         if (d && !d.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
-        // 重放 body：原 handler 的 readBody 在 PassThrough 上正常工作
-        const replay = new PassThrough()
-        replay.write(raw, 'utf8')
-        replay.end()
-        ;(replay as unknown as { url?: string }).url = req.url
-        ;(replay as unknown as { method?: string }).method = req.method
-        ;(replay as unknown as { headers?: unknown }).headers = req.headers
-        return handler(replay, res)
+        replay()
+        return
       }
       try {
         const url = new URL(req.url ?? '/', 'http://x')

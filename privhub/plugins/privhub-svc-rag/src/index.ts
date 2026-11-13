@@ -476,6 +476,29 @@ async function rebuild(ctx: Context): Promise<{ scanned: number; updated: number
   const manifest = await loadManifest(ctx)
   const projects = await ctx.privhub.allProjects()
   const seen = new Set<string>()
+  /* v6 扁平化：磁盘上没有项目目录，`resolveReal(project, '')` 拿不到可 readdir 的根
+   * ⇒ 语料库会整片空掉（「个人空间不进 RAG」这类断言会因"两边都空"而假通过）。
+   * 优先用主索引的 `listDir` 递归，索引不可用时回退磁盘遍历。 */
+  const fiWalk = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+    .reflect?.get?.('fileindex', false) as
+    { listDir?: (p: string, v: string) => Array<{ name?: unknown; isDir?: unknown; trashed?: unknown }> } | undefined
+  const useIndex = !!(fiWalk && typeof fiWalk.listDir === 'function')
+  /** 从索引递归收集某项目下的全部文件相对路径。 */
+  const listIndex = (project: string, rel = ''): string[] => {
+    const out: string[] = []
+    const walkIdx = (dir: string): void => {
+      for (const e of fiWalk!.listDir!(project, dir)) {
+        const nm = String(e?.name ?? '')
+        if (nm === '' || nm.startsWith('.')) continue
+        if (e?.trashed === true) continue
+        const child = dir === '' ? nm : dir + '/' + nm
+        if (e?.isDir === true) walkIdx(child)
+        else out.push(child)
+      }
+    }
+    walkIdx(rel)
+    return out
+  }
   const walk = async (project: string, rel: string): Promise<void> => {
     const dir = await ctx.privhub.resolveReal(project, rel)
     if (dir === null || !existsSync(dir)) return
@@ -494,7 +517,21 @@ async function rebuild(ctx: Context): Promise<{ scanned: number; updated: number
       }
     }
   }
-  for (const p of projects) await walk(p, '')
+  /* 索引可用时走虚拟路径（扁平池唯一权威来源），否则回退磁盘遍历。 */
+  if (useIndex) {
+    for (const p of projects) {
+      for (const child of listIndex(p)) {
+        const id = docIdOf(p, child)
+        seen.add(id)
+        stats.scanned++
+        const beforeHash = manifest[id]?.hash
+        await ingestDoc(ctx, p, child, undefined, manifest)
+        if (manifest[id]?.hash !== beforeHash) stats.updated++
+      }
+    }
+  } else {
+    for (const p of projects) await walk(p, '')
+  }
   const gone = Object.keys(manifest).filter((id) => !seen.has(id))
   for (const id of gone) {
     delete manifest[id]
@@ -611,8 +648,34 @@ function dupSizeText(n: number): string {
   return (n / 1024 / 1024).toFixed(1) + ' MB'
 }
 
-/** 递归收集项目内全部文件（跳过隐藏项/专属空间，与语料摄取一致） */
+/** 递归收集项目内全部文件（跳过隐藏项/专属空间，与语料摄取一致）
+ *
+ *  v6 扁平化：磁盘上没有项目目录了，`resolveReal(project, '')` 拿不到可 readdir 的根
+ *  ⇒ 查重会「一份文件都扫不到」。所以优先用主索引的 `listDir` 递归；
+ *  索引不可用时才回退到原来的磁盘遍历（老布局）。 */
 async function walkProjectFiles(ctx: Context, project: string): Promise<DupFileEntry[]> {
+  const fi = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+    .reflect?.get?.('fileindex', false) as
+    { listDir?: (p: string, v: string) => Array<{ name?: unknown; isDir?: unknown; size?: unknown; mtime?: unknown; trashed?: unknown }> } | undefined
+  if (fi && typeof fi.listDir === 'function') {
+    try {
+      const out: DupFileEntry[] = []
+      const walk = (dir: string): void => {
+        for (const e of fi.listDir!(project, dir)) {
+          const nm = String(e?.name ?? '')
+          if (nm === '' || nm.startsWith('.')) continue
+          if (e?.trashed === true) continue
+          const childRel = dir === '' ? nm : dir + '/' + nm
+          if (e?.isDir === true) { walk(childRel); continue }
+          const size = typeof e?.size === 'number' ? e.size : 0
+          const mt = typeof e?.mtime === 'number' ? new Date(e.mtime).toISOString() : ''
+          out.push({ name: nm, path: childRel, size, mtime: mt })
+        }
+      }
+      walk('')
+      return out
+    } catch { /* 索引异常 → 回退磁盘遍历 */ }
+  }
   const root = await ctx.privhub.resolveReal(project, '')
   if (root === null) return []
   const out: DupFileEntry[] = []

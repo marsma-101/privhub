@@ -8,7 +8,7 @@
  */
 
 import { api, nav, bus, AUTH, fileIcon } from './deps.js'
-import { isEditableText, relPath, tabKey, EXT, extOf } from './utils.js'
+import { isEditableText, relPath, tabKey, EXT, extOf, downloadUrl } from './utils.js'
 import { store } from './store.js'
 import { persistTabs, restoreTabs, openTab, activateTab, closeTab, closeOthers } from './tabs.js'
 import { refreshTree, treeOf } from './treecache.js'
@@ -459,7 +459,7 @@ const PanelV3 = {
       const t = this.activeTab
       if (!t) return
       try {
-        const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(t.project) + '&path=' + encodeURIComponent(t.path), {
+        const r = await fetch(downloadUrl(t.project, t.path), {
           headers: { authorization: 'Bearer ' + AUTH.token },
         })
         if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
@@ -477,7 +477,7 @@ const PanelV3 = {
       const t = this.activeTab
       if (!t) return
       // 内容区「ℹ️ 详情」：右侧详情面板显示该文件
-      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
+      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id || '' }
       nav.rightOpen = true
     },
     /* 内容区头部详情开关：开/关右侧详细信息面板 */
@@ -485,7 +485,7 @@ const PanelV3 = {
       const t = this.activeTab
       if (!t) return
       if (this.detailOpen) { nav.rightOpen = false; return }
-      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }
+      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id || '' }
       nav.rightOpen = true
     },
     /* ---- 预览字体大小（独立于页面字体） ---- */
@@ -647,7 +647,7 @@ const PanelV3 = {
       try {
         for (const e of files) {
           try {
-            const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(nav.project) + '&path=' + encodeURIComponent(nav.relPathOf(e.name)), {
+            const r = await fetch(downloadUrl(nav.project, nav.relPathOf(e.name)), {
               headers: { authorization: 'Bearer ' + AUTH.token },
             })
             if (!r.ok) continue
@@ -702,6 +702,38 @@ const PanelV3 = {
       const md = c.markdown !== undefined ? c.markdown : (c.office ? c.office.markdown : undefined)
       return md === undefined || md === null ? '' : renderMarkdown(md)
     },
+    /* 内容直链加载失败时切回老地址（`preview-raw`）。
+     *
+     * 为什么需要这一步：内容 URL 现在优先走 `/f/<id>`（nginx 直读），但这条路由
+     * **是另一个改动落地的**。在它还没上线、或某个部署的 nginx 没配这条 location 时，
+     * 直读会 404；而池里若是旧密文，静态直读还会"成功"返回一段解不了的字节。
+     * 这两种失败浏览器都只报一个 error 事件，JS 事先猜不出来 —— 所以由视图看到
+     * `content.fallbackUrl` 时就地切回去，用户感知到的只是"晚了几十毫秒才显示"。
+     *
+     * 只对 image / video / audio 生效：这三类元素的失败事件可靠。
+     * `<iframe>`（PDF）不接这条 —— 404 也能"成功"渲染一个错误页，没有可靠的失败信号，
+     * 假装能兜住反而会掩盖真问题（那条路的回退仍由 `contentUrls` 在构造时就定好）。 */
+    onContentError(ev) {
+      const c = this.content
+      if (!c || !c.fallbackUrl || !ev || !ev.target) return
+      const el = ev.target
+      /* 记的是**已经切到哪个地址**，不是一个布尔量：Vue 换文件时可能复用同一个
+       * <img>/<video> 节点，写死 `'1'` 会让下一个文件的失败被当成"已经回退过"而吞掉。
+       * 用地址比对，换文件后自然重新允许回退一次。 */
+      if (el.getAttribute('data-fallback-src') === c.fallbackUrl) return
+      el.setAttribute('data-fallback-src', c.fallbackUrl)
+      el.setAttribute('src', c.fallbackUrl)
+    },
+    /* lightbox 那一层同理：它显示的是 `store.lightbox`（内容区那张图的 URL 快照），
+     * 所以回退目标也取同一个 `content.fallbackUrl`。判据与上面一致 ——
+     * 只切一次，且两处都不同时制造新的 URL 字符串（口径仍只在 utils.js 里）。 */
+    onLightboxError(ev) {
+      const c = this.content
+      if (!c || !c.fallbackUrl || !ev || !ev.target) return
+      if (ev.target.getAttribute('data-fallback-src') === c.fallbackUrl) return
+      ev.target.setAttribute('data-fallback-src', c.fallbackUrl)
+      store.lightbox = c.fallbackUrl
+    },
     /* E3：长按功能发现性——首次进入面板提示一次 */
     maybeHint() {
       if (localStorage.getItem('privhub_longpress_hint')) return
@@ -720,7 +752,7 @@ const PanelV3 = {
       // openDir 会清零选中/右侧详情；标签仍激活 → 重新选中当前文件，详情面板保持打开
       const tab = store.tabs.find(x => x.key === store.activeKey)
       if (tab && nav.project === tab.project) {
-        nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type }
+        nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type, id: tab.id || '' }
         nav.rightOpen = true
       }
     })
@@ -839,11 +871,20 @@ const PanelV3 = {
                  ⚠ 兜底支路不是"这是坏文件"，是"浏览器解不了这个容器"：说清是哪一种 + 给下载入口，
                  与"该文件类型不支持在线查看"那句**分开**（后者会让人以为文件有问题）。
                  ⚠ 这段注释在模板串【里面】：一律不写反引号（会当场结束模板串，b 批踩过），
-                 也要紧挨着 v-if 那一支写 —— 夹在 v-if 与 v-else-if 中间会切断分支链。 -->
-            <div v-if="activeTab.kind === 'image'" class="v3-img-wrap"><img class="v3-img" style="cursor:zoom-in" :src="content.url" :alt="activeTab.name" @click="store.lightbox = content.url" /></div>
+                 也要紧挨着 v-if 那一支写 —— 夹在 v-if 与 v-else-if 中间会切断分支链。
+
+                 ── content.url 从哪来（本批改造）──
+                 由 content.js 的 loadContent 经 utils.js 的 contentUrls 决定：
+                 有主索引稳定 ID ⇒ /f/<id>（nginx 直读）；没有 ID ⇒ 老路 preview-raw。
+                 两者不同时还会带一把 content.fallbackUrl，于是 img / video / audio 上挂了
+                 @error="onContentError"：/f/ 那条路由在某些部署里还没生效（404）或池里是
+                 旧密文（字节解不了）时，浏览器报 error → 就地切回老地址，用户只多等一次请求。
+                 iframe（PDF）**没有**接这一条：404 也能"成功"渲染一个错误页，失败事件不可靠，
+                 与其假装兜住，不如让 contentUrls 在构造时就把路选对。 -->
+            <div v-if="activeTab.kind === 'image'" class="v3-img-wrap"><img class="v3-img" style="cursor:zoom-in" :src="content.url" :alt="activeTab.name" @error="onContentError" @click="store.lightbox = content.url" /></div>
             <div v-else-if="activeTab.kind === 'media'" class="v3-media-wrap">
-              <video v-if="content.mediaTag === 'video' && content.native" class="v3-media" :src="content.url" controls preload="metadata"></video>
-              <audio v-else-if="content.mediaTag === 'audio' && content.native" class="v3-media" :src="content.url" controls preload="metadata"></audio>
+              <video v-if="content.mediaTag === 'video' && content.native" class="v3-media" :src="content.url" controls preload="metadata" @error="onContentError"></video>
+              <audio v-else-if="content.mediaTag === 'audio' && content.native" class="v3-media" :src="content.url" controls preload="metadata" @error="onContentError"></audio>
               <div v-else class="v3-media-fallback">
                 <div style="font-size:28px">🎬</div>
                 <div style="font-size:13.5px">浏览器不支持该格式的内联播放</div>
@@ -975,7 +1016,7 @@ const PanelV3 = {
       <!-- 图片放大预览（lightbox） -->
       <div v-if="store.lightbox" class="modal-mask" style="background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center" @click.self="store.lightbox = null">
         <span style="position:fixed;top:16px;right:24px;font-size:24px;color:#fff;cursor:pointer;z-index:var(--z-modal-top,1101)" @click="store.lightbox = null">✕</span>
-        <img :src="store.lightbox" style="max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)" />
+        <img :src="store.lightbox" @error="onLightboxError" style="max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)" />
       </div>
 
       <!-- 权限弹窗 -->

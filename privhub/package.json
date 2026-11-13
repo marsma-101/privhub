@@ -5,7 +5,14 @@
   "type": "module",
   "description": "私域枢纽 PrivHub：纯 Cordis 底座 + 自研插件（文件管理系统）",
   "privhub": {
-    "runtimeCapabilities": ["freeze", "reload-state", "standby", "activate", "session-check", "store-check"]
+    "runtimeCapabilities": [
+      "freeze",
+      "reload-state",
+      "standby",
+      "activate",
+      "session-check",
+      "store-check"
+    ]
   },
   "scripts": {
     "start": "start.bat",
@@ -24,6 +31,7 @@
     "better-sqlite3": "^13.0.3",
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
+    "html-to-docx": "^1.8.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
     "pdf-lib": "^1.17.1",

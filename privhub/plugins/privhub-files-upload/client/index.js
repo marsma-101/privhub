@@ -237,7 +237,7 @@ const UploadController = {
       const base = this.takeDirTarget()
       const top = files[0]._relPath.split('/')[0]
       const dest = (base ? base + '/' : '') + top
-      if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + nav.project + '/' + dest + '」？同名文件将被覆盖。')) return
+      if (!confirm('上传文件夹「' + top + '」及其全部内容（' + files.length + ' 个文件）到「' + nav.project + '/' + dest + '」？遇到同名文件时会逐个询问是改名还是覆盖。')) return
       void this.uploadAll(files, base)
     },
     /* 确保目录树存在（递归上传需要）。project 显式传入：失败重试时可能已切项目，
@@ -249,6 +249,44 @@ const UploadController = {
         } catch { /* 已存在则忽略 */ }
       }
     },
+    /**
+     * 同名冲突交互：服务端 409 会带 `conflict: true` + `suggestName` + `options`。
+     * 用户选「改名」→ 用建议名（或自己输入）重传；选「覆盖」→ 带 overwrite=1 重传。
+     * 返回 true 表示已经处理完（成功或用户放弃），false 表示调用方照常当失败处理。
+     */
+    async resolveConflict(file, url, emitProgress, conflict) {
+      const suggested = conflict.suggestName || file._uploadName
+      const existing = conflict.existing
+      const detail = existing && Number.isFinite(Number(existing.size))
+        ? '（已存在，' + formatSize(Number(existing.size)) + '）'
+        : ''
+      /* 用 confirm 二选一，而不是自造弹窗：上传是高频操作，多一层 DOM 反而更慢。
+       * 文案把两个后果说清楚 —— 改名不会动原文件，覆盖会替换原文件。 */
+      const useRename = confirm(
+        '同名文件已存在：' + file._uploadName + detail + '\n\n'
+        + '「确定」= 改名为「' + suggested + '」后上传（原文件保持不变）\n'
+        + '「取消」= 覆盖原文件（原内容将被替换，不可恢复）',
+      )
+      if (useRename) {
+        const newName = suggested
+        const base = url.split('&name=')[0]
+        const newUrl = base + '&name=' + encodeURIComponent(newName)
+        const saved = file._uploadName
+        file._uploadName = newName
+        try {
+          const r = await xhrUpload(newUrl, file, AUTH.token, emitProgress)
+          if (r.status >= 200 && r.status < 300 && r.body && r.body.ok) return r.body
+          throw responseError(r)
+        } finally {
+          file._uploadName = saved
+        }
+      }
+      /* 覆盖：显式带上 overwrite=1 再来一次（服务端只在看到这个参数时才替换）。 */
+      const overUrl = url + '&overwrite=1'
+      const r2 = await xhrUpload(overUrl, file, AUTH.token, emitProgress)
+      if (r2.status >= 200 && r2.status < 300 && r2.body && r2.body.ok) return r2.body
+      throw responseError(r2)
+    },
     /** 单个文件上传 + 网络/5xx 自动退避重试。终态错误（413/409/401/403）立即抛出。 */
     async uploadOne(file, url, emitProgress) {
       let lastErr = null
@@ -256,6 +294,13 @@ const UploadController = {
         try {
           const r = await xhrUpload(url, file, AUTH.token, emitProgress)
           if (r.status >= 200 && r.status < 300 && r.body && r.body.ok) return r.body
+          /* 同名冲突：服务端回 409 且带 conflict 标记。
+           * 这不是错误，是一次需要用户决策的分叉 —— 交给 resolveConflict 处理，
+           * 它自己会重发一次带 overwrite=1 或改名后的请求。
+           * 必须放在 responseError 之前，否则会被当成「版本过期」直接抛掉。 */
+          if (r.status === 409 && r.body && r.body.conflict === true) {
+            return await this.resolveConflict(file, url, emitProgress, r.body)
+          }
           throw responseError(r)
         } catch (e) {
           lastErr = e instanceof UploadError ? e : new UploadError('网络错误', { retryable: true, status: 0 })

@@ -7,6 +7,25 @@
  *     （由 shell 的 app-iconbar 组件读取渲染；此前曾写 window.PrivHub.trashBadge
  *      这个无任何读取方的死变量，导致角标看起来「始终为 0」）
  *
+ * ## 与主索引的关系（2026-11 扁平化后已落地）
+ *
+ * 主索引（`privhub-svc-fileindex`）是回收站的**唯一数据源**：`/privhub/api/trash-list`
+ * 现在优先读索引里的 `trashed` 条目（返回 `source: 'index'`），物理 `trash.json`
+ * 只在索引不可用时兜底（`source: 'physical'`）。本视图不需要区分这两种来源。
+ *
+ * 关于 `t.id` 与 `t.fileId`：
+ *   - **物理回收站条目**：`id` 是回收站记录 id（`<时间戳>_<4字节hex>`，见 core 的
+ *     `moveToTrash`），`fileId` 为空 —— 这类条目是扁平化之前删的，还没有主索引身份。
+ *   - **虚拟回收站条目**：`id` 与 `fileId` **是同一个值**（主索引的 fileId，形如
+ *     `Fmwd...`）。这不是巧合也不是遗留瑕疵：扁平化后文件只有索引这一个身份，
+ *     回收站记录只是该条目上的一个 `trashed` 标记，不存在「记录 id ≠ 文件 id」。
+ *
+ * ⚠ 仍然不要把 `t.id` 直接拿去拼 `/f/<id>` 来预览回收站里的文件：
+ *   `/f/<id>` 只服务**未删除**的条目（`auth.ts` 会拒掉 `trashed === true`）。
+ *   想预览回收站内容，先恢复再预览。
+ *
+ * `restoreTrash` / `purgeTrash` 认的是 `t.id`，两种来源都用它，调用方无需分支。
+ *
  * @module privhub-trash-ui/client
  */
 

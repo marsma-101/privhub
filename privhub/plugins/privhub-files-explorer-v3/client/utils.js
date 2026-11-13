@@ -188,15 +188,137 @@ function textModeOf(name) {
   return ''
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * 文件内容 URL 工厂（前端**唯一**一处定义）
+ *
+ * 读路径有两条，都从本文件出发，别处不许再拼字符串：
+ *   ① 直读（新）：`/f/<fileId>` —— nginx 按主索引给的不透明 ID 直接吐字节。
+ *      URL 里只有 ID：不带项目名、不带虚拟路径 ⇒ 改名/移动不换 URL，也没有中文/空格/
+ *      `#`/`?` 的编码面（`fileId` 是 `[A-Za-z0-9]` 串，天然无需 `encodeURIComponent`）。
+ *   ② 回退（老路）：`/privhub/api/preview-raw?project=&path=` —— **必须保留**。
+ *      条目没有 `id` 的场合一个都不能当成异常：老数据、索引还没就绪（主索引首次扫描中）、
+ *      索引服务没挂、条目来自会话恢复的旧标签。任一处"没 ID 就报错/白屏"，
+ *      用户看到的都是"存量文件突然打不开了"。
+ *
+ * 谁来决定走哪条：**只有 `contentUrlFor` 一处**（`fileContentUrl` 拿不到合法 ID 就返回空串）。
+ * 调用方一律写成 `contentUrlFor(...)`，不要自己写 `id ? … : …` —— 那样回退逻辑就会分裂成 N 份，
+ * 将来改一半就会出现"列表能开、标签开不了"这种最难查的分裂行为。
+ *
+ * ⚠ 骨架（`frontend/index.html`）与 office2 的 iframe 页面（`view.html`）**无法 import 本文件**
+ *   （no-build + `tests/integrity.mjs`「插件 client 模块只引用同目录文件」），
+ *   它们各有一处**逐字同口径**的镜像，注释里互相点名。改口径时三处一起改。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 直读路由前缀（与 `runtime/nginx.conf.template` 的 `location ~ ^/f/…` 对应）。 */
+const FILE_CONTENT_PREFIX = '/f/'
+
+/** ID 的合法形状：只允许 URL 安全字符（不是"认识的 ID 才算"，是"不认识的一律不信"）。 */
+const FILE_ID_RE = /^[A-Za-z0-9_-]+$/
+
+/**
+ * 从文件名里取扩展名（小写、不含点；无扩展名返回空串）。
+ * 与后端 `fileindex/core.ts` 的 `extOf` 同口径 —— 两处必须一致，否则
+ * 「索引说 ext=x、URL 拼出来是 y」会让 nginx 按错的扩展名给 MIME。
+ */
+function extOfName(name) {
+  const n = typeof name === 'string' ? name : ''
+  const i = n.lastIndexOf('.')
+  if (i <= 0 || i === n.length - 1) return ''
+  return n.slice(i + 1).toLowerCase()
+}
+
+/**
+ * 文件内容的直读 URL：`/f/<fileId>.<ext>`。
+ *
+ * ## 为什么必须带扩展名（这不是美观问题，是功能问题）
+ *
+ * nginx 在处理 `X-Accel-Redirect` 后，**按 URL 的扩展名重算 `Content-Type`，
+ * 上游的 `Content-Type` 会被忽略**（实测：让 Node 发 `application/json` 去传
+ * `.mp4`，最终响应仍是 `video/mp4`）。
+ *
+ * 所以裸 `/f/<id>`（无扩展名）会让 nginx 落到 `default_type` =
+ * `application/octet-stream` —— 图片不显示、视频不播放、SVG 的严格 CSP 也挂不上。
+ * 这个差异**只在明文提速开启后出现**（默认走 Node 降级时 MIME 由 Node 正确给出），
+ * 所以本地不开明文测不出来，最容易漏。
+ *
+ * 扩展名只取最后一次点之后（`报告.tar.gz` → `gz`），与后端的 `extOf` 一致；
+ * 后端 `resolvePhysical` 也是用 `ext` 拼物理文件名，两边同一个口径。
+ *
+ * @param {string} fileId 主索引的稳定 ID
+ * @param {string} [name] 文件名（含扩展名）；不传则拼裸 ID（能读，但 MIME 会退化）
+ * @returns {string} 合法 ID → 直读地址；没有/形状不对 → **空串**（调用方据此回退老路）
+ */
+function fileContentUrl(fileId, name) {
+  const id = typeof fileId === 'string' ? fileId.trim() : ''
+  if (id === '' || !FILE_ID_RE.test(id)) return ''
+  const ext = extOfName(name)
+  return FILE_CONTENT_PREFIX + id + (ext ? '.' + ext : '')
+}
+
+/**
+ * **唯一决策点**：这个文件的内容该从哪读。
+ * 有稳定 ID ⇒ `/f/<id>.<ext>`；没有 ⇒ 原来的 `preview-raw`（存量数据必须照开）。
+ *
+ * `name` 是必须传的：它决定 URL 扩展名，而扩展名决定 nginx 给的 MIME。
+ */
+function contentUrlFor(project, path, fileId, name) {
+  /* name 缺省时从 path 的最后一段兜底 —— 调用方大多手上只有 path。 */
+  const fileName = typeof name === 'string' && name !== '' ? name : String(path ?? '').split('/').pop() ?? ''
+  return fileContentUrl(fileId, fileName) || rawUrl(project, path)
+}
+
+/**
+ * 内容记录用的 `{ url, fallbackUrl? }`：`url` 是**首选**，`fallbackUrl` 只在两者不同时出现。
+ *
+ * 为什么还要带一把回退：`/f/<id>` 是 nginx 侧的路由，蓝绿部署里才有。当前这条路由
+ * 由另一个改动落地（`runtime/nginx.conf.template` + `/api/file-auth`）；在它上线之前、
+ * 或某个部署里 nginx 没配这条 location，直读会 404、池里还是密文时浏览器会解码失败。
+ * 那种场合**浏览器才知道**（图片/音视频的 `error` 事件），所以把老地址一起交给模板，
+ * 由视图在失败时切回去 —— 而不是在 JS 里猜"路由在不在"。
+ *
+ * ⚠ 回退**不覆盖** PDF：`<iframe>` 的失败不可靠（404 也能"成功"渲染一个错误页），
+ * 这一条如实写在 panel.js 的模板注释里，不假装能兜住。
+ */
+function contentUrls(project, path, fileId, name) {
+  const primary = contentUrlFor(project, path, fileId, name)
+  const legacy = rawUrl(project, path)
+  return primary === legacy ? { url: primary } : { url: primary, fallbackUrl: legacy }
+}
+
 function rawUrl(project, path) {
   return '/privhub/api/preview-raw?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
 }
 
 /** 下载直链（`<a href>` 用）。与 `rawUrl` 成对：预览走 `preview-raw`、留存走 `download`。
- *  媒体兜底支路（浏览器播不了那种格式）给的就是这条 —— 「换个地方打开」是本仓一贯的出路写法。 */
+ *  媒体兜底支路（浏览器播不了那种格式）给的就是这条 —— 「换个地方打开」是本仓一贯的出路写法。
+ *
+ *  ⚠ 下载**不**改走 `/f/<id>`：下载要文件名（`Content-Disposition`）、要服务端解密，
+ *  这两件事都在 `/api/download` 里；`/f/` 只负责"把内容显示出来"。 */
 function downloadUrl(project, path) {
   return '/privhub/api/download?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path)
 }
+
+/**
+ * 把工厂挂到跨插件桥（`window.PrivHub`）上，其它插件一律从这里取。
+ * 为什么能这么做：`window.PrivHub` 本就是唯一的跨插件通道（`viewers` 注册表也是这么挂的），
+ * 而 utility 模块又不许跨插件 import —— 桥是唯一合法出口。
+ * `typeof window` 守卫是硬要求：`tests/file-exts.mjs` 把本文件装进 vm 取 `EXT`，那里没有 window。
+ */
+function publishFileUrlFactory() {
+  /* 两道守卫都是必需的，不是防御性冗余：
+   *   · `typeof window === 'undefined'` —— `tests/file-exts.mjs` 把本文件装进 vm 取 `EXT`，那里没有 window；
+   *   · `window` 存在但为 `null` —— `tests/personal-ui.mjs` 的沙箱显式给了 `window: null`
+   *     （只测纯函数，不测桥）。少了这一道，`window.PrivHub` 会当场 TypeError，把整个沙箱跑成红的。 */
+  const w = typeof window === 'undefined' ? null : window
+  if (!w) return
+  const P = w.PrivHub
+  if (!P) return
+  // 不覆盖既有实现：先到者为准（骨架/其它模块若已提供同口径函数，保留它）
+  if (typeof P.fileContentUrl !== 'function') P.fileContentUrl = fileContentUrl
+  if (typeof P.contentUrlFor !== 'function') P.contentUrlFor = contentUrlFor
+  if (typeof P.contentUrls !== 'function') P.contentUrls = contentUrls
+}
+publishFileUrlFactory()
 function relPath(project, dir, name) { return dir ? dir + '/' + name : name }
 
 /* 整体缩放（页面字体 A±）：fixed 弹层会随 html zoom 一起缩放，事件坐标（clientX / rect）同为
@@ -205,4 +327,9 @@ function uiZoom() {
   return parseFloat(getComputedStyle(document.documentElement).zoom) || 1
 }
 
-export { tabKey, kindOf, mediaTagOf, isNativeMedia, textModeOf, EXT, extOf, TEXT_EDIT_EXTS, isEditableText, rawUrl, downloadUrl, relPath, uiZoom }
+export {
+  tabKey, kindOf, mediaTagOf, isNativeMedia, textModeOf, EXT, extOf, TEXT_EDIT_EXTS, isEditableText,
+  rawUrl, downloadUrl, relPath, uiZoom,
+  /* 文件内容 URL 工厂（本文件是前端唯一出处；`contentUrlFor` / `contentUrls` 是唯一决策点） */
+  fileContentUrl, contentUrlFor, contentUrls, FILE_CONTENT_PREFIX, FILE_ID_RE,
+}

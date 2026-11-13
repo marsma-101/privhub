@@ -16,6 +16,13 @@ const SettingsPanel = {
       theme: THEME,
       maxUploadMB: 0,
       allowSelfRegister: true,
+      /* v6 存储布局：与后端 Settings 一一对应。
+       * 全部默认「原有行为」—— 地址留空走默认、加密保持开启。 */
+      dataFilesDir: '',
+      publicLinkDir: '',
+      tempUploadDir: '',
+      plainStorage: false,
+      storageSaved: false,
       saved: false,
       myName: '',
       nameBusy: false,
@@ -38,17 +45,22 @@ const SettingsPanel = {
     /** JT-01：两项都填了才允许提交（服务端还会再校验当前密码/长度/新旧不同） */
     canChangePw() { return this.curPw !== '' && this.newPw.length >= 6 && !this.pwBusy },
   },
-  async mounted() {
-    this.myName = this.currentName
-    try {
-      const r = await api('/privhub/api/settings')
-      if (r.ok) {
-        this.maxUploadMB = r.settings.maxUploadMB
-        // PLAN-04：自助注册开关（服务端已有，此前面板无入口）。缺省 = 开（与后端 DEFAULT 一致）。
-        this.allowSelfRegister = r.settings.allowSelfRegister !== false
-        // 后端设置的默认主题若与本地不同，以本地（用户选择优先）为准
-      }
-    } catch { /* 读取失败用默认值 */ }
+    async mounted() {
+      this.myName = this.currentName
+      try {
+        const r = await api('/privhub/api/settings')
+        if (r.ok) {
+          this.maxUploadMB = r.settings.maxUploadMB
+          // PLAN-04：自助注册开关（服务端已有，此前面板无入口）。缺省 = 开（与后端 DEFAULT 一致）。
+          this.allowSelfRegister = r.settings.allowSelfRegister !== false
+          /* v6 存储布局：读回当前值（空串表示「用默认」，不要渲染成 undefined）。 */
+          this.dataFilesDir = r.settings.dataFilesDir || ''
+          this.publicLinkDir = r.settings.publicLinkDir || ''
+          this.tempUploadDir = r.settings.tempUploadDir || ''
+          this.plainStorage = r.settings.plainStorage === true
+          // 后端设置的默认主题若与本地不同，以本地（用户选择优先）为准
+        }
+      } catch { /* 读取失败用默认值 */ }
     // JT-09：把服务器版本/运行时长露出来，出问题时用户能报出具体版本
     try {
       const h = await api('/privhub/api/health')
@@ -85,6 +97,40 @@ const SettingsPanel = {
       }
       this.allowSelfRegister = r.settings.allowSelfRegister !== false
       window.PrivHub.toast(this.allowSelfRegister ? '已开放自助注册' : '已关闭自助注册（新人需管理员建号或邀请码）')
+    },
+    /**
+     * 保存存储布局（v6）。
+     *
+     * 这几项**都需要重启才生效**（路径在进程启动第一条就被求值，加密开关在
+     * svc-storage 构造期固化），所以保存成功后必须明确提示「重启后生效」，
+     * 不能让人以为立刻就好了 —— 否则管理员会以为配错了。
+     */
+    async saveStorage() {
+      const patch = {
+        dataFilesDir: this.dataFilesDir,
+        publicLinkDir: this.publicLinkDir,
+        tempUploadDir: this.tempUploadDir,
+        plainStorage: this.plainStorage,
+      }
+      const r = await api('/privhub/api/settings', { method: 'POST', body: JSON.stringify(patch) }).catch(() => null)
+      if (!r || !r.ok) {
+        window.PrivHub.toast((r && r.error) || '保存失败', 'error')
+        return
+      }
+      /* 用服务端回写的值校准本地（避免「输入框里是我改的、实际存的是旧的」）。 */
+      const s = r.settings || {}
+      this.dataFilesDir = s.dataFilesDir || ''
+      this.publicLinkDir = s.publicLinkDir || ''
+      this.tempUploadDir = s.tempUploadDir || ''
+      this.plainStorage = s.plainStorage === true
+      const need = Array.isArray(r.restartRequired) ? r.restartRequired : []
+      this.storageSaved = true
+      setTimeout(() => { this.storageSaved = false }, 4000)
+      window.PrivHub.toast(
+        need.length > 0
+          ? '已保存，' + need.length + ' 项设置需重启服务后生效'
+          : '已保存（无变化）',
+      )
     },
     openAdmin() {
       this.$emit('close')
@@ -213,6 +259,66 @@ const SettingsPanel = {
               {{ allowSelfRegister ? '任何人可自行注册账号。' : '关闭后新人须由管理员建号，或走邀请码加入。' }}
             </div>
           </div>
+
+          <!-- ===== 存储布局（v6）：路径类与加密开关都需重启生效 ===== -->
+          <div v-if="isAdmin" style="margin-top:24px;padding-top:16px;border-top:1px solid rgba(128,128,128,.25)">
+            <div style="font-size:13px;color:var(--muted);margin-bottom:4px">存储布局</div>
+            <div class="field-hint" style="margin-bottom:14px">
+              下面几项在服务启动时生效，<b>改完需要重启</b>；重启前旧设置仍然有效。
+            </div>
+
+            <div class="field">
+              <label style="display:flex;align-items:center;gap:5px">
+                实际存储地址
+                <span style="cursor:help;opacity:.7;font-size:12px" title="项目文件真正存放的目录，所有文件最终落在这里">ℹ️</span>
+              </label>
+              <input v-model="dataFilesDir" placeholder="留空 = 使用默认位置" style="width:100%" />
+            </div>
+
+            <div class="field">
+              <label style="display:flex;align-items:center;gap:5px">
+                对外访问地址（软连接）
+                <span style="cursor:help;opacity:.7;font-size:12px" title="对外访问的入口地址；需与运维配置的 nginx 指向一致">ℹ️</span>
+              </label>
+              <input v-model="publicLinkDir" placeholder="留空 = 与实际存储地址相同" style="width:100%" />
+            </div>
+
+            <div class="field">
+              <label style="display:flex;align-items:center;gap:5px">
+                临时存储文件夹
+                <span style="cursor:help;opacity:.7;font-size:12px" title="上传先落这里；留空则用实际存储地址。建议指向独立 SSD">ℹ️</span>
+              </label>
+              <input v-model="tempUploadDir" placeholder="留空 = 用实际存储地址" style="width:100%" />
+            </div>
+
+            <!-- 上面三项此前只存进 data/settings.json（界面回显用），而启动期的根解析
+                 读的是 config/store.json —— 于是"保存成功、提示重启、重启后毫无变化"。
+                 现在三项会**双写**，这段说明把"生效位置"和"何时生效"讲清楚，
+                 避免用户改完不知道去哪验证。 -->
+            <div class="field-hint" style="margin-top:6px">
+              以上三项保存后写入 <code>config/store.json</code>，<strong>重启服务后生效</strong>。
+              填写的必须是绝对路径；留空表示恢复默认。
+            </div>
+
+            <div class="field" style="margin-top:14px">
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);cursor:pointer">
+                <input type="checkbox" v-model="plainStorage" style="width:16px;height:16px;cursor:pointer" />
+                文件库不加密存放（局域网可信环境可关闭）
+                <span style="cursor:help;opacity:.7;font-size:12px" title="关闭后文件以明文存放，nginx 才能直读；系统账号与审计记录始终加密">ℹ️</span>
+              </label>
+              <div class="field-hint" :style="plainStorage ? 'color:var(--warn)' : ''">
+                {{ plainStorage
+                  ? '⚠ 已开启：新写入的用户文件将以明文落盘。系统账号、会话、审计记录仍然加密。'
+                  : '保持加密（默认）。若需要 nginx 直读提速，才需要关闭。' }}
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+              <button class="btn btn-primary" style="width:auto" @click="saveStorage">保存存储设置</button>
+              <span v-if="storageSaved" style="color:var(--warn);font-size:12px">已保存，重启后生效</span>
+            </div>
+          </div>
+
           <div v-if="isAdmin" style="margin-top:20px">
             <div style="font-size:13px;color:var(--muted);margin-bottom:12px">管理员功能</div>
             <button class="btn btn-primary" style="width:auto" @click="openAdmin">👥 用户管理</button>

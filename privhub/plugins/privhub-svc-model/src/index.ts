@@ -35,11 +35,12 @@ export interface ModelEndpoint {
   model: string
   timeoutMs: number
 }
-export interface ModelConfig {
-  llm: ModelEndpoint
-  embedding: ModelEndpoint
-  maxRetries: number
-}
+/* 注：这里原先还有一个 `ModelConfig { llm, embedding, maxRetries }` —— 那是
+ * **单端点时代的旧形状**。多 profile 改造后真正的落盘形状在下方定义（带 profiles /
+ * activeId）。两个同名 interface 并存时 TS 会做声明合并，于是 `normalizeConfig()`
+ * 返回的新形状被判定为「缺少 llm / embedding」而报 7 个错 —— 类型在描述一个
+ * 已经不存在的世界。旧声明已删除；旧**文件**格式仍由 normalizeConfig 兼容读取。 */
+
 export type ModelHealth =
   | { status: 'unconfigured' }
   /** `dims` / `latencyMs` 只有**深度自检**（check(…, deep=true)）才会带上，见 deepCheckEmbedding */

@@ -1,0 +1,19 @@
+{
+  "name": "privhub-svc-fileindex",
+  "description": "PrivHub 能力 Service：服务端文件主索引 ctx.fileindex —— 虚拟路径/物理 ID 映射、扁平池定位、回收站标记、查重引用计数；加密 JSON 落盘，派生可重建",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

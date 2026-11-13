@@ -498,33 +498,37 @@ const coreSrc = readFileSync(join(ROOT, 'plugins/privhub-core/src/index.ts'), 'u
 ok(!/const\s+textExts\s*=/.test(coreSrc) && !/const\s+imgExts\s*=/.test(coreSrc),
   'core 里那两份手写字面量（`textExts` / `imgExts`）确实已经删掉，不再"共享了但没用"')
 
-/* `preview-raw` 的 mime 表：映射本身必须逐条写，但**键集**必须等于
- * `IMAGE_EXTS` ∪ `{pdf}` ∪ `MEDIA_EXTS`（音视频那一段是 2026-10-09 批新增的）。
- * 这条是「前后端两张清单不一致」（`.ico` 那次）在**后端一侧**的防复发断言。 */
-console.log('\n     ── preview-raw 的 mime 键集与 IMAGE_EXTS ∪ MEDIA_EXTS 对齐 ──')
-const FILES_SRC = join(ROOT, 'plugins', 'privhub-files', 'src', 'index.ts')
-const filesSrc = readFileSync(FILES_SRC, 'utf8')
-const mimeBlock = /const\s+mime\s*:\s*Record<string,\s*string>\s*=\s*\{([\s\S]*?)\}/.exec(filesSrc)
-/* 键允许带引号：`'3gp'` / `'3g2'` 这种**只可能**写成带引号的形式（数字开头不是合法标识符），
- * 不带引号的普通键照样命中。这次放宽是「音视频那批键」逼出来的 —— 它只会**多读到**键、
- * 不会漏读，所以这条断言只会因此更严（漏一个扩展名比以前更容易红）。 */
-const mimeKeys = mimeBlock
-  ? [...mimeBlock[1].matchAll(/(^|[,{\s])'?([a-z0-9]+)'?\s*:\s*'([^']+)'/g)].map((m) => m[2])
-  : []
-console.log('     [实测] preview-raw mime 键集 = ' + mimeKeys.join(','))
-ok(mimeKeys.length > 0, '能读到 `privhub-files` 的 preview-raw mime 表（读不到必红，不静默跳过）')
-ok(sameSet(mimeKeys, [...IMAGE_EXTS, 'pdf', ...MEDIA_EXTS]),
-  `preview-raw 的 mime 键集 = IMAGE_EXTS ∪ {pdf} ∪ MEDIA_EXTS（实测 ${mimeKeys.length} 项，期望 ${IMAGE_EXTS.length + 1 + MEDIA_EXTS.length} 项）`)
+/* `preview-raw` 的 MIME 现在**不再手写**，改读 `runtime/mime-map.json`。
+ *
+ * 这里曾经用正则去 `privhub-files/src/index.ts` 里抠一张 `const mime = {...}`
+ * 字面量表、再逐项比对键集。那类断言有两个毛病：
+ *   ① 它断言的是**实现形式**（源码里得有一个字面量对象），而不是**行为**；
+ *      把表改成读共享 JSON（功能等价甚至更好）就红了 —— 红得没道理。
+ *   ② 它逼着人保留一份手写副本，而那正是漂移的来源。
+ *
+ * 改成断言**共享 MIME 表本身**：键集覆盖图片/PDF/音视频，值的方向正确
+ * （音频 audio/*、视频 video/*），`.ico` 与 Markdown 都在。
+ * 真正"接口到底发什么 Content-Type"由下面的 HTTP 断言（`.ico` 那组）兜底。 */
+console.log('\n     ── 共享 MIME 表覆盖图片/PDF/音视频，且值的方向正确 ──')
+const MIME_MAP = join(ROOT, 'runtime', 'mime-map.json')
+ok(existsSync(MIME_MAP), '存在共享 MIME 表 runtime/mime-map.json（Node 与 nginx types{} 的同源真相）')
+const mimeVals = existsSync(MIME_MAP)
+  ? JSON.parse(readFileSync(MIME_MAP, 'utf8')).exts || {}
+  : {}
+const mimeKeys = Object.keys(mimeVals)
+console.log('     [实测] 共享 MIME 表键集 = ' + mimeKeys.join(','))
+ok(mimeKeys.length > 0, '能读到共享 MIME 表（读不到必红，不静默跳过）')
+ok([...IMAGE_EXTS, 'pdf', ...MEDIA_EXTS].every((e) => mimeKeys.includes(e)),
+  `共享 MIME 表覆盖 IMAGE_EXTS ∪ {pdf} ∪ MEDIA_EXTS（实测 ${mimeKeys.length} 项）`)
 ok(mimeKeys.includes('ico'),
-  'preview-raw 的 mime 表含 ico（`.ico` 前后端不一致那次的后端一侧防复发）')
-ok(['mp3', 'flac', 'mp4', 'mkv', '3gp'].every((e) => mimeKeys.includes(e)),
-  '音视频 mime 表含 mp3/flac/mp4/mkv/3gp（其中 `3gp` 是**带引号的键** —— 上面那条正则放宽就是为它）')
-/* mime 值的方向性：音频不许给 video/*、视频不许给 audio/*（"有键但值写反"是这张表最可能的漂法） */
-const mimeVals = mimeBlock ? Object.fromEntries([...mimeBlock[1].matchAll(/(^|[,{\s])'?([a-z0-9]+)'?\s*:\s*'([^']+)'/g)].map((m) => [m[2], m[3]])) : {}
+  '共享 MIME 表含 ico（`.ico` 前后端不一致那次的后端一侧防复发）')
+/* Markdown 是本系统最主要的类型 —— 它曾经直读变成 octet-stream，导致点开就下载。 */
+ok(mimeKeys.includes('md') && mimeKeys.includes('markdown'),
+  '共享 MIME 表含 md/markdown（直读时不再退化成 octet-stream）')
 ok(AUDIO_EXTS.every((e) => (mimeVals[e] || '').startsWith('audio/')),
-  '音频扩展名的 mime 值都是 audio/*（逐项查过，不是"有键就行"）')
+  '音频扩展名的 MIME 值都是 audio/*（逐项查过，不是"有键就行"）')
 ok(VIDEO_EXTS.every((e) => (mimeVals[e] || '').startsWith('video/')),
-  '视频扩展名的 mime 值都是 video/*（逐项查过，不是"有键就行"）')
+  '视频扩展名的 MIME 值都是 video/*（逐项查过，不是"有键就行"）')
 
 /* ══════════════════════════════════════════════════════════════════════════
  * ⑤ 端到端：本批补的扩展名现在真能打开（隔离实例 3197）

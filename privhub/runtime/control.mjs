@@ -649,6 +649,11 @@ function spawnSlot(slot, dir, { standby = false } = {}) {
     /* 待命槽在旧槽仍服务时预热：不跑后台写任务，等控制层 reload + activate。
      * 显式写 '0' 防止控制层自身环境里的同名变量被继承。 */
     PRIVHUB_STANDBY: standby ? '1' : '0',
+    /* 槽永远跑在 nginx 后面（模板把 3181 反代到槽端口），所以文件直读
+     * （X-Accel-Redirect）是安全可用的。显式告诉应用，别让它去猜转发头 ——
+     * 模板并没有设置 X-Real-IP，靠 header 判定会误判成"无 nginx"，
+     * 结果是每个字节又回到 Node 转发，读写分离静默失效。 */
+    PRIVHUB_BEHIND_NGINX: '1',
   }
   const df = computeDataFiles()
   if (df.explicit) env.PRIVHUB_DATA_FILES = df.dir
@@ -826,8 +831,117 @@ function nginxRunning() {
 
 function configPathValue(p) {
   const s = resolve(p).replace(/\\/g, '/')
-  if (/["`\r\n\0]/.test(s)) throw httpError(500, `路径含非法字符，拒绝写入 nginx 配置：${s}`, 'PRIVHUB_CONFIG_ESCAPE')
+  /* 这几个字符会破坏 nginx 配置或让它做意外替换，一律拒绝写进配置：
+   *   " `   —— 结束引号 / 命令替换语境
+   *   $     —— nginx **会**在配置里把 $xxx 当变量展开。路径里真出现 $ 时
+   *            （如目录名 `data$files`）渲染出的 alias 会被悄悄改写甚至报
+   *            unknown variable。没有安全转义手段（nginx 没有 $ 的转义），
+   *            所以直接拒绝并让人改目录名，比留下一个静默错路径好。
+   *   %     —— 路径会进 alias；nginx 对 location 里的 URI 做 percent-decode，
+   *            路径里的字面量 % 会让后续诊断极其困惑。同样拒绝。
+   *   还有 CR/LF/NUL —— 配置注入。 */
+  if (/["`$%\r\n\0]/.test(s)) {
+    throw httpError(500,
+      `路径含非法字符（" \` $ % 换行 NUL 之一），拒绝写入 nginx 配置：${s}`,
+      'PRIVHUB_CONFIG_ESCAPE')
+  }
   return s
+}
+
+/**
+ * nginx 内部落盘前缀的根（模板里的 `{{DATA_FILES_DIR}}`）。
+ *
+ * 为什么用 computeDataFiles() 而不是模块级常量：库根可能被 adopt-legacy /
+ * store.json 在启动流程中改写，而 renderNginxConfig() 会在那之后被调用
+ * （每次 serve/switch/init 都重渲染）。用常量会把旧根写进配置，症状是
+ * 文件直读全 404 而其它一切正常 —— 极难诊断。
+ *
+ * 为什么要求真实存在：nginx 的 alias 只在 open 时才发现路径不对，表现是
+ * 404/500。在渲染期拒绝，能让「库根配错」在启动时就说清楚。
+ */
+function dataFilesForNginx() {
+  const { dir } = computeDataFiles()
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+    throw httpError(500,
+      '文件库根不存在或不是目录，无法生成 nginx 直读前缀：' + dir
+      + '\n请检查 ' + STORE_CONF_FILE + ' 的 dataFiles 或环境变量 PRIVHUB_DATA_FILES。',
+      'PRIVHUB_DATA_FILES_MISSING')
+  }
+  return dir
+}
+
+/**
+ * 生成多卷直读的 nginx location 块（模板占位符 `{{VOLUME_LOCATIONS}}`）。
+ *
+ * ## 为什么需要它
+ *
+ * 单卷时代整个文件库只有一个 alias（`{{DATA_FILES_DIR}}/`）。多卷时字节散在
+ * 不同盘上，nginx 必须为每个卷配一条 `location` + `alias`，否则直读会 404。
+ *
+ * ## 卷信息从哪来
+ *
+ * 读 `config/volumes.json` —— 由 `privhub-svc-volumes` **双写**的明文映射
+ * （加密那份是 `data/volumes.json`，本文件读不了：control.mjs 是纯 Node，
+ * 不 import tsx，也没有 `ctx.storage` 的解密能力）。
+ *
+ * ## 失败时必须降级而不是抛错
+ *
+ * 这份文件不存在 / 坏了 / 某个卷根不可达，**都不能让 nginx 起不来**：
+ * 少了直读只是「大文件走 Node 中转慢一点」，而 nginx 起不来是**全站不可用**。
+ * 所以这里一律跳过有问题的卷并记一行日志。
+ *
+ * ## URI 段规则必须与 Node 侧逐字一致
+ *
+ * `privhub-svc-fileindex/src/auth.ts` 的 `volumeUriPrefixOf()`：
+ * `v-` + 卷id去掉前缀V + `--`。两处改一处就会 404，且症状极难定位
+ * （文件列表正常、点开就 404）。
+ */
+function volumeLocations() {
+  const file = join(HOME_DIR, 'config', 'volumes.json')
+  if (!existsSync(file)) return ''
+  let raw
+  try {
+    raw = JSON.parse(readFileSync(file, 'utf8'))
+  } catch (e) {
+    log(`[nginx] 读取 config/volumes.json 失败，多卷直读降级为 Node 中转：${e instanceof Error ? e.message : String(e)}`)
+    return ''
+  }
+  const list = Array.isArray(raw?.volumes) ? raw.volumes : []
+  const lines = []
+  for (const v of list) {
+    if (!v || typeof v.id !== 'string' || typeof v.root !== 'string') continue
+    if (v.enabled === false) continue
+    /* 卷 id 形状必须与 Node 侧 `VOLUME_ID_RE` 一致，否则拼出来的 URI 对不上。 */
+    if (!/^V[0-9a-f]{32}$/.test(v.id)) continue
+    if (!existsSync(v.root)) {
+      /* 卷离线（NAS 没挂 / 盘符没接）：跳过这一条 location。
+       * 该卷上的文件直读会 404，但**其它卷不受影响** —— 这正是多卷的意义。 */
+      log(`[nginx] 卷 ${v.id} 的根不可达，跳过直读 location：${v.root}`)
+      continue
+    }
+    const seg = 'v-' + v.id.slice(1) + '--'
+    /* 复用 configPathValue：它会拒绝含 " ` $ % 换行 NUL 的路径，
+     * 因为这些字符在 nginx 配置里会被解释（引号/变量/注释）。 */
+    let root
+    try {
+      root = configPathValue(v.root)
+    } catch (e) {
+      log(`[nginx] 卷 ${v.id} 的路径无法安全写入配置，跳过：${e instanceof Error ? e.message : String(e)}`)
+      continue
+    }
+    lines.push(
+      `        # 存储卷 ${v.id}（${v.role || 'any'}）：字节落在这块盘上`,
+      '        location /__privhub_internal/' + seg + '/ {',
+      '            internal;',
+      '            alias "' + root + '/";',
+      '            add_header Cache-Control "no-store" always;',
+      '            add_header X-Content-Type-Options "nosniff" always;',
+      '            add_header Referrer-Policy "no-referrer" always;',
+      '            add_header Content-Security-Policy $privhub_svg_csp always;',
+      '        }',
+    )
+  }
+  return lines.join('\n')
 }
 
 function authPluginDirs(releaseDir) {
@@ -880,6 +994,77 @@ function authPluginLocations(a) {
   ].join('\n')
 }
 
+/**
+ * 生成 nginx `types{}` 补充块。
+ *
+ * 直读分支（X-Accel-Redirect）的 Content-Type 完全由 nginx 按 accel URI 的
+ * 扩展名查 `types{}` 决定，上游 Node 给的 Content-Type 被忽略。所以这张表
+ * 必须与 Node 那份 MIME 表**同源**，否则必然漂移。
+ *
+ * 实测漂过：nginx 自带 mime.types 里没有 md，于是所有 Markdown 经直读都拿到
+ * application/octet-stream，浏览器不内联预览、直接下载 —— 而 Markdown 是本系统
+ * 最主要的文件类型。这类缺陷只在直读分支出现，直连开发模式完全正常。
+ *
+ * 单一真实来源是 `runtime/mime-map.json`（纯 Node 可读，故选 JSON 而非 TS）。
+ * 只补 mime.types 里没有的项：重复声明会打 duplicate 警告且后者覆盖前者。
+ */
+function nginxTypesBlock() {
+  const mapFile = join(RUNTIME_DIR, 'mime-map.json')
+  if (!existsSync(mapFile)) {
+    throw httpError(500, `缺少 MIME 映射表：${mapFile}（读路径 MIME 依赖它）`, 'PRIVHUB_NO_MIME_MAP')
+  }
+  let exts
+  try {
+    exts = JSON.parse(readFileSync(mapFile, 'utf8')).exts
+  } catch (e) {
+    throw httpError(500, `MIME 映射表解析失败：${mapFile} → ${e.message}`, 'PRIVHUB_BAD_MIME_MAP')
+  }
+  if (!exts || typeof exts !== 'object' || Object.keys(exts).length === 0) {
+    throw httpError(500, `MIME 映射表为空或格式错误：${mapFile}`, 'PRIVHUB_BAD_MIME_MAP')
+  }
+
+  /* 读 nginx 自带 mime.types，只补它没有的扩展名。 */
+  const have = new Set()
+  const mimeTypes = join(NGINX_DIR, 'conf', 'mime.types')
+  if (existsSync(mimeTypes)) {
+    for (const raw of readFileSync(mimeTypes, 'utf8').split('\n')) {
+      const line = raw.trim()
+      if (line === '' || line.startsWith('#') || line === 'types {' || line === '}') continue
+      const semi = line.lastIndexOf(';')
+      if (semi < 0) continue
+      const body = line.slice(0, semi)
+      const sp = body.search(/\s/)
+      if (sp < 0) continue
+      for (const ext of body.slice(sp + 1).trim().split(/\s+/)) {
+        if (ext !== '') have.add(ext.toLowerCase())
+      }
+    }
+  }
+
+  const byMime = new Map()
+  for (const [ext, mime] of Object.entries(exts)) {
+    if (have.has(ext)) continue
+    /* nginx 的 types 里不能带 charset 参数。 */
+    const bare = String(mime).split(';')[0].trim()
+    const arr = byMime.get(bare)
+    if (arr) arr.push(ext)
+    else byMime.set(bare, [ext])
+  }
+  if (byMime.size === 0) return ''
+
+  const lines = [
+    '    # 由 runtime/mime-map.json 生成，**不要手改本块**。',
+    '    # 只补 nginx 自带 mime.types 里没有的扩展名（重复声明会打 duplicate 警告）。',
+    '    # 缺项会让直读退化成 application/octet-stream —— 浏览器于是不内联显示、直接下载。',
+    '    types {',
+  ]
+  for (const [mime, list] of [...byMime.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    lines.push(`        ${mime}    ${list.join(' ')};`)
+  }
+  lines.push('    }')
+  return lines.join('\n')
+}
+
 function renderNginxConfig(a) {
   if (!existsSync(TEMPLATE_FILE)) {
     throw httpError(500, `缺少 nginx 配置模板：${TEMPLATE_FILE}`, 'PRIVHUB_NO_TEMPLATE')
@@ -901,11 +1086,21 @@ function renderNginxConfig(a) {
   text = text.split('{{AUTH_PLUGIN_LOCATIONS}}').join(authPluginLocations(a))
   text = text.split('{{API_PROXY_NO_GATE}}').join(proxyBlock(12))
   text = text.split('{{API_PROXY}}').join(proxyBlock(12))
+  text = text.split('{{NGINX_TYPES_BLOCK}}').join(nginxTypesBlock())
+  /* 多卷直读：每个卷一条 internal location。没有卷配置时返回空串，
+   * 渲染结果与单卷部署**逐字相同**（占位符被替换成空行）。 */
+  text = text.split('{{VOLUME_LOCATIONS}}').join(volumeLocations())
 
   const map = {
     HOME_DIR: configPathValue(HOME_DIR),
     NGINX_DIR: configPathValue(NGINX_DIR),
     ACTIVE_RELEASE_DIR: configPathValue(a.releaseDir),
+    /* 文件库根：X-Accel-Redirect 的内部落盘前缀（模板里 `location /__privhub_internal/`）。
+     * 必须是**绝对路径且已存在的父目录**：nginx 在 alias 拼好后才 open，
+     * 根不存在时表现是 404（不易诊断），所以在渲染期就报错更划算。
+     * 用 computeDataFiles() 而不是常量：库根可能被 adopt-legacy / store.json
+     * 在启动流程中改写（见该函数注释），常量会渲染出旧根 → 内部前缀指向错目录。 */
+    DATA_FILES_DIR: configPathValue(dataFilesForNginx()),
     PUBLIC_HOST: host,
     PUBLIC_PORT: String(CONFIG.publicPort),
     CONTROL_PORT: String(CONFIG.controlPort),

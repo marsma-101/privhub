@@ -56,12 +56,27 @@ export interface Config {
   keyFile: string
   /** 审计记录加密块 magic（区别于文件头） */
   auditMagic: string
+  /**
+   * **文件库**（`PRIVHUB_DATA_FILES`）下的用户文件是否以明文落盘。
+   *
+   * 这是「按路径」的开关，不是全局开关 —— `enabled:false` 会把系统 JSON
+   * （users / sessions / ACL）和审计块一起变明文，那是安全事故；这里只让
+   * 用户文件库明文（扁平池要能被 nginx 直读，见 v6 §3.4）。
+   *
+   * **默认 true**（v6 定稿）：本次改造的目标就是「文件库明文 + nginx 直读」。
+   * 文件库密文时 nginx 无法按 ID 直读，每个字节都要过 Node 解密转发，
+   * 读写分离就失去意义。系统 JSON 与审计块**仍然加密**，那条边界没变。
+   *
+   * 想退回全加密的部署可显式设 `plainFileLib: false` 或 `PRIVHUB_PLAIN_FILELIB=0`。
+   */
+  plainFileLib: boolean
 }
 
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   keyFile: z.string().default(''),
   auditMagic: z.string().default('PHAUD1\0'),
+  plainFileLib: z.boolean().default(true),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -161,6 +176,10 @@ export class StorageService extends Service {
   private readonly enabled: boolean
   private readonly keyFile: string
   private readonly auditMagic: Buffer
+  /** 文件库根（明文前缀的基准目录；绝对路径，无尾分隔符）。 */
+  private readonly plainRoot: string
+  /** 是否允许文件库明文落盘（Config.plainFileLib 或 env PRIVHUB_PLAIN_FILELIB）。 */
+  private readonly plainFileLib: boolean
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'storage')
@@ -168,6 +187,38 @@ export class StorageService extends Service {
     this.keyFile = config.keyFile.trim() === '' ? defaultKeyFile : config.keyFile
     // 审计块 magic 固定 8 字节（不足补 NUL，与文件头对齐）
     this.auditMagic = Buffer.from((config.auditMagic || 'PHAUD1\0').padEnd(8, '\0'), 'utf8')
+    this.plainRoot = resolve(dataFilesDir)
+    /* env 作为覆盖开关：`PRIVHUB_PLAIN_FILELIB=0` 显式关掉明文库（退回全加密），
+     * `=1` 强制打开。不设则听 Config —— 默认已是 true（见 Config 注释）。 */
+    const envRaw = (process.env.PRIVHUB_PLAIN_FILELIB || '').toLowerCase()
+    const envFlag = ['1', 'true', 'yes'].includes(envRaw)
+    const envOff = ['0', 'false', 'no'].includes(envRaw)
+    this.plainFileLib = envOff ? false : (config.plainFileLib === true || envFlag)
+    if (this.plainFileLib) {
+      console.warn('[storage] 文件库明文模式已开启：' + this.plainRoot
+        + ' 下的用户文件**不再加密**（系统 JSON 与审计块仍加密）。确认这是预期配置。')
+    }
+  }
+
+  /** 文件库是否明文落盘（诊断与测试断言用）。 */
+  get fileLibPlain(): boolean { return this.plainFileLib }
+
+  /**
+   * 该绝对路径是否落在「文件库明文前缀」内 —— 决定「要不要为它加密」。
+   *
+   * 三条边界（都来自踩过的坑）：
+   *   ① **必须带分隔符比较**：`resolve()` 后 `startsWith(root)` 会把
+   *      `data-files-old/` 这类同前缀兄弟目录误判为「在 data-files 里」；
+   *   ② 文件库根若嵌套在系统数据根之下（默认布局 `data-files/` 就在
+   *      `PRIVHUB_DATA_ROOT` 里），也不能顺手把 `data/` 变明文 ——
+   *      这里用「正向包含」而不是「反向排除」，故 `data/users.json` 天然不命中；
+   *   ③ `resolve()` 会消掉 `..`，避免 `../data-files/../../data/users.json` 绕过。
+   */
+  isPlainPath(file: string): boolean {
+    if (!this.plainFileLib) return false
+    const abs = resolve(file)
+    const root = this.plainRoot
+    return abs === root || abs.startsWith(root.endsWith(sep) ? root : root + sep)
   }
 
   /** 是否启用加密（读路径不受影响：自动识别密文头）。 */
@@ -278,9 +329,16 @@ export class StorageService extends Service {
     )
   }
 
-  /** 加密 Buffer → 带头的密文 Buffer。 */
-  async encryptBuffer(plain: Buffer): Promise<Buffer> {
+  /**
+   * 加密 Buffer → 带头的密文 Buffer。
+   *
+   * `file` 传了就按路径判断是否该明文（文件库明文模式）；不传 = 一律加密。
+   * 为什么参数是**可选**的：`encryptBuffer` 原先只拿内容、不拿目标路径，
+   * 改成必填会波及所有调用方；而不传时退回「加密」是安全方向的默认。
+   */
+  async encryptBuffer(plain: Buffer, file?: string): Promise<Buffer> {
     if (!this.enabled) return plain
+    if (file !== undefined && this.isPlainPath(file)) return plain
     const key = await this.ensureKey()
     const iv = randomBytes(12)
     const cipher = createCipheriv('aes-256-gcm', key, iv)
@@ -476,7 +534,9 @@ export class StorageService extends Service {
   }
 
   async writeBuffer(file: string, data: Buffer): Promise<void> {
-    const out = this.enabled ? await this.encryptBuffer(data) : data
+    /* 明文库分支：用户文件（文件库根下）直接落明文 —— 扁平池要能被 nginx 直读，
+     * 而 nginx 不会解密。系统 JSON / 审计块不在这个前缀下，继续走加密。 */
+    const out = this.enabled ? await this.encryptBuffer(data, file) : data
     await mkdir(dirname(file), { recursive: true })
     // D7：临时名必须唯一（pid + 随机后缀）。此前固定为 file+'.tmp'，
     // 两个并发写同一目标会共用临时文件 → 内容错乱或 rename 竞争失败。
@@ -502,7 +562,9 @@ export class StorageService extends Service {
    *  返回 { stream, done }：done 在文件全部落盘（close）后 resolve，
    *  调用方须 await done 后再 rename/返回（避免 tag 未写完）。 */
   async createWriteStream(file: string): Promise<{ stream: Writable; done: Promise<void> }> {
-    if (!this.enabled) {
+    /* `enabled:false` 与「文件库明文模式」是两件事，但写出来的形态一样（裸 fs 流）。
+     * 合并成一个裸流分支，避免两条几乎相同的代码各自漂移。 */
+    if (!this.enabled || this.isPlainPath(file)) {
       const s = fsCreateWriteStream(file)
       const done = new Promise<void>((ok, fail) => { s.on('close', ok); s.on('error', fail) })
       return { stream: s, done }

@@ -151,8 +151,40 @@ export function apply(ctx: Context): void {
     return () => { offSaved(); offChanged(); offMeta() }
   })
 
-  /** 递归收集项目内文件列表（.md 全部 + 其余扩展名仅作候选）。 */
+  /** 递归收集项目内文件列表（.md 全部 + 其余扩展名仅作候选）。
+   *
+   *  v6 扁平化：磁盘上**没有项目目录**了（文件字节全在 `.pool/`），
+   *  `resolveReal(project, '')` 拿不到可 readdir 的目录 ⇒ 图谱会整片空掉。
+   *  所以优先用主索引的 `listDir` 递归（虚拟路径就是用户看到的那棵树），
+   *  索引不可用时才回退到原来的磁盘遍历。 */
   async function collectFiles(project: string, rel = ''): Promise<{ path: string; name: string; isMd: boolean }[]> {
+    const fi = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+      .reflect?.get?.('fileindex', false) as
+      { listDir?: (p: string, v: string) => Array<{ name?: unknown; isDir?: unknown; trashed?: unknown }> } | undefined
+    if (fi && typeof fi.listDir === 'function') {
+      try {
+        const out: { path: string; name: string; isMd: boolean }[] = []
+        const walk = (dir: string): void => {
+          for (const e of fi.listDir!(project, dir)) {
+            const nm = String(e?.name ?? '')
+            if (nm === '' || nm.startsWith('.')) continue
+            if (e?.trashed === true) continue
+            const child = dir === '' ? nm : dir + '/' + nm
+            if (e?.isDir === true) {
+              walk(child)
+            } else if (extname(nm).toLowerCase() === '.md') {
+              out.push({ path: child, name: nm, isMd: true })
+            } else {
+              out.push({ path: child, name: nm, isMd: false })
+            }
+          }
+        }
+        walk(rel)
+        /* 索引可用即视为权威：扁平池里磁盘遍历必然空结果，
+         * 两者取并集只会把回收站文件也扫进来。 */
+        return out
+      } catch { /* 索引异常 → 回退磁盘遍历 */ }
+    }
     const dir = await svc.resolveReal(project, rel)
     if (dir === null || !existsSync(dir)) return []
     const out: { path: string; name: string; isMd: boolean }[] = []

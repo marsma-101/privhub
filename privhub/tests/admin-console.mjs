@@ -374,10 +374,24 @@ ok(headChildren.some((e) => e._attrs['data-privhub-admin-console'] !== undefined
 console.log('\n── 路由与视图可用性 ──')
 const routes = mod.routes
 ok(routes.SECTIONS.length === 4, `侧栏分为 4 组（实际 ${routes.SECTIONS.length}）`)
-/* 名册计数：每新增一条管理路由就要 +1（本轮新增 ops/update，由 privhub-update
- * 提供面板；上一轮新增 access/features / ops/webhook）。这条断言的价值不在于
- * 这个数字，而在于「路由表被改动时有人会看一眼」—— 仍然精确相等，少一条、多一条都会红。 */
-ok(routes.ROUTES.length === 16, `管理路由 16 条（实际 ${routes.ROUTES.length}）`)
+/* 名册计数：每新增一条管理路由就要 +1。
+ *
+ * 这条断言的价值不在于数字本身，而在于「路由表被改动时有人会看一眼」
+ * —— 仍然精确相等，少一条、多一条都会红。
+ *
+ * 本轮新增 ops/storage「存储卷」（builtin 面板，由本插件自渲染）；
+ * 上一轮新增 ops/doctor「系统自检」、再上一轮 ops/migrate「存储迁移」、
+ * 再上一轮 ops/update。 */
+ok(routes.ROUTES.length === 19, `管理路由 19 条（实际 ${routes.ROUTES.length}）`)
+/* 关键路由必须在册 —— 比数字更能说明「功能真的接上了」。
+ * 少一条 = 侧栏里没有入口，功能等于没装。 */
+for (const key of ['ops/storage', 'ops/doctor', 'ops/migrate', 'ops/backup', 'ops/settings']) {
+  ok(routes.ROUTES.some((r) => r.key === key), `路由表含 ${key}`)
+}
+ok(routes.ROUTES.find((r) => r.key === 'ops/storage')?.builtin === 'storage',
+  '存储卷路由声明 builtin=storage（由本插件自渲染）')
+ok(routes.ROUTES.find((r) => r.key === 'ops/doctor')?.builtin === 'doctor',
+  '系统自检路由声明 builtin=doctor（由本插件自渲染）')
 ok(routes.hashToKey('#/admin/access/acl') === 'access/acl', '#/admin/access/acl 解析为 access/acl')
 ok(routes.hashToKey('#/admin/overview') === 'overview', '#/admin/overview 解析为 overview')
 ok(routes.hashToKey('#/admin') === '', '#/admin 归一为空键（落到上次位置/概览）')

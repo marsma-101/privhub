@@ -4,7 +4,7 @@
  */
 
 import { api, nav, bus, AUTH, fileIcon } from './deps.js'
-import { isEditableText } from './utils.js'
+import { isEditableText, downloadUrl } from './utils.js'
 import { store } from './store.js'
 import { openTab, activateTab } from './tabs.js'
 import { openPermFor, convertDocToDocx } from './ops.js'
@@ -37,6 +37,10 @@ const RightDetail = {
         sizeText: s.sizeText || '',
         type: s.type || '',
         mtime: s.mtime || '',
+        /* 主索引稳定 ID（可能为空：老数据 / 索引未就绪）。
+         * 详情面板不拿它发请求，但必须原样透传 —— 下面 `edit()` 用它去 openTab，
+         * 丢了就会出现"详情里点编辑 → 那个标签走老路、列表点开走直读"的分裂。 */
+        id: s.id || '',
       }
     },
     isOffice() {
@@ -145,7 +149,7 @@ const RightDetail = {
       const t = this.target
       if (!t) return
       try {
-        const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(t.project) + '&path=' + encodeURIComponent(t.path), {
+        const r = await fetch(downloadUrl(t.project, t.path), {
           headers: { authorization: 'Bearer ' + AUTH.token },
         })
         if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
@@ -175,7 +179,7 @@ const RightDetail = {
       // 文本类（md/txt 等）：确保作为标签打开进入内容区，再进入内嵌编辑
       const dir = t.path.includes('/') ? t.path.slice(0, t.path.lastIndexOf('/')) : ''
       const tab = store.tabs.find(x => x.project === t.project && x.path === t.path)
-      if (!tab) openTab({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type }, t.project, dir)
+      if (!tab) openTab({ name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id }, t.project, dir)
       else activateTab(tab.key)
       bus.emit('entry:open', { entry: { name: t.name, isDir: false }, project: t.project, path: dir })
     },

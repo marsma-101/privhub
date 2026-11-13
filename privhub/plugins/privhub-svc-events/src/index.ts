@@ -17,7 +17,13 @@
  *                    listen: admin-audit（面板实时刷新）、webhook
  *   file:changed  ── 文件系统变更专用事件（创建/保存/删除/重命名/移动/恢复/清空）。
  *                    payload { project, path, action: created|saved|deleted|renamed|moved|
- *                    restored|purged|clean, newPath? }
+ *                    restored|purged|clean, newPath?, fileId?, trashed? }
+ *                    **fileId**：主索引（ctx.fileindex）里该条目的稳定 ID，改名/移动都不会变。
+ *                    有了它，按 ID 关联的侧车状态（评论/标签/版本/收藏/最近/全文/RAG/KG）
+ *                    不必各自实现「改名跟随」，直接把键从 project|path 换成 fileId 即可。
+ *                    它是**尽力而为的可选字段**：索引未挂载/未就绪/查不到条目时为 undefined，
+ *                    消费方必须支持「没有 fileId」的情况（此时退回 project|path）。
+ *                    **trashed**：该条目当前是否在回收站内（delete/restore/purge 类动作给）。
  *                    emit: files/trash/edit-md/office-ui · listen: fulltext（索引增量维护）、webhook
  *   file:saved    ── 文档保存广播（带内容 doc，供全文索引/图谱直用）。
  *                    emit: edit-md/office-ui · listen: fulltext/kg/webhook
