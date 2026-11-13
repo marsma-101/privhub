@@ -146,7 +146,49 @@ issue #3 描述的是一份**理想重构蓝图**（L0–L3 四层、项目层 4
 
 ---
 
-## 五、还没做的（诚实边界）
+## 五、已上线生产（含一次参数踩坑）
+
+**发现**：生产 3181 的 `active.releaseDir` 指向的**就是开发目录本身**（不是 `releases/3.5.0`）。
+所以改 `frontend/index.html` 与 `plugins/*/client/*.js` 会**立刻在生产生效**（nginx 直读该目录），
+但服务端新路由要等进程重启才加载 —— 一度出现「新界面已上线、它依赖的新 API 还是 404」的半截状态：
+打开生产工作台，首屏总览显示「读取失败 + 重试」。
+
+**处置**：就此询问主人，主人选择「蓝绿切换让新代码完整生效」。
+
+**踩坑（我自己写错命令）**：第一次执行
+`switch --release <开发目录> --version 3.5.0` 返回 `ok:true`，但跑的是**旧发布包**。
+真因在 `runtime/control.mjs` 的 `performSwitch`：
+
+```js
+const info = version ? findReleaseByVersion(version) : resolveReleaseArg(releaseArg)
+```
+
+`--version` 优先级高于 `--release`，于是它去 `releases/` 按版本号找到了旧包。
+**正确命令：只传 `--release`**（版本号由 `validateRelease` 自己从 `package.json` 读）：
+
+```powershell
+node runtime\control.mjs switch --release 'G:\program\dsh-SQL\privhub'
+```
+
+**切换后实测（不是「应该可以」）**：
+
+| 核验项 | 结果 |
+|---|---|
+| `/privhub/api/health` | `ok=true` v3.5.0 **slot=green** pid 37956 |
+| `GET /dashboard/overview` | **401**（已注册；此前 404）—— 对照 `dashboard/schema` 同为 401 |
+| `GET /dashboard/overview?q=公共` | **401**（服务端按名查找也已加载） |
+| `index.html` 含新低频折叠样式 | **是**（前端确为新版） |
+| `active.json` releaseDir | 回到开发目录（与改动前的部署形态一致） |
+| 槽位 | 3302 服务中、3301 已干净停止、control 3300 存活、nginx 3181 正常 |
+| `scripts/verify-store.mjs --json` | **exit 0**，12 个账号、库内样本可读 |
+| nginx 今日日志 | 只有 `[notice] signal process started`，**无 emerg/alert/crit** |
+
+全程不停服（预热另一槽 → 冻结排空 → reload → activate → nginx reload → 停旧槽）。
+
+> 教训：**「命令返回 ok」不等于「跑的是我要的代码」**。切换后必须实测三件事：
+> health 的 slot、新路由 401 而非 404、`index.html` 是否含新代码特征串。
+
+## 六、还没做的（诚实边界）
 
 - **未做整体 tab 重组**（项目层 4 tab / 个人层 4 tab / 管理层 5 模块）：会删功能，违反第 ① 条。
 - **未加任务详情右侧抽屉**：现有任务看板已有自己的编辑弹层，重做属于另一批工作量。
