@@ -9,6 +9,8 @@
  * 路由（exact 匹配，资源标识走 query/body）：
  *   GET  /privhub/api/dashboard?project=      读看板 + 实时 facts + 任务进度（含 tasks 组件时）
  *                                             + 智能体名册（含 agents 组件时）
+ *   GET  /privhub/api/dashboard/overview      跨项目总览（L1 驾驶舱用）：只聚合当前用户
+ *                                             可索引的**项目**（排除个人空间），进度投影自任务看板
  *   PUT  /privhub/api/dashboard                { project, dashboard } 覆盖写（需可编辑）
  *   POST /privhub/api/dashboard/reset          { project } 还原为默认看板（需可编辑）
  *   GET  /privhub/api/dashboard/schema         组件契约（供智能体发现）
@@ -28,6 +30,7 @@ import {
   readAgents, readTaskProgress, sanitizeDashboard, wantsAgents, wantsTasks, writeDashboard,
 } from './core'
 import { dashFile } from './core'
+import { aggregateOverview, OVERVIEW_MAX_PROJECTS, type OverviewInput } from './overview'
 
 export const name = 'privhub-project-dashboard'
 export const inject = ['privhub', 'acl', 'storage', 'audit', 'eventBus', 'cap']
@@ -100,6 +103,115 @@ export function apply(ctx: Context): void {
       },
     })
   }, 'dashboard-schema')
+
+  /* ---------- L1 项目总览（跨项目聚合 · 只读） ----------
+   *
+   * 领导的第一屏要回答「整个盘子怎么样」，不该逐个点开 N 块看板再心算。
+   *
+   * 三条边界（与 overview.ts 的硬约束对应）：
+   *   · 范围 = `indexableProjects`（**排除个人空间**）再逐个 canAccess。绝不用 allProjects：
+   *     那会把别人的私有目录算进领导的 KPI，等于从聚合数字里泄露隐私。
+   *   · **不做 facts 递归扫描**。computeFacts 要遍历整棵树，72GB 的库扫一遍就是几十秒，
+   *     乘以几十个项目足以把首屏拖死。成员数改从用户表现算（O(用户数)），文件数留 null。
+   *   · 任务功能被关时 tasks=null（不是 0），前端显示「—」并说明原因，不拿 0% 冒充没进展。
+   *
+   * ⚠️ 本路由**刻意不列进 privhub-admin-acl 的 GUARD_PATHS**（不是漏登记）：
+   *   文件级 ACL 守卫的入参是 (project, path) —— 它管的是「某个文件让不让这个人看」。
+   *   总览没有 path，也不返回任何文件路径/文件名，只回项目级的计数与进度；
+   *   它的权限边界是**项目级**的 indexableProjects + canAccess，已在下面逐个过。
+   *   若硬塞进 GUARD_PATHS，守卫拿不到 path 会走透传分支，等于白登记还误导后人。
+   *   反过来说：日后若给总览加上「文件数/最近文件」等**带路径**的字段，
+   *   就必须重新评估这条豁免（那时它才真的开始碰文件级 ACL）。
+   */
+  svc.route('/privhub/api/dashboard/overview', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
+    if (!ctx.cap.can(u, 'dashboard.write', 'read')) return json(res, 403, { ok: false, error: '项目看板功能已关闭' })
+
+    const all = (await svc.indexableProjects(u as never)).filter((p) => svc.canAccess(u as never, p))
+    /* 多取一个：aggregateOverview 据此判断是否截断，前端才能如实说「只显示了前 N 个」。 */
+    const scoped = all.slice(0, OVERVIEW_MAX_PROJECTS + 1)
+    const canTasks = ctx.cap.can(u, 'task.write', 'read')
+
+    /* 按名查找（?q=）必须在**截断之前**做。
+     * 实测踩到的坑：项目数超过上限时，前端只在已加载的前 N 个里筛，
+     * 第 N+1 个项目**永远搜不到** —— 用户会以为项目不存在。
+     * 所以搜索走服务端全量名单，KPI 仍是全盘的（totals 不受 q 影响，口径不漂移）。 */
+    const q = String(new URL(req.url ?? '/', 'http://x').searchParams.get('q') ?? '').trim().toLowerCase()
+
+    const memberCount = new Map<string, number>()
+    try {
+      for (const usr of svc.users.values()) {
+        if (!usr || usr.role === 'admin' || !Array.isArray(usr.projects)) continue
+        for (const p of usr.projects) memberCount.set(p, (memberCount.get(p) || 0) + 1)
+      }
+    } catch { /* 用户表不可读：成员数留空，不编造 */ }
+
+    const loadInput = async (p: string): Promise<OverviewInput> => {
+      const [dash, prog] = await Promise.all([
+        loadDashboard(ctx.storage, p).catch(() => null),
+        canTasks ? readTaskProgress(ctx.storage, p) : Promise.resolve(null),
+      ])
+      return {
+        project: p,
+        tasks: prog && prog.ok ? prog : null,
+        dashboard: dash,
+        facts: null,
+        members: memberCount.get(p) ?? 0,
+      }
+    }
+
+    const inputs: OverviewInput[] = []
+    for (const p of scoped) inputs.push(await loadInput(p))
+    const result = aggregateOverview(inputs)
+
+    /* 搜索结果单独一路：命中名单取自**全量可见项目**，再把「首屏之外」的命中补读进来。
+     * totals 与 mine 仍按全盘口径（不随筛选变化）—— 否则一搜「A项目」，
+     * KPI 就变成只剩 A 项目的数字，领导会以为盘子塌了。 */
+    let projects = result.projects
+    let search: { q: string; matched: number; truncated: boolean } | null = null
+    if (q) {
+      const hits = all.filter((p) => p.toLowerCase().includes(q))
+      const inScope = new Set(scoped)
+      const extra = hits.filter((p) => !inScope.has(p)).slice(0, OVERVIEW_MAX_PROJECTS)
+      const extraInputs: OverviewInput[] = []
+      for (const p of extra) extraInputs.push(await loadInput(p))
+      projects = [
+        ...result.projects.filter((p) => p.project.toLowerCase().includes(q)),
+        ...aggregateOverview(extraInputs).projects,
+      ]
+      search = { q, matched: hits.length, truncated: hits.length > projects.length }
+    }
+
+    /* 「我的任务」：按显示名/用户名匹配 assignee（任务卡存的是名册名，不是 username）。 */
+    const names = new Set([String((u as { displayName?: string }).displayName || ''), u.username].filter(Boolean))
+    let mine = 0, mineOpen = 0
+    if (canTasks) {
+      for (const it of inputs) {
+        if (!it.tasks) continue
+        for (const c of it.tasks.cards) {
+          if (!names.has(c.assignee)) continue
+          mine++
+          if (c.columnId !== it.tasks.doneColumnId) mineOpen++
+        }
+      }
+    }
+
+    /* 个人入口：只给**本人**的目录名与顶层条目数（非递归，一次 listFiles）。
+     * 管理员也拿不到别人的 —— personalDirOf 只看当前用户。 */
+    let personal: { dir: string; entries: number } | null = null
+    const ownDir = svc.personalDirOf(u as never)
+    if (ownDir) {
+      const list = await svc.listFiles(ownDir, '').catch(() => [])
+      personal = { dir: ownDir, entries: Array.isArray(list) ? list.length : 0 }
+    }
+
+    json(res, 200, {
+      ok: true, ...result, projects, search,
+      tasksDisabled: !canTasks, mine: { total: mine, open: mineOpen }, personal,
+    })
+  }, 'dashboard-overview')
 
   /* ---------- 读看板 ---------- */
   svc.route('/privhub/api/dashboard', async (req, res) => {

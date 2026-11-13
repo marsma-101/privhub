@@ -636,11 +636,24 @@ ok(/"slots":\s*\[[^\]]*"home"/.test(homeManifest), '工作台插件声明 home s
 ok(/"view":\s*"home"/.test(homeManifest), '工作台插件声明 home 视图 barItem')
 ok(/slotComps\.home/.test(feSrc), '骨架模板挂载 home（// [home] 挂载点，勿丢）')
 ok(/view === 'home'/.test(feSrc), '骨架 barItem 分发包含 home 视图')
-const homeSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell-home', 'client', 'index.js'), 'utf8')
-const homeApis = [...homeSrc.matchAll(/api\('(\/privhub\/api\/[\w/]+)/g)].map((m) => m[1])
-ok(homeApis.length > 0 &&
-  homeApis.every((p) => ['/privhub/api/recent', '/privhub/api/favorites', '/privhub/api/model/config', '/privhub/api/model/status'].includes(p)),
+/* 扫**整个 client 目录**，不能只扫 index.js：
+ * 工作台已按职责拆出 overview.js（L1 总览），只扫入口文件的话，
+ * 新文件里自造的路由这条契约根本看不见 —— 那是典型的假保险（本轮实测发现）。 */
+const homeDir = join(ROOT, 'plugins', 'privhub-shell-home', 'client')
+const homeFiles = readdirSync(homeDir).filter((f) => f.endsWith('.js'))
+const homeSrc = homeFiles.map((f) => readFileSync(join(homeDir, f), 'utf8')).join('\n')
+const homeApis = [...homeSrc.matchAll(/'(\/privhub\/api\/[\w/]+)'/g)].map((m) => m[1])
+const HOME_ALLOWED = [
+  '/privhub/api/recent', '/privhub/api/favorites',
+  '/privhub/api/model/config', '/privhub/api/model/status',
+  // L1 总览：只读聚合端点，由服务端插件 privhub-project-dashboard 提供
+  // （工作台必须保持 client-only，不能自己长出服务端路由）。
+  '/privhub/api/dashboard/overview',
+]
+ok(homeApis.length > 0 && homeApis.every((p) => HOME_ALLOWED.includes(p)),
   `工作台只复用既有接口，不自造路由（${[...new Set(homeApis)].join(', ')}）`)
+ok(homeFiles.includes('overview.js'), '总览组件独立成文件（逻辑与样式解耦，入口只做装配）')
+ok(homeFiles.includes('overview-styles.js'), '总览样式独立成文件（import 即注入）')
 ok(!existsSync(join(ROOT, 'plugins', 'privhub-shell-home', 'src', 'index.ts')),
   '工作台是 client-only 插件（无 src/index.ts，不参与服务端挂载）')
 

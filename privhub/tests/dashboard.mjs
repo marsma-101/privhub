@@ -293,6 +293,123 @@ export function build() {
     notIncludes(body, 'AI 维护的看板', '明文不应出现看板标题')
   })
 
+  /* ══════════ L1 项目总览（issue #3：首屏回答「整个盘子怎么样」）══════════
+   * 这里验的是**服务端口径**：权限范围、空板不冒充 0、任务开关降级、个人入口只给本人。
+   * 纯函数层面的桶归类/卡点计数/均值分母在 tests/overview-aggregate.mjs（65 项）。 */
+
+  s.test('总览：未登录 → 401', async () => {
+    const r = await GET('/privhub/api/dashboard/overview')
+    eq(r.status, 401, '未登录应 401')
+  })
+
+  s.test('总览：非 GET → 405', async () => {
+    const r = await POST('/privhub/api/dashboard/overview', { token: admin, body: {} })
+    eq(r.status, 405, '总览是只读端点，写方法应 405')
+  })
+
+  s.test('总览：结构齐备（KPI / 桶 / 项目卡片 / 我的）', async () => {
+    const r = await GET('/privhub/api/dashboard/overview', { token: admin })
+    ok(r.json && r.json.ok, '总览读取失败：' + r.text.slice(0, 160))
+    const t = r.json.totals
+    ok(t && typeof t.projects === 'number', 'totals.projects 是数字')
+    ok(t.buckets && ['todo', 'doing', 'review', 'done'].every((k) => typeof t.buckets[k] === 'number'),
+      '四个管线桶都有计数（没有就是 0，不缺键）')
+    ok(Array.isArray(r.json.projects), 'projects 是数组')
+    ok(r.json.mine && typeof r.json.mine.open === 'number', '带「我的待办」计数')
+    ok(typeof r.json.truncated === 'boolean', '带截断标记（前端据此明说只显示了前 N 个）')
+  })
+
+  s.test('总览：按名查找能在截断之前命中（项目多于上限也搜得到）', async () => {
+    /* 这条是实测踩出来的：测试根里堆了几百个历史项目，聚合上限 60，
+     * 测试项目排在后面被截断 —— 若筛选只在前端做，用户会以为项目不存在。
+     * 所以这里**必须**用 ?q= 走服务端全量名单，且断言它真的命中。 */
+    const ov = await GET('/privhub/api/dashboard/overview?q=' + encodeURIComponent(PROJECT), { token: admin })
+    ok(ov.json && ov.json.ok, '带 q 的总览读取失败：' + ov.text.slice(0, 160))
+    const hit = (ov.json.projects || []).find((p) => p.project === PROJECT)
+    ok(hit, `按名查找应命中测试项目（实际返回 ${(ov.json.projects || []).length} 条）`)
+    ok(ov.json.search && ov.json.search.q === PROJECT, '回包带上 search.q（前端据此说明筛选范围）')
+    ok((ov.json.projects || []).every((p) => p.project.includes(PROJECT)),
+      '搜索结果里不混入不匹配的项目')
+    /* KPI 不随筛选缩水：否则一搜某个项目，领导会以为整个盘子塌了 */
+    const full = await GET('/privhub/api/dashboard/overview', { token: admin })
+    eq(ov.json.totals.tasks, full.json.totals.tasks, '筛选不改变任务合计（KPI 始终是全盘口径）')
+    eq(ov.json.mine.open, full.json.mine.open, '筛选不改变「我的待办」')
+  })
+
+  s.test('总览：本项目进度与任务看板同源', async () => {
+    const [ov, board] = await Promise.all([
+      GET('/privhub/api/dashboard/overview?q=' + encodeURIComponent(PROJECT), { token: admin }),
+      GET('/privhub/api/taskboard?project=' + encodeURIComponent(PROJECT), { token: admin }),
+    ])
+    const hit = (ov.json.projects || []).find((p) => p.project === PROJECT)
+    ok(hit, '总览里应能找到测试项目')
+    const cards = board.json.board.cards
+    eq(hit.total, cards.length, '总任务数 = 任务看板卡片数（同一真相源，不另存副本）')
+    eq(hit.doneCount, cards.filter((c) => c.columnId === 'col_done').length, '完成数与看板一致')
+    const sum = hit.buckets.todo + hit.buckets.doing + hit.buckets.review + hit.buckets.done
+    eq(sum, hit.total, '四桶之和 = 总数（自定义列也被归位，没有漏桶）')
+  })
+
+  s.test('总览：普通用户只看到自己有权的项目', async () => {
+    const r = await GET('/privhub/api/dashboard/overview', { token: user1 })
+    ok(r.json && r.json.ok, '普通用户读总览失败：' + r.text.slice(0, 160))
+    const pl = await GET('/privhub/api/projects', { token: user1 })
+    const visible = new Set(pl.json.projects || [])
+    const leaked = (r.json.projects || []).filter((p) => !visible.has(p.project))
+    eq(leaked.length, 0, '不得出现无权项目：' + leaked.map((p) => p.project).join(', '))
+  })
+
+  /* 为什么用 allProjects 做对照而不是 users[].personalDir：
+   * /api/admin/users 出于隐私只回 hasPersonalSpace，**不回目录名** ——
+   * 拿它取 personalDir 会永远是空数组，断言变成「永远绿的假保险」。
+   * allProjects 的契约就是「全部项目、不含任何个人目录」（personal-space 套件已钉住），
+   * 所以「总览项目 ⊆ allProjects」是一条真能失败的越界检查。 */
+  s.test('总览：只含真项目，个人目录绝不进聚合（管理员也不行）', async () => {
+    const [r, us] = await Promise.all([
+      GET('/privhub/api/dashboard/overview', { token: admin }),
+      GET('/privhub/api/admin/users', { token: admin }),
+    ])
+    ok(us.json && us.json.ok, '读用户表失败：' + us.text.slice(0, 120))
+    const real = new Set(us.json.allProjects || [])
+    ok(real.size > 0, '对照集非空（否则本条断言没有意义）')
+    const leaked = (r.json.projects || []).filter((p) => !real.has(p.project))
+    eq(leaked.length, 0, '总览出现了非项目条目（个人目录/越权）：' + leaked.map((p) => p.project).join(', '))
+  })
+
+  s.test('总览：我的入口只给本人目录', async () => {
+    const me = await GET('/privhub/api/me', { token: admin })
+    const r = await GET('/privhub/api/dashboard/overview', { token: admin })
+    const own = me.json?.user?.personalDir || null
+    if (!own) { eq(r.json.personal, null, '未开通个人目录 → personal=null'); return }
+    eq(r.json.personal && r.json.personal.dir, own, 'personal.dir 必须是**本人**目录')
+  })
+
+  s.test('总览：文件数不递归统计（首屏不能被大库拖死）', async () => {
+    const r = await GET('/privhub/api/dashboard/overview', { token: admin })
+    const withFiles = (r.json.projects || []).filter((p) => p.files !== null)
+    eq(withFiles.length, 0, '总览默认不做 facts 递归扫描，files 一律 null（界面显示「—」而非 0）')
+  })
+
+  s.test('总览：任务功能关闭 → 明说原因且进度为 null（不显示 0%）', async () => {
+    /* 开关口径与 cap 套件一致：{ feature, level }；收尾必须复位，
+     * 否则后面所有套件的任务看板都会 403（这是本轮最容易留下环境污染的地方）。 */
+    const off = await POST('/privhub/api/cap/save', { token: admin, body: { feature: 'task.write', level: 'none' } })
+    ok(off.json && off.json.ok, '关闭 task.write 失败：' + off.text.slice(0, 120))
+    try {
+      const me = await GET('/privhub/api/cap/me', { token: user1 })
+      eq(me.json.levels['task.write'], 'none', '普通用户的 task.write 应已为 none')
+      const r = await GET('/privhub/api/dashboard/overview', { token: user1 })
+      ok(r.json && r.json.ok, '任务功能关闭时总览本身仍应可读：' + r.text.slice(0, 120))
+      eq(r.json.tasksDisabled, true, '必须回 tasksDisabled=true，让界面说清原因')
+      const bad = (r.json.projects || []).filter((p) => p.percent !== null)
+      eq(bad.length, 0, '所有项目进度必须为 null（界面「—」），不得显示 0%')
+      eq(r.json.mine.open, 0, '任务不可读时「我的待办」不编造数字')
+    } finally {
+      const on = await POST('/privhub/api/cap/save', { token: admin, body: { feature: 'task.write', level: 'write' } })
+      ok(on.json && on.json.ok, '复位 task.write 失败（会污染后续套件）')
+    }
+  })
+
   s.test('清理：吊销密钥 + 删除测试项目并清空回收站', async () => {
     if (adminKeyId) await POST('/privhub/api/agent/v1/keys/revoke', { token: admin, body: { id: adminKeyId } }).catch(() => null)
     await POST('/privhub/api/project-delete', { token: admin, body: { name: PROJECT } }).catch(() => null)

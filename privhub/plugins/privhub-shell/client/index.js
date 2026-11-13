@@ -13,7 +13,18 @@
  * @module privhub-shell/client
  */
 
-const { api, AUTH, nav, barItems, badges } = window.PrivHub
+const { api, AUTH, nav, barItems, badges, THEME, applyTheme, toast } = window.PrivHub
+
+/* 常用/低频的分界（issue #3「频率决定位置」）：
+ * 每段只有前 PRIMARY_COUNT 个条目直显在抽屉里，其余收进段内的「更多」。
+ *
+ * 为什么按**位置**而不是写死一份 view 名单：段内顺序（SECTION_DEFS[].order）本身就是
+ * 按使用频率排的，且被 tests/iconbar.mjs 逐条钉住。按位置切，等于把「频率排序」这件事
+ * 只维护一处；日后调顺序，常用/低频的分界自动跟着走，不会出现两份名单互相漂移。
+ *
+ * 一条硬约束：**低频只是下沉，不是消失**。sections[].items 始终是全量（既有断言读它），
+ * 渲染层再切成 primary/more，「更多」里每个条目照样可点、照样有说明气泡。 */
+const PRIMARY_COUNT = 2
 
 /* ============ 顶栏：欢迎 + 项目下拉（项目多时避免溢出）+ 添加 ============ */
 const ProjectTabs = {
@@ -47,7 +58,7 @@ const ProjectTabs = {
 /* ============ 顶栏：右侧用户区 ============ */
 const TopbarUser = {
   name: 'shell-topbar-user',
-  data() { return { auth: AUTH, nav } },
+  data() { return { auth: AUTH, nav, theme: THEME } },
   computed: {
     isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
     displayName() {
@@ -55,11 +66,27 @@ const TopbarUser = {
       return u ? (u.displayName || u.username) : ''
     },
     initial() { return this.displayName ? this.displayName[0] : '' },
+    isDark() { return this.theme.theme === 'dark' },
+    /* 按钮显示的是**下一步动作**，aria-label 说的是当前状态 ——
+     * 只写「深色」会让人分不清「现在是深色」还是「点了变深色」。 */
+    themeLabel() { return this.isDark ? '浅色' : '深色' },
+    themeTitle() { return (this.isDark ? '当前深色主题' : '当前浅色主题') + ' · 点击切换（立即生效，无需保存）' },
+  },
+  methods: {
+    /* 个人偏好：即时生效、无保存按钮（只影响自己，所以不放进管理层的「系统设置」）。
+     * 权威写入是骨架的 applyTheme —— 它同时改 data-theme 与 localStorage，
+     * 这里不另存一份，避免刷新后与骨架读到的值不一致。 */
+    toggleTheme() {
+      this.theme.theme = this.isDark ? 'light' : 'dark'
+      if (typeof applyTheme === 'function') applyTheme()
+      if (typeof toast === 'function') toast(this.isDark ? '已切换到深色主题' : '已切换到浅色主题')
+    },
   },
   template: `
     <span class="badge" :class="{ admin: isAdmin }">{{ isAdmin ? '👑 管理员' : '👤 普通用户' }}</span>
     <div class="avatar">{{ initial }}</div>
     <span class="uname">{{ displayName }}</span>
+    <button class="icon-btn" :class="{ on: isDark }" :title="themeTitle" :aria-label="themeTitle" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }} {{ themeLabel }}</button>
     <button class="icon-btn" :class="{ on: nav.rightOpen }" @click="nav.rightOpen = !nav.rightOpen">{{ nav.rightOpen ? '收起侧栏' : '打开侧栏' }}</button>
     <button class="icon-btn" @click="nav.doLogout">退出</button>
   `,
@@ -116,7 +143,15 @@ function helpHideNow() { if (helpHideTimer) { clearTimeout(helpHideTimer); helpH
 
 const AppIconbar = {
   name: 'shell-app-iconbar',
-  data() { return { barItems, badges, nav, open: null, help: null, helpPos: { top: 0, left: 0 } } },
+  data() {
+    return {
+      barItems, badges, nav, open: null, help: null, helpPos: { top: 0, left: 0 },
+      /* 段内「更多」的展开态：{ 段id: true }。与一级手风琴各自独立 ——
+       * 展开某段的低频抽屉不该把别的段收起来（那是两层不同的深度）。 */
+      moreOpen: {},
+      primaryCount: PRIMARY_COUNT,
+    }
+  },
   computed: {
     /* 可上栏的条目：capFeature 已在骨架按开关过滤掉；这里再去掉管理控制台侧栏条目
      * （admin-nav 只在控制台里导航用，不在图标栏占位）。 */
@@ -125,10 +160,17 @@ const AppIconbar = {
     sections() {
       if (nav.project === null) return []
       return SECTION_DEFS
-        .map((d) => ({
-          id: d.id, label: d.label, icon: d.icon, desc: d.desc, doc: d.doc,
-          items: byOrder(d.order)(this.rail.filter((bi) => bi.group === d.id)),
-        }))
+        .map((d) => {
+          /* items 保持**全量且顺序不变**（既有契约读它，也是「一条不删」的证据）；
+           * primary/more 只是渲染层的切分，低频条目仍在 DOM 里可达。 */
+          const items = byOrder(d.order)(this.rail.filter((bi) => bi.group === d.id))
+          return {
+            id: d.id, label: d.label, icon: d.icon, desc: d.desc, doc: d.doc,
+            items,
+            primary: items.slice(0, PRIMARY_COUNT),
+            more: items.slice(PRIMARY_COUNT),
+          }
+        })
         .filter((s) => s.items.length)
     },
     /* 全局：常驻、不折叠。group 不认识的条目并进来 —— 宁可多显，不可静默吞掉。 */
@@ -162,10 +204,22 @@ const AppIconbar = {
     openBar(bi) { helpHideNow(); this.help = null; window.PrivHub.openBarItem(bi) },
     /* 手风琴：开一个就关掉其它；再点当前这个则收起。 */
     toggleSection(id) { this.open = this.open === id ? null : id },
+    /* 段内「更多」：只影响本段的低频抽屉，不动一级手风琴（两层深度互不干扰）。 */
+    toggleMore(id) { this.moreOpen = { ...this.moreOpen, [id]: !this.moreOpen[id] } },
+    isMoreOpen(id) { return !!this.moreOpen[id] },
+    /* 低频区里是否藏着**当前视图**：藏着就必须自动露出来 ——
+     * 否则用户从别处（工作台快捷入口 / 卡片）进了某个功能，栏里却看不到它在哪，
+     * 高亮项被折叠等于「我在哪儿」这条线索断了。 */
+    moreHasActive(s) {
+      return (s.more || []).some((bi) => this.isActive(bi))
+    },
     syncOpen() {
       const v = nav.activeView
       const sec = this.sections.find((s) => s.items.some((bi) => (bi.view || bi.slot) === v))
-      if (sec) this.open = sec.id
+      if (sec) {
+        this.open = sec.id
+        if (this.moreHasActive(sec)) this.moreOpen = { ...this.moreOpen, [sec.id]: true }
+      }
     },
     /* ---- 悬停说明气泡 ----
      * 只有声明了 desc 的条目才弹（否则保留原生 title，行为与迁前一致）。
@@ -210,8 +264,9 @@ const AppIconbar = {
           <div class="abar-sub" :class="{ open: open === s.id }">
             <!-- 抽屉：同一组共用一块凹陷底板，按钮嵌在里面（视觉上「从把手下面拉出来」） -->
             <div class="abar-drawer">
+              <!-- 常用：段内前 PRIMARY_COUNT 个直显（顺序即频率，见 SECTION_DEFS[].order） -->
               <div
-                v-for="bi in s.items" :key="bi.title"
+                v-for="bi in s.primary" :key="bi.title"
                 class="abar-item" :class="{ on: isActive(bi) }"
                 role="button" tabindex="0" :title="bi.desc ? null : bi.title" :aria-label="bi.title"
                 @click="openBar(bi)" @keydown.enter="openBar(bi)"
@@ -220,6 +275,33 @@ const AppIconbar = {
                 <span class="abar-ico">{{ bi.icon }}</span>
                 <span v-if="(bi.view || bi.slot) === 'trash' && badges.trash > 0" class="abar-badge">{{ badges.trash }}</span>
               </div>
+
+              <!-- 低频：再深一层（「更多」）。一条不删，只是不占常用位。 -->
+              <template v-if="s.more.length">
+                <div
+                  class="abar-more-head" :class="{ on: isMoreOpen(s.id) || moreHasActive(s) }"
+                  role="button" tabindex="0"
+                  :aria-expanded="isMoreOpen(s.id) ? 'true' : 'false'"
+                  :title="'更多' + s.label + '功能（' + s.more.length + ' 项）'"
+                  :aria-label="'更多' + s.label + '功能'"
+                  @click="toggleMore(s.id)" @keydown.enter="toggleMore(s.id)"
+                >
+                  <span class="abar-ico abar-more-ico">{{ isMoreOpen(s.id) ? '▴' : '▾' }}</span>
+                  <span v-if="moreHasActive(s) && !isMoreOpen(s.id)" class="abar-more-dot"></span>
+                </div>
+                <div class="abar-more" :class="{ open: isMoreOpen(s.id) }">
+                  <div
+                    v-for="bi in s.more" :key="bi.title"
+                    class="abar-item abar-item-deep" :class="{ on: isActive(bi) }"
+                    role="button" tabindex="0" :title="bi.desc ? null : bi.title" :aria-label="bi.title"
+                    @click="openBar(bi)" @keydown.enter="openBar(bi)"
+                    @mouseenter="showHelp(bi, $event)" @mouseleave="hideHelp" @focus="showHelp(bi, $event)" @blur="hideHelp"
+                  >
+                    <span class="abar-ico">{{ bi.icon }}</span>
+                    <span v-if="(bi.view || bi.slot) === 'trash' && badges.trash > 0" class="abar-badge">{{ badges.trash }}</span>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>

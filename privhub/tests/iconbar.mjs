@@ -283,6 +283,79 @@ console.log('\n── 悬停说明气泡 ──')
   ok(o.help === null, '离开气泡后延迟收起生效')
 }
 
+/* ══════════ 7. 低频下沉（issue #3「频率决定位置」）：一条不删，只是更深 ══════════
+ *
+ * 主人这一轮的两条硬要求：① 现有规则一条都不能删；② 不常用的可以放到比较深的地方。
+ * 所以这里断言的**不是「少了几个」**，而是「常用位有限 + 全量仍在 + 深层可达」：
+ *   · items 恒为全量且顺序不变（上面第 3 节已逐条钉住顺序）；
+ *   · primary + more 拼回去必须**逐项等于** items —— 少一个、重复一个都会红；
+ *   · 低频区的条目照样能点（openBar 收到的是同一个对象）。
+ * 这三条一起，才能证明「下沉」没有偷偷变成「删除」。 */
+console.log('\n── 低频下沉：常用位有限、全量仍在、深层可达 ──')
+{
+  nav.project = 'P'
+  const o = mount()
+  const N = o.primaryCount
+
+  ok(typeof N === 'number' && N >= 1, `常用位数量已声明（${N}）`)
+  for (const s of o.sections) {
+    ok(s.primary.length <= N, `${s.label}段常用位不超过 ${N} 个（低频不占首层）`)
+    ok(views(s.primary).concat(views(s.more)).join(',') === views(s.items).join(','),
+      `${s.label}段 primary + more 逐项等于 items（一条不删、不重、不改序）`)
+  }
+
+  const files = o.sections.find((s) => s.id === 'files')
+  ok(views(files.primary).join(',') === 'files,search', '文件段常用位＝文件/搜索（每日必用）')
+  ok(views(files.more).join(',') === 'favorites,trash', '文件段低频位＝收藏/回收站（偶尔用，下沉一层）')
+
+  const know = o.sections.find((s) => s.id === 'knowledge')
+  ok(know.more.length === 3, `知识段有 3 个低频条目被下沉（实际 ${know.more.length}）`)
+
+  /* 低频区默认收起；开合只影响本段，不动一级手风琴（两层深度互不干扰） */
+  o.open = 'knowledge'
+  ok(o.isMoreOpen('knowledge') === false, '低频区默认收起')
+  o.toggleMore('knowledge')
+  ok(o.isMoreOpen('knowledge') === true, '点「更多」→ 展开本段低频区')
+  ok(o.open === 'knowledge', '展开低频区不影响一级手风琴的展开段')
+  ok(o.isMoreOpen('files') === false, '别的段的低频区不受影响')
+  o.toggleMore('knowledge')
+  ok(o.isMoreOpen('knowledge') === false, '再点一次 → 收起')
+
+  /* 低频条目照样可点：openBar 拿到的必须是原始条目对象（不是副本、不是空壳） */
+  let opened = null
+  const savedOpen = window.PrivHub.openBarItem
+  window.PrivHub.openBarItem = (bi) => { opened = bi }
+  const deep = files.more[0]
+  o.openBar(deep)
+  window.PrivHub.openBarItem = savedOpen
+  ok(opened === deep, '低频区的条目点击后原样交给分发器（深层功能仍可达）')
+
+  /* 当前视图藏在低频区时必须自动露出来 —— 否则「我在哪儿」这条线索断了。
+   * 注意：回收站/搜索/收藏的高亮读的是**镜像标志**（nav.trashView 等），
+   * 骨架 setActiveView 会把 activeView 与镜像一起改。这里必须照真实状态机同时设两者，
+   * 只设 activeView 会让 isActive 判 false —— 那是 mock 与组件脱节，不是组件的错。 */
+  nav.activeView = 'trash'; nav.trashView = true
+  const o2 = mount()
+  o2.open = null
+  o2.syncOpen()
+  ok(o2.open === 'files', '切到回收站 → 自动展开文件段')
+  ok(o2.isMoreOpen('files') === true, '当前视图在低频区 → 自动展开低频区（高亮项不能被折叠藏起来）')
+  const trashSec = o2.sections.find((s) => s.id === 'files')
+  ok(o2.moreHasActive(trashSec) === true, 'moreHasActive 认出「当前视图在低频区」（据此点提示红点）')
+  nav.activeView = 'files'; nav.trashView = false
+  const o3 = mount()
+  o3.syncOpen()
+  ok(o3.isMoreOpen('files') === false, '当前视图在常用位 → 不必展开低频区')
+
+  /* 非镜像类的低频功能（标签）同样要能被自动露出来 */
+  nav.activeView = 'tags'
+  const o4 = mount()
+  o4.syncOpen()
+  ok(o4.open === 'knowledge', '切到标签 → 自动展开知识段')
+  ok(o4.isMoreOpen('knowledge') === true, '标签在低频区 → 自动展开（不靠镜像标志的视图同样生效）')
+  nav.activeView = 'files'
+}
+
 console.log('\n========================================================')
 console.log(`  左栏两级导航回归：${pass} 通过 / ${fail} 失败`)
 if (fail) {

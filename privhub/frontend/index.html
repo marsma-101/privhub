@@ -391,7 +391,9 @@
       width: 100%; overflow: hidden; max-height: 0;
       transition: max-height .26s cubic-bezier(.4, 0, .2, 1);
     }
-    .abar-sub.open { max-height: 320px; }
+    /* 320 → 460：段内多了「更多」一层（常用 2 + 把手 + 低频若干），
+     * 旧上限会把展开的低频区裁掉一半 —— 折叠动画的上限必须容得下最深的展开态。 */
+    .abar-sub.open { max-height: 460px; }
     .abar-sub .abar-item { opacity: 0; transform: translateY(-4px); }
     .abar-sub.open .abar-item { opacity: 1; transform: none; }
     /* 抽屉本体：同一组共用的一块**凹陷**底板（比栏面暗 + 内凹描边），顶边不封，
@@ -417,6 +419,34 @@
     .abar-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     /* 抽屉里的按钮：同一套浮雕规则，只是底换成了抽屉底板（常态突起、选中陷入）。*/
     .abar-drawer .abar-item { width: 38px; height: 36px; margin: 3px 0; font-size: 16px; }
+
+    /* ---- 段内「更多」：低频功能的第二层深度（issue #3「频率决定位置」）----
+     * 一条硬约束：低频只下沉、不删除。条目仍在 items 里、仍可点、仍有说明气泡，
+     * 只是不占常用位。收起时用 visibility:hidden 一并移出 Tab 序 ——
+     * 只靠 max-height:0 会留下「看不见但能 Tab 到」的幽灵焦点。 */
+    .abar-more-head {
+      width: 38px; height: 22px; margin: 2px 0 1px; display: grid; place-items: center;
+      position: relative; border-radius: var(--r-2); cursor: pointer; user-select: none;
+      color: var(--muted); background: transparent;
+      transition: color .16s, background .16s;
+    }
+    .abar-more-head:hover { color: var(--text); background: var(--abar-chip); }
+    .abar-more-head.on { color: var(--accent); }
+    .abar-more-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .abar-more-ico { font-size: 11px; line-height: 1; }
+    /* 低频区里藏着当前视图时点一下红点：告诉人「你在这儿，只是被收起来了」 */
+    .abar-more-dot {
+      position: absolute; top: 2px; right: 3px; width: 5px; height: 5px;
+      border-radius: var(--r-full); background: var(--accent);
+    }
+    .abar-more {
+      width: 100%; max-height: 0; overflow: hidden; visibility: hidden;
+      display: flex; flex-direction: column; align-items: center;
+      transition: max-height .24s cubic-bezier(.4, 0, .2, 1), visibility .24s;
+    }
+    .abar-more.open { max-height: 260px; visibility: visible; }
+    /* 更深一层的条目略小、略淡：深度靠尺寸与明度表达，不靠新增配色 */
+    .abar-drawer .abar-item-deep { width: 34px; height: 32px; font-size: 15px; opacity: .92; }
     .abar-bottom { flex: 0 0 auto; }
     .abar-badge {
       position: absolute; top: 1px; right: 1px; min-width: 14px; height: 14px; border-radius: var(--r-3);

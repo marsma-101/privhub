@@ -1,29 +1,38 @@
 /**
- * privhub-shell-home · client — 工作台
+ * privhub-shell-home · client — 工作台 = L1 项目总览 + 个人工作面
  *
- * 「进来先干什么」：一屏回答三个问题 ——
- *   1. AI 到底通不通（模型接入状态，管理员可在此自检/跳转配置）
- *   2. 我刚在忙什么（最近打开 / 我的收藏，点击直接定位）
- *   3. 还能去哪（快捷入口，按已装载插件动态出现）
+ * ## 一屏之内的优先级（频率决定位置）
+ *   首屏  L1「项目总览」驾驶舱（./overview.js）：KPI → 管线聚合 → 项目卡片 → 我的入口。
+ *         领导每日必看的东西必须在最上面，不该埋在折叠区里。
+ *   往下  「个人工作面」折叠区：**原有内容一条没删**，只是从首屏下沉一层 ——
+ *         快捷入口 / AI 连接状态 / 最近打开 / 我的收藏，全部原样保留。
+ *   顶栏  主题即时切换（个人偏好：点一下立刻生效、无保存按钮，见骨架 user-area）。
  *
+ * ## 为什么是「下沉」而不是「替换」
+ * 主人这一轮的两条硬要求：① 现有规则一条都不能删；② 不常用的可以放到比较深的地方。
+ * 所以这里不做「用总览换掉工作台」，而是**总览在上、原工作台在下且可展开**：
+ * 老用户肌肉记忆里的每张卡片都还在，只是不再抢占领导的首屏。
+ *
+ * ## 边界
  * 不抢默认视图：登录仍落在「欢迎页 + 项目列表」（既有且被测试钉住的入口），
  * 工作台从图标栏进入。默认视图一旦改成工作台，新装环境首屏会是一个空面板。
  *
- * 它只读既有接口，不新增服务端路由：
+ * 本文件只读既有接口（总览那一条在 ./overview.js 里，由 project-dashboard 提供）：
  *   GET /privhub/api/recent                （privhub-shell-recent）
  *   GET /privhub/api/favorites             （privhub-shell-favorites）
  *   GET /privhub/api/model/config          （svc-rag 注册，管理员）
  *   GET /privhub/api/model/status?force=1  （svc-rag 注册，管理员）
  * 两个 model 接口对非管理员返回 403，所以只在 isAdmin 时请求 —— 不制造必然失败的请求。
  *
- * 样式拆在 ./styles.js（import 即注入），本文件只留组件与数据流。
+ * 样式拆在 ./styles.js + ./overview-styles.js（import 即注入），本文件只留组件与数据流。
  *
  * @module privhub-shell-home/client
  */
 
 import './styles.js'
+import Overview from './overview.js'
 
-const { api, nav, bus, AUTH } = window.PrivHub
+const { api, nav, bus, AUTH, THEME, applyTheme } = window.PrivHub
 
 /* 模型端点六种自检结果（svc-model ModelHealth 的全部取值，不多不少） */
 const STATUS_TEXT = {
@@ -60,6 +69,7 @@ function rel(ts) {
 
 const Home = {
   name: 'home-view',
+  components: { HomeOverview: Overview },
   data() {
     return {
       loading: true,
@@ -71,11 +81,20 @@ const Home = {
       modelErr: '',
       checking: false,
       now: Date.now(),
+      /* 个人工作面默认收起：首屏让给 L1 总览。展开状态记在本地 ——
+       * 常翻最近/收藏的人展开一次就一直开着，不必每次进来再点。 */
+      workOpen: localStorage.getItem('privhub_home_work_open') === '1',
     }
   },
   computed: {
     /* AUTH 是骨架的 reactive，这里读它即可自动跟随登录态变化 */
     isAdmin() { return !!(AUTH.user && AUTH.user.role === 'admin') },
+    /* 两条通道都通才算「可用」。此前模板引用了这个键却没有定义，
+     * 徽标恒落到「待处理」—— 状态显示与实际不符，属于静默失真，这里补上真源。 */
+    modelOk() {
+      const m = this.model
+      return !!(m && m.llm && m.llm.status === 'ok' && m.embedding && m.embedding.status === 'ok')
+    },
     userName() { const u = AUTH.user || {}; return u.displayName || u.username || '' },
     hello() {
       const h = new Date(this.now).getHours()
@@ -167,6 +186,12 @@ const Home = {
       if (this.hasView(view)) nav.setActiveView(view, { noToggle: true })
     },
 
+    /* 折叠区开合：状态落本地，下次进来还是上次的样子（上下文不丢失） */
+    toggleWork() {
+      this.workOpen = !this.workOpen
+      localStorage.setItem('privhub_home_work_open', this.workOpen ? '1' : '0')
+    },
+
     statusText(h) { return (h && STATUS_TEXT[h.status]) || '未知' },
     statusDot(h) { return (h && STATUS_DOT[h.status]) || '' },
     /* 只有 refused/timeout 这类才给原文，免得把内部地址回显在首页 */
@@ -184,11 +209,27 @@ const Home = {
   },
   template: `
     <div class="home-wrap ph-scroll">
+      <!-- ① L1 项目总览：领导每日必看的东西占据首屏（KPI → 管线 → 项目卡片 → 我的） -->
+      <home-overview></home-overview>
+
+      <!-- ② 个人工作面：原有工作台内容一条没删，整体下沉到折叠区。
+           默认收起把首屏让给总览；展开状态记在本地，常翻最近/收藏的人开一次就一直开着。 -->
+      <div class="ov-fold">
+        <button
+          class="ov-fold-h" type="button"
+          :aria-expanded="workOpen ? 'true' : 'false'"
+          @click="toggleWork"
+        >
+          <span class="caret" :class="{ open: workOpen }">▶</span>
+          <span>🧰 个人工作面</span>
+          <span class="hint">{{ workOpen ? '点击收起' : '快捷入口 · AI 连接状态 · 最近打开 · 我的收藏' }}</span>
+        </button>
+        <div v-if="workOpen" class="ov-fold-b">
       <div class="home-hello">
         <span class="big">{{ hello }}<template v-if="userName">，{{ userName }}</template></span>
         <span class="home-time">{{ today }}</span>
       </div>
-      <div class="home-sub">这是工作台：左边是文件，这里是你接下来可能要做的事。</div>
+      <div class="home-sub">这里是你接下来可能要做的事：左边是文件，下面是接着干活的入口。</div>
 
       <div class="home-quick">
         <button v-if="hasView('search')" class="home-qbtn" @click="quick('search')"><span>🔍</span>搜索文件</button>
@@ -285,6 +326,8 @@ const Home = {
           </div>
         </div>
       </div>
+        </div><!-- /.ov-fold-b -->
+      </div><!-- /.ov-fold -->
     </div>
   `,
 }

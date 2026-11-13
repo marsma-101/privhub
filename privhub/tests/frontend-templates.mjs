@@ -339,6 +339,97 @@ const loadModelBody = (/async loadModel\([\s\S]*?\n    \},/.exec(homeSrc) || [''
 ok(/if \(!this\.isAdmin\) return/.test(loadModelBody),
   '工作台请求模型接口前先判 isAdmin（普通用户不产生必然 403 的请求）')
 
+/* ---- 3c. L1 项目总览 + 低频下沉（issue #3）----
+ * 主人两条硬要求：① 现有规则一条都不能删；② 不常用的放到比较深的地方。
+ * 这两条只能靠断言守住 —— 界面「看起来更清爽」和「偷偷删了功能」在截图上是一样的。 */
+console.log('\n── L1 项目总览 / 低频下沉：一条不删 ──')
+
+const ovSrc = asLF('plugins/privhub-shell-home/client/overview.js')
+const ovCss = asLF('plugins/privhub-shell-home/client/overview-styles.js')
+
+/* ① 原工作台的四块内容必须仍在文件里（下沉到折叠区，不是删除） */
+for (const [label, needle] of [
+  ['AI 连接状态卡', 'AI 连接状态'],
+  ['最近打开卡', '最近打开'],
+  ['我的收藏卡', '我的收藏'],
+  ['快捷入口行', 'home-quick'],
+]) {
+  ok(homeSrc.includes(needle), `工作台原有「${label}」仍在（下沉不删除）`)
+}
+ok(/class="ov-fold"/.test(homeSrc) && /toggleWork/.test(homeSrc),
+  '原工作台内容收进可展开的折叠区（低频下沉一层，仍可达）')
+ok(/localStorage\.setItem\('privhub_home_work_open'/.test(homeSrc),
+  '折叠区展开状态记在本地（下次进来保持上次样子，上下文不丢失）')
+ok(/<home-overview>/.test(homeSrc) && /components:\s*\{\s*HomeOverview/.test(homeSrc),
+  '首屏挂载 L1 总览组件（组件已注册，否则渲染成空白标签）')
+/* modelOk 此前被模板引用却没有定义 —— 徽标恒显示「待处理」。补上真源后钉住。 */
+ok(/modelOk\(\)\s*\{/.test(homeSrc), 'AI 徽标的 modelOk 有真实定义（此前缺失导致状态恒为「待处理」）')
+
+/* ② 总览：三态齐备 + 口径写在界面上 + null 不显示成 0 */
+ok(/v-if="err"/.test(ovSrc) && /重试/.test(ovSrc), '总览有错误态并给重试入口（不留白屏）')
+ok(/loading && !ov/.test(ovSrc), '总览有加载态')
+ok(/noProjects/.test(ovSrc) && /新建项目/.test(ovSrc), '总览空态给出下一步（不只是「暂无数据」）')
+ok(/BLOCKER_HINT/.test(ovSrc) && /逾期/.test(ovSrc) && /WIP/.test(ovSrc),
+  '卡点口径写在界面上（逾期 / WIP / 计划受阻），数字可复核')
+ok(/percent === null \? '—'/.test(ovSrc), '进度为 null 时显示「—」而不是 0%')
+ok(/numText\(v\)[\s\S]{0,80}null/.test(ovSrc), '成员/文件数缺失时显示「—」而不是 0')
+ok(/ov\.truncated/.test(ovSrc), '聚合被截断时界面明说（不假装统计了全部项目）')
+ok(/tasksDisabled/.test(ovSrc), '任务功能关闭时界面说清原因')
+ok(/aria-pressed/.test(ovSrc) && /:value="sortKey"/.test(ovSrc) && /:value="q"/.test(ovSrc),
+  '筛选/排序控件反映当前态（受控 value + aria-pressed，不是「看着没选中其实在筛」）')
+ok(/placeholder="筛选项目名…"/.test(ovSrc), '搜索框明示范围（只筛项目名，不做全局 omnibox）')
+/* 「只读」不能靠注释里写了「只读」就算数（注释是假保险）：直接数它发出的请求。
+ * 端点是变量拼接的（要带 ?q=），所以既查端点字面量，也查 api() 调用点个数。 */
+{
+  const endpoints = [...ovSrc.matchAll(/'(\/privhub\/api\/[^']+)'/g)].map((m) => m[1])
+  const calls = [...ovSrc.matchAll(/\bapi\(/g)].length
+  ok(endpoints.length === 1 && endpoints[0] === '/privhub/api/dashboard/overview',
+    `L1 总览只认一个端点（实际 ${endpoints.join(', ') || '无'}）`)
+  ok(calls === 1, `L1 总览只有一处 api() 调用（实际 ${calls} 处）`)
+  ok(!/method:\s*'(POST|PUT|DELETE|PATCH)'/.test(ovSrc),
+    'L1 总览不含任何写请求（编辑一律在项目内做，首页不承担写风险）')
+  ok(/encodeURIComponent\(asked\)/.test(ovSrc), '筛选词做 URL 编码（项目名含 & # 空格时不会拼坏地址）')
+  ok(/asked !== this\.q\.trim\(\)/.test(ovSrc),
+    '丢弃过期回包（边打字边请求时，先发的后到会把旧结果盖在新输入上）')
+}
+
+/* ③ 管线可分辨性：四个桶除了颜色还带图案与直接标签（去掉颜色也能读） */
+for (const b of ['todo', 'doing', 'review', 'done']) {
+  ok(new RegExp('\\.ov-seg\\.' + b + '\\s*\\{').test(ovCss), `管线桶 ${b} 有专属样式`)
+}
+ok(/repeating-linear-gradient/.test(ovCss) && /radial-gradient/.test(ovCss),
+  '管线用图案辅助区分（斜纹/点阵），不只靠颜色 —— 色觉障碍用户也能读')
+ok(/\[data-theme="dark"\]/.test(ovCss), '管线桶色在深色主题下各自覆盖（不是只适配浅色）')
+ok(/\.ov-card:focus-visible/.test(ovCss) && /\.ov-chip:focus-visible/.test(ovCss),
+  '卡片与筛选 chip 有键盘焦点样式（可键盘操作）')
+
+/* ④ 新样式引用的令牌必须真有定义（打错一个字母只会静默失效） */
+{
+  /* 就地解析骨架令牌：下文 §4b 的 tokDefs 在这段之后才初始化（const 有 TDZ），
+   * 直接引用会 ReferenceError。这里自己取一份，互不依赖。 */
+  const skAll = asLF('frontend/index.html')
+  const skStyleOnly = skAll.slice(skAll.indexOf('<style>'), skAll.indexOf('</style>')).replace(/\/\*[\s\S]*?\*\//g, '')
+  const skTokens = new Set([...skStyleOnly.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]))
+  const declared = new Set([...ovCss.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]))
+  const refs = [...ovCss.matchAll(/var\((--[a-zA-Z0-9-]+)/g)].map((m) => m[1])
+  const missing = [...new Set(refs)].filter((t) => !declared.has(t) && !skTokens.has(t))
+  ok(missing.length === 0,
+    `总览样式的每个 var(--…) 都有定义（骨架或本文件）${missing.length ? '，未定义：' + missing.join(', ') : ''}`)
+}
+
+/* ⑤ 顶栏主题开关：个人偏好即时生效，且权威写入仍走骨架 applyTheme */
+const shellSrc = asLF('plugins/privhub-shell/client/index.js')
+ok(/toggleTheme\(\)/.test(shellSrc) && /applyTheme\(\)/.test(shellSrc),
+  '顶栏主题开关调骨架 applyTheme（唯一权威写入，不另存一份 localStorage）')
+ok(/:aria-label="themeTitle"/.test(shellSrc), '主题按钮有无障碍名与当前状态说明')
+/* 低频下沉：items 全量 + primary/more 切分 + 当前视图自动露出 */
+ok(/PRIMARY_COUNT/.test(shellSrc) && /primary: items\.slice/.test(shellSrc) && /more: items\.slice/.test(shellSrc),
+  '图标栏按位置切常用/低频（items 保持全量，切分只在渲染层）')
+ok(/moreHasActive/.test(shellSrc), '当前视图藏在低频区时会被认出并自动展开（高亮项不被折叠藏起来）')
+const skelForMore = asLF('frontend/index.html')
+ok(/\.abar-more\s*\{[^}]*visibility:\s*hidden/.test(skelForMore.replace(/\r\n/g, '\n')),
+  '低频区收起时 visibility:hidden（只靠 max-height:0 会留下能 Tab 到的幽灵焦点）')
+
 /* ---- 4. 已知显示 bug 的回归断言 ---- */
 console.log('\n── 已知显示 bug 回归 ──')
 const tplSrc = readFileSync(join(ROOT, 'plugins', 'privhub-files-template', 'client', 'index.js'), 'utf8')

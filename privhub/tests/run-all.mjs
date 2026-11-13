@@ -153,8 +153,8 @@ async function main() {
   let pass = report(results)
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
-  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / 存储根与密钥安全 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 标题碰撞 / 思维导图 / 蓝绿运行时契约 / HTTP 更新源')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'nginx-direct.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
+  console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / 存储根与密钥安全 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 项目总览聚合 / 标题碰撞 / 思维导图 / 蓝绿运行时契约 / HTTP 更新源')
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'nginx-direct.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'overview-aggregate.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -186,8 +186,10 @@ function runChild(script) {
      *                            脚本自身只发 HTTP、不 import 任何 .ts 源码。
      *   · media-preview.mjs   —— 进程内 `import()` 真身 `plugins/privhub-core/src/http-range.ts`
      *                            （纯函数区间解析断言 + 另起隔离实例验 HTTP Range），必须走 tsx。
+     *   · overview-aggregate.mjs —— 进程内 `import()` 真身 `privhub-project-dashboard/src/overview.ts`
+     *                            （L1 总览的桶归类 / 卡点口径 / 均值分母 / null≠0），必须走 tsx。
      * 其余静态脚本不需要，保持原样调用。 */
-    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|link-parsing|dup-upload|storage-migration|json-corruption|media-preview)\.mjs$/.test(script)
+    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|link-parsing|dup-upload|storage-migration|json-corruption|media-preview|overview-aggregate)\.mjs$/.test(script)
     const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))
