@@ -83,7 +83,7 @@ const Overview = {
     sorts() { return SORTS },
     blockerHint() { return BLOCKER_HINT },
     totals() { return (this.ov && this.ov.totals) || null },
-    mine() { return (this.ov && this.ov.mine) || { total: 0, open: 0 } },
+    mine() { return (this.ov && this.ov.mine) || { total: 0, open: 0, project: null } },
     personal() { return (this.ov && this.ov.personal) || null },
     tasksDisabled() { return !!(this.ov && this.ov.tasksDisabled) },
     /** 平均进度：null → 「—」（一个有任务的项目都没有时，不拿 0% 冒充）。 */
@@ -128,8 +128,31 @@ const Overview = {
     },
     visibleCards() { return this.expanded ? this.cards : this.cards.slice(0, 8) },
     hiddenCount() { return Math.max(0, this.cards.length - this.visibleCards.length) },
-    blockedCount() { return ((this.ov && this.ov.projects) || []).filter((p) => p.blockers > 0).length },
-    noProjects() { return !this.loading && !this.err && !!this.ov && this.ov.projects.length === 0 },
+    /* 「几个项目需要处理」必须用服务端的**全盘**计数。
+     * 若用筛选后的卡片列表去数，搜一个没卡点的项目就会显示
+     * 「卡点合计 50 处 / 0 个项目需要处理」—— 自相矛盾。 */
+    blockedCount() { return (this.totals && this.totals.blockedProjects) || 0 },
+    /* 「真的没有项目」只能看 totals.visible（未截断的可见总数）。
+     * 用 projects.length 判空会在**筛选无结果**时谎称「你没有可访问的项目、
+     * 请联系管理员开权限」—— 明明有几百个，只是这次没搜到。 */
+    noProjects() { return !this.loading && !this.err && !!this.totals && this.totals.visible === 0 },
+    /** 服务端筛选回执：命中总数可能大于已显示条数，必须如实告知。 */
+    search() { return (this.ov && this.ov.search) || null },
+    /**
+     * 本次**取回**的项目条数。不能用 cards.length ——
+     * 那是再经「只看有卡点」筛过、又排过序的展示条数，
+     * 拿它说「已取回 N 个」会把「命中 100 取回 60，其中 3 个有卡点」说成取回 3 个。
+     */
+    foundCount() { return ((this.ov && this.ov.projects) || []).length },
+    /**
+     * 聚合被截断时，除「可见项目」外的 KPI 都只覆盖前 N 个项目。
+     * 必须逐项标注 —— 否则「卡点 12 处」看着像全盘结论，实际漏了后面的项目，
+     * 领导会据此以为盘子很健康。宁可承认范围有限，也不给一个假装完整的数字。
+     */
+    partialNote() {
+      const t = this.totals
+      return t && t.visible > t.projects ? '（按前 ' + t.projects + ' 个项目）' : ''
+    },
   },
   methods: {
     dayText,
@@ -173,12 +196,15 @@ const Overview = {
       if (this.personal && this.personal.dir) nav.openDir(this.personal.dir, '')
     },
 
-    /** 我的任务：任务数据源在项目，这里把人送到第一个有自己待办的项目的任务看板。 */
+    /**
+     * 我的任务：跳到**服务端算出的、真的有我未完成卡片**的那个项目。
+     * 不再用「有任务的项目 || 列表第一个」兜底 —— 那会把人送到一个跟他无关的项目，
+     * 按钮上的数字与跳转目标对不上，是最难被发现的一类失真。
+     */
     openMyTasks() {
-      const list = (this.ov && this.ov.projects) || []
-      const hit = list.find((p) => p.hasBoard && p.buckets.todo + p.buckets.doing + p.buckets.review > 0) || list[0]
-      if (!hit) return
-      nav.openProject(hit.project, { view: nav.hasBarView('taskboard') ? 'taskboard' : undefined })
+      const target = this.mine.project
+      if (!target) return
+      nav.openProject(target, { view: nav.hasBarView('taskboard') ? 'taskboard' : undefined })
     },
 
     /* 清除筛选要**重新取数**：q 是服务端筛的，只把输入框清空会让名单停在上次结果。 */
@@ -202,6 +228,11 @@ const Overview = {
     healthClass(p) { return p.blockers > 0 ? 'warn' : (p.health === 'good' ? 'good' : 'normal') },
     /** 成员/任务数为 null 时显示「—」，绝不显示 0（那是两回事）。 */
     numText(v) { return v === null || v === undefined ? '—' : String(v) },
+    /**
+     * 原因图标按 kind 分：partial 是「统计不全」的告知，不是问题本身，
+     * 用 ℹ 而不是 ⚠ —— 把数据完整性提示画成告警，会让人以为真有任务出事。
+     */
+    reasonIcon(r) { return r && r.kind === 'partial' ? 'ℹ' : '⚠' },
     dueText(p) {
       if (!p.dueAt) return ''
       const days = Math.ceil((p.dueAt - this.now) / DAY)
@@ -255,23 +286,24 @@ const Overview = {
         <div class="ov-kpis">
           <div class="ov-kpi">
             <span class="k">可见项目</span>
-            <span class="v">{{ totals.projects }}<span class="u">个</span></span>
-            <span class="hint">{{ totals.withTasks }} 个已建任务</span>
+            <!-- 用 visible（未截断的真实总数），不是被上限夹过的条数 -->
+            <span class="v">{{ totals.visible }}<span class="u">个</span></span>
+            <span class="hint">{{ totals.withTasks }} 个已建任务{{ partialNote }}</span>
           </div>
           <div class="ov-kpi" :class="totals.blockers > 0 ? 'bad' : 'ok'">
             <span class="k">卡点合计</span>
             <span class="v">{{ totals.blockers }}<span class="u">处</span></span>
-            <span class="hint">{{ blockedCount }} 个项目需要处理</span>
+            <span class="hint">{{ blockedCount }} 个项目需要处理{{ partialNote }}</span>
           </div>
           <div class="ov-kpi">
             <span class="k">平均进度</span>
             <span class="v">{{ avgText }}<span class="u" v-if="avgText !== '—'">%</span></span>
-            <span class="hint">按已建任务的项目取平均</span>
+            <span class="hint">按已建任务的项目取平均{{ partialNote }}</span>
           </div>
           <div class="ov-kpi" :class="mine.open > 0 ? 'warn' : ''">
             <span class="k">我的待办</span>
             <span class="v">{{ tasksDisabled ? '—' : mine.open }}<span class="u" v-if="!tasksDisabled">项</span></span>
-            <span class="hint">{{ tasksDisabled ? '任务功能已关闭' : '共指派 ' + mine.total + ' 项' }}</span>
+            <span class="hint">{{ tasksDisabled ? '任务功能已关闭' : '共指派 ' + mine.total + ' 项' }}{{ partialNote }}</span>
           </div>
         </div>
 
@@ -327,8 +359,18 @@ const Overview = {
             </span>
           </div>
 
+          <!-- 筛选回执：命中数可能大于显示数，必须如实说，不能让人以为「就这些」 -->
+          <div v-if="search" class="ov-found">
+            在 {{ totals.visible }} 个可见项目里，名字含「{{ search.q }}」的共 {{ search.matched }} 个{{ search.truncated ? '，已取回 ' + foundCount + ' 个' : '' }}。
+            <button class="ov-link" type="button" @click="clearFilters">清除筛选</button>
+          </div>
+
           <div v-if="cards.length === 0" class="ov-state">
-            {{ q ? '没有名字含「' + q + '」的可见项目。' : '没有当前带卡点的项目 —— 这是好事。' }}
+            <template v-if="q">
+              没有名字含「{{ q }}」的可见项目（已查全部 {{ totals.visible }} 个）。
+              <div>换个关键词，或清除筛选看全部。</div>
+            </template>
+            <template v-else>没有当前带卡点的项目 —— 这是好事。</template>
             <div><button class="btn" @click="clearFilters">清除筛选</button></div>
           </div>
 
@@ -357,7 +399,10 @@ const Overview = {
                 <span v-else-if="sinceText(p.updatedAt)">{{ sinceText(p.updatedAt) }}</span>
               </span>
               <span class="ov-reasons" v-if="p.reasons.length">
-                <span v-for="(r, i) in p.reasons.slice(0, 3)" :key="i" class="ov-reason">⚠ {{ r.text }}</span>
+                <span v-for="(r, i) in p.reasons.slice(0, 3)" :key="i" class="ov-reason" :class="{ info: r.kind === 'partial' }">{{ reasonIcon(r) }} {{ r.text }}</span>
+                <!-- 只展示前 3 条时必须说还有多少条，否则「卡点 7 处」下面只列 3 条，
+                     看着像全部原因都在这儿了（部分冒充全量）。 -->
+                <span v-if="p.reasons.length > 3" class="ov-reason more">还有 {{ p.reasons.length - 3 }} 条原因，进项目查看</span>
               </span>
             </button>
           </div>
@@ -376,19 +421,19 @@ const Overview = {
           <div class="ov-mine">
             <div class="ov-mine-cell" v-if="personal">
               <span class="k">我的文件 · {{ personal.dir }}</span>
-              <span class="v">{{ personal.entries }}<span class="u">个顶层条目</span></span>
+              <span class="v">{{ numText(personal.entries) }}<span class="u">个顶层条目</span></span>
               <div style="margin-top:8px"><button class="btn" style="width:auto" @click="openMyFiles">打开我的文件</button></div>
             </div>
             <div class="ov-mine-cell">
               <span class="k">我的任务</span>
               <span class="v">{{ tasksDisabled ? '—' : mine.open }}<span class="u">项未完成</span></span>
               <div style="margin-top:8px">
-                <button class="btn" style="width:auto" :disabled="tasksDisabled || totals.projects === 0" @click="openMyTasks">去任务看板</button>
+                <button class="btn" style="width:auto" :disabled="tasksDisabled || !mine.project" :title="mine.project ? ('去「' + mine.project + '」的任务看板（我的未完成 ' + mine.open + ' 项）') : '当前没有指派给你的未完成任务'" @click="openMyTasks">去任务看板</button>
               </div>
             </div>
             <div class="ov-mine-cell">
               <span class="k">全部项目</span>
-              <span class="v">{{ totals.projects }}<span class="u">个可见</span></span>
+              <span class="v">{{ totals.visible }}<span class="u">个可见</span></span>
               <div style="margin-top:8px"><button class="btn" style="width:auto" @click="openAllProjects">从列表选择</button></div>
             </div>
           </div>

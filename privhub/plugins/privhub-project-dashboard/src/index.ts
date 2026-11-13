@@ -164,7 +164,9 @@ export function apply(ctx: Context): void {
 
     const inputs: OverviewInput[] = []
     for (const p of scoped) inputs.push(await loadInput(p))
-    const result = aggregateOverview(inputs)
+    /* visibleTotal 传**未截断**的可见项目数：KPI 的「可见项目」必须是真实总数，
+     * 否则 500 个项目会被显示成 60 个（截断后的条数冒充总数 = 数字失真）。 */
+    const result = aggregateOverview(inputs, { visibleTotal: all.length })
 
     /* 搜索结果单独一路：命中名单取自**全量可见项目**，再把「首屏之外」的命中补读进来。
      * totals 与 mine 仍按全盘口径（不随筛选变化）—— 否则一搜「A项目」，
@@ -184,32 +186,77 @@ export function apply(ctx: Context): void {
       search = { q, matched: hits.length, truncated: hits.length > projects.length }
     }
 
-    /* 「我的任务」：按显示名/用户名匹配 assignee（任务卡存的是名册名，不是 username）。 */
+    /* 「我的任务」：按显示名/用户名匹配 assignee（任务卡存的是名册名，不是 username）。
+     *
+     * 同时算出**该去哪个项目**：按钮上写着「我的待办 N 项」，就必须跳到真的
+     * 有这些待办的项目。此前前端用 `有任务的项目 || 列表第一个` 兜底，
+     * 会把人送到一个跟他毫无关系的项目 —— 数字与跳转目标对不上，是最难发现的失真。
+     * 取「我的未完成最多」的那个项目；一个都没有时回 null，前端据此禁用并说明原因。 */
     const names = new Set([String((u as { displayName?: string }).displayName || ''), u.username].filter(Boolean))
     let mine = 0, mineOpen = 0
+    let mineProject: string | null = null, mineProjectOpen = 0
     if (canTasks) {
       for (const it of inputs) {
         if (!it.tasks) continue
+        let openHere = 0
         for (const c of it.tasks.cards) {
           if (!names.has(c.assignee)) continue
           mine++
-          if (c.columnId !== it.tasks.doneColumnId) mineOpen++
+          if (c.columnId !== it.tasks.doneColumnId) { mineOpen++; openHere++ }
         }
+        if (openHere > mineProjectOpen) { mineProjectOpen = openHere; mineProject = it.project }
       }
     }
 
     /* 个人入口：只给**本人**的目录名与顶层条目数（非递归，一次 listFiles）。
      * 管理员也拿不到别人的 —— personalDirOf 只看当前用户。 */
-    let personal: { dir: string; entries: number } | null = null
+    let personal: { dir: string; entries: number | null } | null = null
     const ownDir = svc.personalDirOf(u as never)
     if (ownDir) {
-      const list = await svc.listFiles(ownDir, '').catch(() => [])
-      personal = { dir: ownDir, entries: Array.isArray(list) ? list.length : 0 }
+      /* 读失败时 entries=null（界面显示「—」），**不是 0**：
+       * 把「读不出来」显示成「你的目录是空的」会让人以为文件丢了。 */
+      const list = await svc.listFiles(ownDir, '').catch(() => null)
+      personal = { dir: ownDir, entries: Array.isArray(list) ? list.length : null }
+    }
+
+    /* 个人层的「我的任务 / 我的日程」需要**卡片明细**，不只是计数。
+     * 明细同样只来自 inputs（已按权限过滤的项目），绝不另开一条查询路径 ——
+     * 否则「计数按权限算、明细按全库取」就会从个人页面泄露别人的任务。 */
+    const myTasks: Array<{
+      project: string; id: string; title: string; columnId: string; columnTitle: string
+      done: boolean; dueDate: number | null; priority: string; labels: string[]
+    }> = []
+    let tasksPartial = false
+    if (canTasks) {
+      for (const it of inputs) {
+        if (!it.tasks) continue
+        if (it.tasks.cardsTruncated) tasksPartial = true
+        const colTitle = new Map(it.tasks.byColumn.map((c) => [c.id, c.title]))
+        for (const c of it.tasks.cards) {
+          if (!names.has(c.assignee)) continue
+          myTasks.push({
+            project: it.project, id: c.id, title: c.title, columnId: c.columnId,
+            columnTitle: colTitle.get(c.columnId) || '',
+            done: c.columnId === it.tasks.doneColumnId,
+            dueDate: c.dueDate, priority: c.priority, labels: c.labels || [],
+          })
+        }
+      }
+      /* 未完成的排前面，其次按截止升序（无截止排最后）：
+       * 个人页面第一眼要看到的是「最该先做的那件事」，不是按项目名排。 */
+      myTasks.sort((a, b) => {
+        if (a.done !== b.done) return a.done ? 1 : -1
+        const da = a.dueDate === null ? Infinity : a.dueDate
+        const db = b.dueDate === null ? Infinity : b.dueDate
+        return da - db || a.project.localeCompare(b.project, 'zh-Hans-CN')
+      })
     }
 
     json(res, 200, {
       ok: true, ...result, projects, search,
-      tasksDisabled: !canTasks, mine: { total: mine, open: mineOpen }, personal,
+      tasksDisabled: !canTasks,
+      mine: { total: mine, open: mineOpen, project: mineProject, tasks: myTasks, partial: tasksPartial },
+      personal,
     })
   }, 'dashboard-overview')
 

@@ -926,7 +926,7 @@
       searchView: false,
       favView: false,
       /* ⑤ 视图化（llm_wiki 范式）：单一 activeView 状态源，天然互斥无残留
-         'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki | rag | agent | taskboard | calendar | dashboard | refcheck | home
+         'files'(默认) | 'trash' | 'search' | 'favorites' | settings | admin | acl | audit | tags | template | kg | wiki | rag | agent | taskboard | calendar | dashboard | refcheck | home | me
          trashView/searchView/favView 为兼容镜像（视图型测试仍可读） */
       activeView: 'files',
       /* 使用说明弹层（{ title, html, text, loading } | null）。图标栏悬停气泡的
@@ -944,6 +944,14 @@
       tree: reactive({}),     // 目录树展开缓存：key -> { expanded, children }
       /* A2：左面板宽度（拖拽调整 + localStorage 持久化；0 = 折叠） */
       sidebarWidth: parseInt(localStorage.getItem('privhub_sidebar_w') || '220', 10) || 220,
+      /* 导航形态：新层级导航（层级条 + 项目四 tab）为默认；
+       * compactRail=true 时切回旧的紧凑图标竖栏。两套读同一份 barItems 与归组数据，
+       * 所以切换不会丢功能 —— 保留它是为了「用惯了竖栏的人不必被迫改习惯」。 */
+      compactRail: localStorage.getItem('privhub_compact_rail') === '1',
+      setCompactRail(on) {
+        nav.compactRail = !!on
+        localStorage.setItem('privhub_compact_rail', on ? '1' : '0')
+      },
       toggleSidebar() {
         nav.sidebarWidth = nav.sidebarWidth > 40 ? 0 : 220
         localStorage.setItem('privhub_sidebar_w', String(nav.sidebarWidth))
@@ -1444,6 +1452,7 @@
                view === 'calendar' ||                                         // [calendar] 任务日历视图
                view === 'dashboard' ||                                        // [dashboard] 项目看板视图
                view === 'refcheck' ||                                         // [refcheck] 引用检查视图
+               view === 'me' ||                                               // [me] 个人层「我的」视图
                view === 'home') {                                             // [home] 工作台视图
         nav.setActiveView(view)
       }
@@ -1722,9 +1731,20 @@
             </div>
           </div>
 
+          <!-- [layer-bar] 层级条：把「你在哪一层」显式画出来，并给出回上一层的出口。
+               缺了它，用户从总览点进项目再点进功能后，很难回答「我在哪、怎么回去」。 -->
+          <component v-for="c in slotComps['layer-bar']" :is="c" :key="c.name"></component>
+          <!-- [project-nav] 项目层主导航：固定四 tab（看板/任务/日程/文件）+「更多」抽屉。
+               只在选中项目后出现；未选项目时无从谈起。 -->
+          <component v-for="c in slotComps['project-nav']" :is="c" :key="c.name" v-if="nav.project !== null"></component>
+
           <div class="body">
-            <!-- 图标栏（shell 插件 app-iconbar：渲染各插件 barItems） -->
-            <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
+            <!-- 图标栏（shell 插件 app-iconbar）：新层级导航接管后，它是**紧凑模式的备用入口**。
+                 默认不渲染（两套导航同时显示会让人不知道该点哪个），
+                 但组件与契约都保留：用户在偏好里可切回紧凑竖栏，一条功能都不少。 -->
+            <template v-if="nav.compactRail">
+              <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
+            </template>
 
             <!-- 左侧栏：未选项目 = 项目选择（shell welcome），已选项目 = 目录树（F07） -->
             <div
@@ -1792,6 +1812,13 @@
               <component v-for="c in slotComps.admin" :is="c" :key="c.name" v-else-if="nav.activeView === 'admin' && slotComps.admin && slotComps.admin.length" @close="nav.setActiveView('files')"></component>
               <!-- [home] 工作台视图（privhub-shell-home 提供，client-only 插件）：升级时勿丢本行。
                    少了这一行，图标栏点「工作台」会落到下面的兜底块 —— 白屏但不报错。 -->
+              <!-- [me] 个人层「我的」（privhub-shell 提供）：任务 / 日程 / 文件 / 偏好。
+                   任务与日程的唯一来源仍是各项目的任务看板，这里只做横切汇总（只读）。 -->
+              <component v-for="c in slotComps['me-view']" :is="c" :key="c.name" v-else-if="nav.activeView === 'me' && slotComps['me-view'] && slotComps['me-view'].length"></component>
+              <div v-else-if="nav.activeView === 'me'" class="main-welcome">
+                <div class="big">个人视图未装载</div>
+                <div style="font-size:12px">请检查 plugins/privhub-shell 是否存在（me-view 槽由它提供）。</div>
+              </div>
               <component v-for="c in slotComps.home" :is="c" :key="c.name" v-else-if="nav.activeView === 'home' && slotComps.home && slotComps.home.length"></component>
               <div v-else-if="nav.activeView === 'home'" class="main-welcome">
                 <div class="big">工作台未装载</div>

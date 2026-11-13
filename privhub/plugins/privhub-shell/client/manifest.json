@@ -2,6 +2,17 @@
   "id": "privhub-shell",
   "title": "骨架",
   "icon": "🏠",
-  "description": "页面骨架：顶栏项目横排 + 用户区 + 图标栏容器 + 欢迎页。其他插件通过 manifest 镶嵌 UI。",
-  "slots": ["auth", "project-tabs", "user-area", "app-iconbar", "welcome"]
+  "description": "页面骨架与层级导航：层级条（你在哪一层）+ 项目层固定四 tab（看板/任务/日程/文件）与更多抽屉 + 个人层「我的」+ 顶栏项目横排 / 用户区 / 图标栏 / 欢迎页。",
+  "slots": ["auth", "project-tabs", "user-area", "app-iconbar", "welcome", "layer-bar", "project-nav", "me-view"],
+  "barItems": [
+    {
+      "icon": "🏠",
+      "title": "我的",
+      "slot": "me-view",
+      "view": "me",
+      "group": "global",
+      "desc": "我的任务 / 我的日程 / 我的文件 / 我的偏好：把指派给你的事横切出来，编辑仍在项目里做。",
+      "doc": "00-总览.md"
+    }
+  ]
 }

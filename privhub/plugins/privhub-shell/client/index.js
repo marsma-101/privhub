@@ -13,18 +13,23 @@
  * @module privhub-shell/client
  */
 
+import LayerBar from './layer-bar.js'
+import ProjectNav from './project-nav.js'
+import MeView from './me.js'
+import { SECTION_DEFS, GLOBAL_ORDER, SYSTEM_ORDER, KNOWN_GROUPS, PRIMARY_COUNT, byOrder } from './ia.js'
+
 const { api, AUTH, nav, barItems, badges, THEME, applyTheme, toast } = window.PrivHub
 
-/* 常用/低频的分界（issue #3「频率决定位置」）：
- * 每段只有前 PRIMARY_COUNT 个条目直显在抽屉里，其余收进段内的「更多」。
+/* 归组数据（四个类别 / 全局组 / 系统组 / 常用位数量）已抽到 ./ia.js —— 新层级导航
+ * （project-nav / layer-bar）与本文件的竖栏**读同一份**，否则两处会各自演化：
+ * 同一个功能在竖栏里属「知识」、在 tab 里属「更多」，用户就找不到它了。
  *
- * 为什么按**位置**而不是写死一份 view 名单：段内顺序（SECTION_DEFS[].order）本身就是
- * 按使用频率排的，且被 tests/iconbar.mjs 逐条钉住。按位置切，等于把「频率排序」这件事
- * 只维护一处；日后调顺序，常用/低频的分界自动跟着走，不会出现两份名单互相漂移。
+ * 常用/低频的分界（issue #3「频率决定位置」）：每段只有前 PRIMARY_COUNT 个条目直显，
+ * 其余收进段内「更多」。按**位置**切而不是写死 view 名单：段内顺序本身就是频率排序，
+ * 只维护一处，日后调顺序分界自动跟着走。
  *
  * 一条硬约束：**低频只是下沉，不是消失**。sections[].items 始终是全量（既有断言读它），
  * 渲染层再切成 primary/more，「更多」里每个条目照样可点、照样有说明气泡。 */
-const PRIMARY_COUNT = 2
 
 /* ============ 顶栏：欢迎 + 项目下拉（项目多时避免溢出）+ 添加 ============ */
 const ProjectTabs = {
@@ -110,31 +115,9 @@ const TopbarUser = {
  * 这里只定「类别的先后 / 图标 / 中文名」「组内条目的先后」，改这里不碰任何插件。
  * 契约由 tests/integrity.mjs 兜底（非 admin-nav 条目必须声明合法 group）。
  */
-const SECTION_DEFS = [
-  { id: 'files',     label: '文件', icon: '🗄️', order: ['files', 'search', 'favorites', 'trash'],
-    desc: '对当前项目里文件的操作：浏览 / 上传 / 搜索 / 收藏 / 回收站。', doc: '01-文件与目录.md' },
-  { id: 'knowledge', label: '知识', icon: '🧠', order: ['wiki', 'kg', 'tags', 'template', 'refcheck'],
-    desc: '把文件变成能找、能连、能读的知识：知识库 / 图谱 / 标签 / 新建文档 / 引用检查。', doc: '02-知识组织.md' },
-  { id: 'collab',    label: '协作', icon: '🤝', order: ['taskboard', 'dashboard', 'calendar'],
-    desc: '记任务、展示进度、指派到人：任务看板 / 项目看板 / 任务日历。', doc: '03-协作与看板.md' },
-  { id: 'ai',        label: 'AI',   icon: '✨', order: ['rag'],
-    desc: '站内 AI 工具：语料仓库 / 向量化 / 问答 / 模型与 Key 管理。', doc: '04-AI与智能体接入.md' },
-]
-/* 全局组的一级图标（竖栏最上面那一段，未选项目时也常驻）。
- * 顺序即版面：🌳 全局思维导图（privhub-mindmap，P3，仅管理员）插在
- * 「📊 工作台」与「🔌 智能体接入」之间 —— 主人 2026-10-17 指定的位置。 */
-const GLOBAL_ORDER = ['home', 'mindmap-global', 'agent']
-const SYSTEM_ORDER = ['admin', 'settings']
-const KNOWN_GROUPS = new Set([...SECTION_DEFS.map((d) => d.id), 'global', 'system'])
-
-/** 按给定的 view 顺序排；未列入的排在末尾（保持稳定）。 */
-function byOrder(order) {
-  return (items) => items.slice().sort((a, b) => {
-    const ia = order.indexOf(a.view || a.slot)
-    const ib = order.indexOf(b.view || b.slot)
-    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib)
-  })
-}
+/* SECTION_DEFS / GLOBAL_ORDER / SYSTEM_ORDER / KNOWN_GROUPS / byOrder
+ * 全部来自 ./ia.js（见文件头 import）。这里不再留第二份定义 ——
+ * 两份名单必然漂移，而漂移的表现是「同一个功能在两个导航里归属不同」。 */
 
 /* 悬停气泡的收起定时器（模块级：图标栏全局只有一份，且不参与响应式）。
  * 留 ~160ms 宽限：鼠标从图标滑到气泡上时不至于闪没。 */
@@ -412,5 +395,12 @@ export default {
     'user-area': TopbarUser,
     'app-iconbar': AppIconbar,
     welcome: WelcomeView,
+    /* ---- 新层级导航（issue #3 的四层结构）----
+     * layer-bar：层级条（你在哪一层 + 回上一层的出口）
+     * project-nav：项目层固定 4 tab + 「更多」抽屉
+     * me-view：个人层「我的」（任务 / 日程 / 文件 / 偏好） */
+    'layer-bar': LayerBar,
+    'project-nav': ProjectNav,
+    'me-view': MeView,
   },
 }

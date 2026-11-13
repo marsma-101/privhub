@@ -540,7 +540,13 @@ async function groupGlobalView(O) {
     '骨架渲染 slotComps[\'mindmap-global\']（新槽名必须落进 index.html 的渲染链）')
 
   /* 竖栏落点：global 组的排序数组里插在 home 与 agent 之间。 */
-  const shellSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'index.js'), 'utf8')
+  /* 归组数据已从 index.js 抽到 ia.js（新层级导航与竖栏共用同一份真源）。
+   * 断言必须跟着搬家走：只读 index.js 会拿不到数组而静默退化成空断言。
+   * 同时校验 index.js 真的 import 了它 —— 否则「单一真源」会变成没人用的死文件。 */
+  const shellSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'ia.js'), 'utf8')
+  const shellEntry = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'index.js'), 'utf8')
+  ok(/from '\.\/ia\.js'/.test(shellEntry) && /GLOBAL_ORDER/.test(shellEntry),
+    '竖栏真的从 ia.js 引入全局组顺序（单一真源不是死文件）')
   const order = (shellSrc.match(/GLOBAL_ORDER\s*=\s*\[([^\]]*)\]/) || [])[1] || ''
   const names = order.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
   ok(names.length === 3 && names[0] === 'home' && names[2] === 'agent',

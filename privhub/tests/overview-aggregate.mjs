@@ -84,6 +84,14 @@ console.log('\n── 管线桶归类（跨项目可比的前提）──')
   eq(bucketOfColumn({ id: 'x2', title: '阻塞中' }, DONE), 'doing', '「阻塞」列仍属在途（卡点另有信号，不靠列名猜）')
   eq(bucketOfColumn({ id: 'x3', title: 'REVIEW' }, DONE), 'review', '英文 review 大小写不敏感')
   eq(bucketOfColumn({ id: 'x4', title: 'Backlog' }, DONE), 'todo', 'Backlog → 待办')
+  /* 完成与否**只认 doneColumnId**：靠标题猜「完成」会出两种错 ——
+   * ① 否定词误判：「未完成」「待完成」「not done」被当成已完成；
+   * ② 与权威口径打架：donePercent/doneCount 按 doneColumnId 算，
+   *    管线段却按标题算，同一面板出现两个对不上的「已完成」数字。 */
+  eq(bucketOfColumn({ id: 'x5', title: '未完成' }, DONE), 'doing', '「未完成」不得判成已完成（否定词误判）')
+  eq(bucketOfColumn({ id: 'x6', title: '待完成' }, DONE), 'doing', '「待完成」不得判成已完成')
+  eq(bucketOfColumn({ id: 'x7', title: 'not done' }, DONE), 'doing', '英文 not done 不得判成已完成')
+  eq(bucketOfColumn({ id: 'x8', title: '已完成' }, DONE), 'doing', '非完成列即使叫「已完成」也归在途（完成只认 doneColumnId）')
   ok(Object.keys(BUCKET_LABELS).join(',') === 'todo,doing,review,done', '四个桶的中文名齐备且顺序固定')
 }
 
@@ -161,6 +169,11 @@ console.log('\n── 卡点口径：逾期 / WIP 超限 / 计划受阻 ──')
     dashboard: null, facts: null,
   })
   ok(trunc.reasons.some((r) => /截断/.test(r.text)), '卡片明细被截断时明说「逾期数只是部分统计」，不假装是全量')
+  /* 截断告知必须用独立 kind：冒用 overdue 会让按 kind 分类的界面
+   * 把「统计不全」显示成「有任务逾期」，凭空造出一个不存在的问题。 */
+  ok(trunc.reasons.some((r) => r.kind === 'partial'), '截断告知用 kind=partial（数据完整性），不冒用 overdue')
+  ok(!trunc.reasons.some((r) => r.kind === 'overdue'), '没有真逾期时不得出现 overdue 原因')
+  eq(trunc.blockers, 0, '截断告知不计入卡点数（它是数据说明，不是问题）')
 }
 
 /* ══════════ 4. 当前节点与健康度 ══════════ */
@@ -210,6 +223,22 @@ console.log('\n── 跨项目汇总：分母、桶合计、截断 ──')
   eq(cut.truncated, true, '超过上限 → truncated=true（前端必须明说只显示了前 N 个）')
   eq(cut.totals.projects, OVERVIEW_MAX_PROJECTS, `聚合条数被夹到上限 ${OVERVIEW_MAX_PROJECTS}`)
   eq(aggregateOverview([]).totals.projects, 0, '空输入不抛错，返回 0 项目')
+
+  /* 截断时的两个「总数」必须分开：projects=已聚合条数，visible=真实可见总数。
+   * 拿 projects 当「可见项目」KPI，会把 500 个项目显示成 60 个。 */
+  const manyReal = aggregateOverview(many, { visibleTotal: many.length })
+  eq(manyReal.totals.projects, OVERVIEW_MAX_PROJECTS, 'projects = 已聚合条数（受上限）')
+  eq(manyReal.totals.visible, many.length, 'visible = 真实可见总数（不受上限影响）')
+  ok(manyReal.totals.visible > manyReal.totals.projects, '截断时 visible > projects（前端据此标注「按前 N 个」）')
+  eq(aggregateOverview([a, b]).totals.visible, 2, '未传 visibleTotal 时回落到条数（纯函数单测场景）')
+
+  /* 有卡点的项目数必须由服务端算：前端用筛选后的列表去数会自相矛盾。 */
+  const blocked = aggregateOverview([
+    { project: '有卡点', tasks: summary({ cols: COLS, cards: [card('1', 'col_doing', { dueDate: t0 - DAY })] }), dashboard: null, facts: null },
+    { project: '没卡点', tasks: summary({ cols: COLS, cards: [card('2', DONE)] }), dashboard: null, facts: null },
+  ])
+  eq(blocked.totals.blockedProjects, 1, 'blockedProjects = 有卡点的项目数（不是卡点处数）')
+  eq(blocked.totals.blockers, 1, 'blockers 仍是卡点处数（两个口径并存，各管各的）')
 }
 
 /* ══════════ 6. 隐私边界：聚合不得自行枚举 ══════════ */
@@ -243,10 +272,12 @@ console.log('\n── 总览路由：权限范围 / 降级 / 不做重扫描 ─
   /* 按名查找必须在截断之前：项目多于上限时，前端筛会让第 N+1 个项目永远搜不到
    * （本轮实测踩到过 —— 测试根里几百个历史项目把测试项目挤出了前 60）。 */
   ok(/searchParams\.get\('q'\)/.test(body), '总览支持 ?q= 按名查找')
-  const qAt = body.indexOf("searchParams.get('q')")
-  const sliceAt = body.indexOf('OVERVIEW_MAX_PROJECTS + 1')
-  ok(qAt > 0 && sliceAt > 0, '同时存在 q 解析与截断上限（下面比顺序）')
+  /* 命中名单必须取自 all（全量可见），而不是 scoped（已截断）。
+   * 这里直接比**变量名**而不是比字符位置：位置先后不代表数据流向，
+   * 旧写法注释说「下面比顺序」却没比，属于说谎的断言。 */
   ok(/const hits = all\.filter/.test(body), '命中名单取自**全量可见项目** all，而不是已截断的 scoped')
+  ok(!/const hits = scoped\.filter/.test(body), '不得改用 scoped 做命中名单（那等于第 N+1 个项目搜不到）')
+  ok(/visibleTotal: all\.length/.test(body), 'KPI 的可见总数传 all.length（未截断），不是 scoped.length')
   ok(/!inScope\.has\(p\)/.test(body), '首屏之外的命中会被补读进来（否则搜到了也拿不到数据）')
   ok(/search = \{ q, matched: hits\.length/.test(body), '回包给出 matched 总数（界面能说清「共几个匹配」）')
 }

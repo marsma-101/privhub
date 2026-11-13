@@ -80,21 +80,45 @@ const CSS = `
   transition: flex-grow .32s cubic-bezier(.4, 0, .2, 1);
 }
 /* 图案：待办斜纹、待审核点阵 —— 去掉颜色也能区分 */
+/* 四个桶**各自一种图案**：斜纹 / 竖纹 / 点阵 / 网格。
+ * 只给两个桶加图案是不够的 —— 去掉颜色后 doing 与 done 会变成同一片实色，
+ * 「进行中」和「已完成」再也分不开，而这两段恰恰是最需要分清的。
+ * 图案方向/密度互不相同，灰度打印或色觉障碍下仍可区分。 */
 .ov-seg.todo { background: var(--ov-b-todo); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 3px, transparent 3px 6px); }
-.ov-seg.doing { background: var(--ov-b-doing); }
+.ov-seg.doing { background: var(--ov-b-doing); background-image: repeating-linear-gradient(90deg, rgba(255,255,255,.20) 0 2px, transparent 2px 7px); }
 .ov-seg.review { background: var(--ov-b-review); background-image: radial-gradient(rgba(255,255,255,.34) 1px, transparent 1.2px); background-size: 6px 6px; }
-.ov-seg.done { background: var(--ov-b-done); }
+.ov-seg.done { background: var(--ov-b-done); background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.18) 0 1px, transparent 1px 5px), repeating-linear-gradient(90deg, rgba(255,255,255,.18) 0 1px, transparent 1px 5px); }
 .ov-bar-empty { flex: 1; display: grid; place-items: center; color: var(--muted); font-size: var(--fs-xs); }
 
 .ov-legend { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: 10px; }
 .ov-lg { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--text); }
 .ov-lg .sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+/* 图例色块与条内图案**必须一致**：图例是「哪种图案＝哪一段」的对照表，
+ * 两处不一致等于给了张错的地图。 */
 .ov-lg .sw.todo { background: var(--ov-b-todo); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 3px, transparent 3px 6px); }
-.ov-lg .sw.doing { background: var(--ov-b-doing); }
+.ov-lg .sw.doing { background: var(--ov-b-doing); background-image: repeating-linear-gradient(90deg, rgba(255,255,255,.20) 0 2px, transparent 2px 7px); }
 .ov-lg .sw.review { background: var(--ov-b-review); background-image: radial-gradient(rgba(255,255,255,.34) 1px, transparent 1.2px); background-size: 6px 6px; }
-.ov-lg .sw.done { background: var(--ov-b-done); }
+.ov-lg .sw.done { background: var(--ov-b-done); background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.18) 0 1px, transparent 1px 5px), repeating-linear-gradient(90deg, rgba(255,255,255,.18) 0 1px, transparent 1px 5px); }
 .ov-lg .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ov-lg.total { margin-left: auto; font-weight: 600; }
+
+/* partial = 数据完整性告知（统计不全），不是告警：用中性色，别混进红色卡点里 */
+.ov-reason.info { color: var(--muted); background: transparent; }
+/* 「还有 N 条」的提示：弱化但可读，说明列出来的不是全部 */
+.ov-reason.more { color: var(--muted); background: transparent; font-style: normal; }
+
+/* 筛选回执行：说明「在多少个里搜、命中多少、显示了多少」，避免把部分当全部 */
+.ov-found {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2);
+  border-radius: var(--r-2); font-size: var(--fs-xs); color: var(--muted);
+  background: var(--ov-b-doing-soft);
+}
+.ov-link {
+  border: none; background: none; padding: 0; cursor: pointer;
+  color: var(--accent); font-size: var(--fs-xs); text-decoration: underline;
+}
+.ov-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-1); }
 
 /* 对象级筛选框：只在项目名里筛，范围写在 placeholder 与 title 上 */
 .ov-find {

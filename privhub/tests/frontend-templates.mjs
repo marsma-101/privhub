@@ -372,6 +372,17 @@ ok(/noProjects/.test(ovSrc) && /新建项目/.test(ovSrc), '总览空态给出�
 ok(/BLOCKER_HINT/.test(ovSrc) && /逾期/.test(ovSrc) && /WIP/.test(ovSrc),
   '卡点口径写在界面上（逾期 / WIP / 计划受阻），数字可复核')
 ok(/percent === null \? '—'/.test(ovSrc), '进度为 null 时显示「—」而不是 0%')
+/* 加了服务端筛选后必须复查的三个派生量（本轮审计发现的口径漂移）：
+ * 判空、卡点项目数、筛选回执 —— 三者都不能拿筛选后的列表冒充全盘。 */
+ok(/noProjects\(\)[\s\S]{0,120}totals\.visible === 0/.test(ovSrc),
+  '判「真的没有项目」用 totals.visible，不用 projects.length（否则搜不到时谎称没有权限）')
+ok(/blockedCount\(\)[\s\S]{0,120}blockedProjects/.test(ovSrc),
+  '「几个项目需要处理」用服务端全盘 blockedProjects（否则出现「50 处卡点 / 0 个项目」）')
+ok(/\{\{ totals\.visible \}\}/.test(ovSrc), '「可见项目」KPI 用未截断的真实总数')
+ok(/partialNote/.test(ovSrc) && /visible > t\.projects/.test(ovSrc),
+  '截断时逐项标注「按前 N 个项目」（不让部分统计看着像全盘结论）')
+ok(/search\.matched/.test(ovSrc) && /search\.truncated/.test(ovSrc),
+  '服务端 search 回执接到界面（命中数大于显示数时如实告知，不留半成品字段）')
 ok(/numText\(v\)[\s\S]{0,80}null/.test(ovSrc), '成员/文件数缺失时显示「—」而不是 0')
 ok(/ov\.truncated/.test(ovSrc), '聚合被截断时界面明说（不假装统计了全部项目）')
 ok(/tasksDisabled/.test(ovSrc), '任务功能关闭时界面说清原因')
@@ -393,12 +404,31 @@ ok(/placeholder="筛选项目名…"/.test(ovSrc), '搜索框明示范围（只�
     '丢弃过期回包（边打字边请求时，先发的后到会把旧结果盖在新输入上）')
 }
 
-/* ③ 管线可分辨性：四个桶除了颜色还带图案与直接标签（去掉颜色也能读） */
-for (const b of ['todo', 'doing', 'review', 'done']) {
-  ok(new RegExp('\\.ov-seg\\.' + b + '\\s*\\{').test(ovCss), `管线桶 ${b} 有专属样式`)
+/* ③ 管线可分辨性：**四个桶各自都要有图案**，且图案互不相同。
+ * 旧断言只查「文件里出现过 gradient」——两个桶有图案、另两个纯靠颜色也算通过，
+ * 那是假测通：去掉颜色后 doing 与 done 变成同一片实色，恰恰是最该分清的两段。
+ * 现在逐桶取出 background-image 并要求非空 + 两两不同（图例色块同样逐桶查）。 */
+{
+  const bgOf = (sel) => {
+    const m = new RegExp(sel.replace(/[.]/g, '\\.') + '\\s*\\{([^}]*)\\}').exec(ovCss)
+    if (!m) return null
+    const bg = /background-image:\s*([^;]+);/.exec(m[1])
+    return bg ? bg[1].trim() : ''
+  }
+  const buckets = ['todo', 'doing', 'review', 'done']
+  const segs = buckets.map((b) => ({ b, bg: bgOf('.ov-seg.' + b) }))
+  for (const s of segs) {
+    ok(s.bg !== null && s.bg.length > 0,
+      `管线桶 ${s.b} 自带图案（background-image 非空）—— 去掉颜色也能与别段区分`)
+  }
+  ok(new Set(segs.map((s) => s.bg)).size === buckets.length,
+    '四个桶的图案两两不同（同图案等于没区分）')
+  for (const b of buckets) {
+    const sw = bgOf('.ov-lg .sw.' + b)
+    ok(sw !== null && sw.length > 0, `图例色块 ${b} 也有图案（图例是「图案＝哪一段」的对照表）`)
+    ok(sw === bgOf('.ov-seg.' + b), `图例 ${b} 的图案与条内一致（不一致等于给了张错地图）`)
+  }
 }
-ok(/repeating-linear-gradient/.test(ovCss) && /radial-gradient/.test(ovCss),
-  '管线用图案辅助区分（斜纹/点阵），不只靠颜色 —— 色觉障碍用户也能读')
 ok(/\[data-theme="dark"\]/.test(ovCss), '管线桶色在深色主题下各自覆盖（不是只适配浅色）')
 ok(/\.ov-card:focus-visible/.test(ovCss) && /\.ov-chip:focus-visible/.test(ovCss),
   '卡片与筛选 chip 有键盘焦点样式（可键盘操作）')

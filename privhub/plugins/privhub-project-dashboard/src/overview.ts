@@ -32,8 +32,16 @@ export const BUCKET_LABELS: Record<Bucket, string> = {
 
 /**
  * 列 → 桶。
- * 先认 id（内置列 id 是稳定契约），再认标题关键字（用户自建列如「阻塞」「测试中」也能归位）。
- * 认不出来的一律进 doing —— 「已经开工但还没完成」是最保守的归类，
+ *
+ * **完成与否只认 doneColumnId，绝不靠标题猜。** 这是本函数唯一的硬规则：
+ * 任务看板的 `donePercent` / `doneCount` 都以 doneColumnId 为准，若这里再用
+ * `/完成/` 之类的关键字认「完成列」，同一块面板上就会出现两个不同的「已完成」
+ * 数字（管线段一个、合计行另一个），而且必然对不上。
+ * 顺带修掉一个真错：`/完成/` 会把「**未**完成」「待完成」判成已完成，
+ * 英文 `not done` / `undone` 同理 —— 关键字匹配对否定词是无能的。
+ *
+ * 其余三桶允许按标题归位（自建列如「测试中」「等验收」也要能进管线），
+ * 认不出来的一律进 doing：「已开工未完成」是最保守的归类，
  * 不会把在途工作误报成待办（那会让领导以为还没人动）。
  */
 export function bucketOfColumn(col: { id: string; title: string }, doneColumnId: string): Bucket {
@@ -46,12 +54,16 @@ export function bucketOfColumn(col: { id: string; title: string }, doneColumnId:
    * 于是「待审核」这一段在总览里凭空少掉一截（本轮实测出来的缺口）。 */
   if (/待审核|审核|review/i.test(id) || /待审核|审核|review/i.test(title)) return 'review'
   if (/待办|未开始|todo|backlog/i.test(title)) return 'todo'
-  if (/已完成|完成|done|已交付/i.test(title)) return 'done'
   return 'doing'
 }
 
 export interface BlockerReason {
-  kind: 'overdue' | 'wip' | 'plan'
+  /**
+   * partial 不是卡点，而是**数据完整性告知**（明细被截断，上面的数字只覆盖一部分）。
+   * 它不计数。此前把它塞进 kind='overdue' 是错的标签：界面若按 kind 分类展示，
+   * 会把「统计不全」误报成「有任务逾期」。
+   */
+  kind: 'overdue' | 'wip' | 'plan' | 'partial'
   text: string
 }
 
@@ -81,12 +93,26 @@ export interface OverviewProject {
 }
 
 export interface OverviewTotals {
+  /** 已聚合的项目数（受 OVERVIEW_MAX_PROJECTS 限制）。 */
   projects: number
+  /**
+   * 用户**实际可见的项目总数**（不受聚合上限影响）。
+   * 为什么要单独一个字段：`projects` 是被截断后的条数，拿它当「可见项目」KPI
+   * 会把「你有 500 个项目」显示成「你有 60 个」—— 数字失真比不显示更糟。
+   * 由调用方传入；未传时回落到 projects（纯函数单测场景）。
+   */
+  visible: number
   /** 有任务数据的项目数（平均进度只在这些项目上算，空板不拉低均值）。 */
   withTasks: number
   tasks: number
   done: number
   blockers: number
+  /**
+   * **有卡点的项目数**（不是卡点处数）。
+   * 必须由这里算：前端若用筛选后的卡片列表去数，就会出现
+   * 「卡点合计 50 处 / 0 个项目需要处理」这种自相矛盾的显示。
+   */
+  blockedProjects: number
   avgPercent: number | null
   buckets: Record<Bucket, number>
 }
@@ -102,7 +128,11 @@ export interface OverviewResult {
 /** 一个项目的原始输入（由路由层收集，全部来自既有加载器）。 */
 export interface OverviewInput {
   project: string
-  /** null = 任务看板功能对该用户关闭（此时不显示进度，也不算进均值）。 */
+  /**
+   * null = 任务看板功能对该用户关闭（此时不显示进度，也不算进均值）。
+   * 注意 `tasks.cardsTruncated`：上游一次最多带 200 张卡，超出时
+   * 逾期数 / 最近截止 / 「我的待办」都只覆盖已取回的部分 —— 必须标成部分统计。
+   */
   tasks: TaskSummary | null
   dashboard: DashboardDoc | null
   facts: Facts | null
@@ -152,7 +182,11 @@ function planBlockers(dashboard: DashboardDoc | null): BlockerReason[] {
  *   · overdue —— 未完成且已过期（dueDate < 今天 0 点）的卡片数；
  *   · wip     —— 超出列 WIP 上限的卡片数（在制品堆积＝流动受阻）；
  *   · plan    —— 计划里被人标成 blocked 的条目。
- * 三者相加即卡点数；同一张卡不会重复计（逾期未完成只算一次）。
+ * 三者相加即卡点数。**口径是「问题数」而不是「受影响卡片数」**：
+ * 同一张卡若既逾期、又正处在超 WIP 的列里，会同时计入两类 —— 那确实是两个
+ * 不同的问题（该做完没做完 + 该限流没限流），各自都要处理。
+ * 每个信号内部不重复计（一张逾期卡只算一次逾期）。
+ * 界面上的口径说明与此一致，别把它当「有 N 张卡有问题」来读。
  */
 function blockerSignals(tasks: TaskSummary | null, dashboard: DashboardDoc | null): { count: number; reasons: BlockerReason[] } {
   const reasons: BlockerReason[] = []
@@ -172,8 +206,10 @@ function blockerSignals(tasks: TaskSummary | null, dashboard: DashboardDoc | nul
         reasons.push({ kind: 'wip', text: '「' + col.title + '」超出 WIP 上限 ' + over + ' 个（' + col.count + '/' + col.wipLimit + '）' })
       }
     }
-    /* 明细被截断时不能声称「这就是全部卡点」——把不确定性说出来。 */
-    if (tasks.cardsTruncated) reasons.push({ kind: 'overdue', text: '卡片明细已截断，逾期数按已取回的部分统计' })
+    /* 明细被截断时不能声称「这就是全部卡点」——把不确定性说出来。
+     * 用 kind='partial'（数据完整性告知，不计数），不冒用 'overdue'：
+     * 否则按 kind 分类的界面会把「统计不全」显示成「有任务逾期」。 */
+    if (tasks.cardsTruncated) reasons.push({ kind: 'partial', text: '卡片明细已截断，逾期数与截止按已取回的部分统计' })
   }
   const pb = planBlockers(dashboard)
   count += pb.length
@@ -227,16 +263,17 @@ export function projectOverview(input: OverviewInput): OverviewProject {
  * 平均进度只在「有任务的项目」上取算术平均（空板不该把均值拉低）；
  * 一个都没有时返回 null，前端显示「—」而不是 0%。
  */
-export function aggregateOverview(inputs: OverviewInput[]): OverviewResult {
+export function aggregateOverview(inputs: OverviewInput[], opts: { visibleTotal?: number } = {}): OverviewResult {
   const truncated = inputs.length > OVERVIEW_MAX_PROJECTS
   const used = truncated ? inputs.slice(0, OVERVIEW_MAX_PROJECTS) : inputs
   const projects = used.map(projectOverview)
   const buckets = emptyBuckets()
-  let tasks = 0, done = 0, blockers = 0, withTasks = 0, pctSum = 0
+  let tasks = 0, done = 0, blockers = 0, withTasks = 0, pctSum = 0, blockedProjects = 0
   for (const p of projects) {
     tasks += p.total
     done += p.doneCount
     blockers += p.blockers
+    if (p.blockers > 0) blockedProjects++
     for (const k of Object.keys(buckets) as Bucket[]) buckets[k] += p.buckets[k]
     if (p.percent !== null) { withTasks++; pctSum += p.percent }
   }
@@ -244,10 +281,12 @@ export function aggregateOverview(inputs: OverviewInput[]): OverviewResult {
     projects,
     totals: {
       projects: projects.length,
+      visible: typeof opts.visibleTotal === 'number' ? opts.visibleTotal : projects.length,
       withTasks,
       tasks,
       done,
       blockers,
+      blockedProjects,
       avgPercent: withTasks > 0 ? Math.round(pctSum / withTasks) : null,
       buckets,
     },

@@ -746,8 +746,15 @@ ok(badRailGroups.length === 0,
   `图标栏条目都声明了合法 group${badRailGroups.length ? '，非法：' + badRailGroups.join(', ') : ''}`)
 
 // 契约②：骨架认识这些 group（否则条目会被静默归入兜底组 / 消失）
+/* 归组数据已抽到 ia.js —— 竖栏与新层级导航（project-nav / layer-bar）读同一份真源，
+ * 否则同一功能在两处归属不同，用户就找不到它。断言跟着搬家走：读 ia.js，
+ * 并校验两个消费者都真的 import 了它（防止「单一真源」变成没人用的死文件）。 */
+const ixIaSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'ia.js'), 'utf8')
+const ixNavSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'project-nav.js'), 'utf8')
+ok(/from '\.\/ia\.js'/.test(ixShellSrc), '竖栏从 ia.js 引入归组数据（不再自留第二份名单）')
+ok(/from '\.\/ia\.js'/.test(ixNavSrc), '项目层导航从 ia.js 引入同一份归组数据（两处不会漂移）')
 for (const g of ['files', 'knowledge', 'collab', 'ai']) {
-  ok(new RegExp("id:\\s*'" + g + "'").test(ixShellSrc), `骨架 AppIconbar 声明了类别 ${g}`)
+  ok(new RegExp("id:\\s*'" + g + "'").test(ixIaSrc), `骨架 AppIconbar 声明了类别 ${g}`)
 }
 ok(/bi\.group === 'global'/.test(ixShellSrc) && /bi\.group === 'system'/.test(ixShellSrc),
   '骨架把 global / system 两组独立于类别渲染')
