@@ -62,14 +62,21 @@ styleEl.textContent = `
 `
 document.head.appendChild(styleEl)
 
-/** 预览页 URL（iframe 自己取 /privhub-plugins/privhub-files-office2/view.html）。 */
+/** 预览页 URL（iframe 自己取 /privhub-plugins/privhub-files-office2/view.html）。
+ *
+ * `id` 是宿主经 viewer 契约传下来的**主索引稳定文件 ID**（不透明串，可缺省）。
+ * 它随查询串一并传给预览页，预览页据此走 `/f/<id>` 直读取字节；
+ * 没有 `id`（老标签 / 索引未就绪）时留空，预览页自动回退 `/api/office2/raw`。
+ * ⚠ 缺省是**正常状态**，不是错误：这里不报错、不禁用任何分支。 */
 function frameUrl(ctx) {
   const project = (ctx && ctx.project) || ''
   const path = (ctx && ctx.path) || ''
   const name = (ctx && ctx.name) || path.split('/').pop() || ''
+  const id = typeof (ctx && ctx.id) === 'string' ? ctx.id : ''
   return '/privhub-plugins/privhub-files-office2/view.html?project=' + encodeURIComponent(project) +
     '&path=' + encodeURIComponent(path) +
-    '&name=' + encodeURIComponent(name)
+    '&name=' + encodeURIComponent(name) +
+    (id ? '&id=' + encodeURIComponent(id) : '')
 }
 
 /**

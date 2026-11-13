@@ -25,7 +25,7 @@ import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 import { VERSION_TEXT_EXTS } from '../../privhub-core/src/file-exts'
 
 export const name = 'privhub-files-versions'
-export const inject = ['storage', 'privhub', 'lock']
+export const inject = ['storage', 'privhub', 'lock', 'eventBus']
 
 interface Version {
   at: number
@@ -56,6 +56,55 @@ async function save(ctx: Context, store: Store): Promise<void> {
 export function apply(ctx: Context): void {
   /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
   const svc = ctx.privhub
+
+  /* 版本历史按 `project|path` 存（见各路由里的 `store[project + '|' + path]`）⇒
+   * 文件改名/移动后必须把键搬过去，否则该文件的全部历史版本立刻失联；
+   * 删除后要清掉，免得旧键一直占着快照正文。目录改名连整棵子树一起搬。 */
+  const migrateKeys = async (project: string, from: string, to: string | null): Promise<void> => {
+    const store = await load(ctx)
+    const srcPrefix = project + '|' + from
+    const keys = Object.keys(store).filter((k) => k === srcPrefix || k.startsWith(srcPrefix + '/'))
+    if (keys.length === 0) return
+    for (const k of keys) {
+      const tail = k.slice(srcPrefix.length)
+      if (to === null) {
+        delete store[k]
+      } else {
+        const dest = project + '|' + to + tail
+        /* 目标已有快照时按时间序合并去重（同一 at 视为同一份，保留先到的）。 */
+        const merged = (store[dest] ?? []).concat(store[k])
+        const seen = new Set<number>()
+        store[dest] = merged
+          .filter((v) => (seen.has(v.at) ? false : (seen.add(v.at), true)))
+          .sort((a, b) => b.at - a.at)
+        delete store[k]
+      }
+    }
+    await save(ctx, store)
+  }
+
+  ctx.effect(() => {
+    const off = ctx.on('file:changed', (payload: unknown) => {
+      const e = payload as { project?: unknown; path?: unknown; action?: unknown; newPath?: unknown }
+      if (!e || typeof e.project !== 'string' || e.project === '') return
+      if (typeof e.path !== 'string' || e.path === '') return
+      const action = String(e.action ?? '')
+      const run = (p: Promise<void>): void => {
+        void p.catch((err) => {
+          ctx.logger?.warn?.('[versions] 同步版本历史失败（' + action + ' ' + e.path + '）：'
+            + (err instanceof Error ? err.message : String(err)))
+        })
+      }
+      if (action === 'renamed' || action === 'moved') {
+        if (typeof e.newPath === 'string' && e.newPath !== '') {
+          run(migrateKeys(e.project, e.path, e.newPath))
+        }
+        return
+      }
+      if (action === 'deleted' || action === 'purged') run(migrateKeys(e.project, e.path, null))
+    })
+    return () => { off() }
+  })
 
   const isTextFile = (rel: string): boolean => TEXT_EXTS.has(extname(rel).slice(1).toLowerCase())
 

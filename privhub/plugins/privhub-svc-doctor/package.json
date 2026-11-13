@@ -1,0 +1,8 @@
+{
+  "name": "privhub-svc-doctor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "生产自检与修复：索引/池一致性、孤儿文件、引用计数、加密模式、密钥、nginx 直读链路",
+  "main": "src/index.ts"
+}

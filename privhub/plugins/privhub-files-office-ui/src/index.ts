@@ -12,6 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { lookupFileId } from '../../privhub-core/src/events'
 
 export const name = 'privhub-files-office-ui'
 export const inject = ['privhub', 'office', 'acl', 'audit', 'eventBus']
@@ -71,6 +72,15 @@ export function apply(ctx: Context): void {
     if (rec) ctx.emit('audit:logged', rec)
   }
 
+  /* 文件变更广播（B 批：附带主索引稳定 fileId）。
+   *
+   * 容错：索引未挂载/未就绪/查不到条目/抛异常，fileId 都只是留空，
+   * **绝不影响 Office 保存本身** —— 索引是派生数据，它出问题不能挡住用户存文件。 */
+  const emitChanged = (project: string, path: string, action: string): void => {
+    const fileId = lookupFileId(ctx, project, path)
+    ctx.emit('file:changed', { project, path, action, ...(fileId ? { fileId } : {}) })
+  }
+
   /* 读取（view 权限：canAccess + ACL） */
   svc.route('/privhub/api/office/read', async (req, res) => {
     const u = svc.requireUser(req, res)
@@ -100,7 +110,7 @@ export function apply(ctx: Context): void {
     if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
     const r = await office.write(project, path, content)
     if (r.ok) void audit(u, 'office-edit', project + '/' + path)
-    if (r.ok) ctx.emit('file:changed', { project, path, action: 'saved' })
+    if (r.ok) emitChanged(project, path, 'saved')
     json(res, r.ok ? 200 : 400, r)
   }, 'office-write')
 
@@ -130,7 +140,7 @@ export function apply(ctx: Context): void {
       if (!wr.ok) return json(res, 400, { ok: false, error: wr.error || '生成 .docx 失败' })
       void audit(u, 'doc-convert', project + '/' + path, '-> ' + newPath)
       ctx.emit('file:saved', { project, path: newPath, doc: String(text) })
-      ctx.emit('file:changed', { project, path: newPath, action: 'created' })
+      emitChanged(project, newPath, 'created')
       json(res, 200, { ok: true, newPath })
       return
     } catch (e) {

@@ -151,6 +151,19 @@ export interface ScanDeps {
    * 没传这个回调 = 与改造前完全一致（不启用别名兜底）。
    */
   resolveAlias?: (target: string) => RelPath | null
+  /**
+   * 索引枚举（v6 扁平化，可选）：磁盘上已没有项目目录，`root` 恒为 null，
+   * 靠 readdir 会扫出 0 个文件（孤儿/断链全空 ⇒ 断言假通过）。
+   * 调用方给主索引的递归清单时，本模块改用它，不再碰磁盘。
+   * 不传 = 与改造前完全一致（老布局照旧 readdir）。
+   */
+  listIndex?: () => { path: RelPath; name: string; ext: string; size: number; mtime: number }[]
+  /**
+   * 相对路径 → 绝对路径（v6 扁平化，可选）。扁平池下文件的真实位置是
+   * `.pool/<physicalId>.<ext>`，与虚拟路径无关，`join(root, rel)` 必然指错。
+   * 传了它，本模块就不再自己拼路径；不传 = 老布局照旧 `join(root, ...)`。
+   */
+  absOf?: (relPath: RelPath) => string | null
 }
 
 /** Markdown 链接/图片：`[x](y)` / `![x](y)`，标题可选。 */
@@ -222,6 +235,29 @@ async function walk(deps: ScanDeps): Promise<WalkOut> {
   const files: FileEnt[] = []
   let dirs = 0
   let truncated = false
+  /* v6 扁平化：项目目录不在磁盘上，优先用索引清单（见 ScanDeps.listIndex 说明）。 */
+  if (typeof deps.listIndex === 'function') {
+    try {
+      const all = deps.listIndex()
+      const seenDirs = new Set<string>()
+      for (const f of all) {
+        if (f.name.startsWith('.')) continue
+        const cut = f.path.lastIndexOf('/')
+        if (cut > 0) {
+          /* 统计目录数：逐级前缀去重，和 readdir 版本口径一致。 */
+          let acc = ''
+          for (const seg of f.path.slice(0, cut).split('/')) {
+            acc = acc === '' ? seg : acc + '/' + seg
+            seenDirs.add(acc)
+          }
+        }
+        if (files.length >= LIMITS.maxFiles) { truncated = true; break }
+        files.push({ path: f.path, name: f.name, ext: f.ext, size: f.size, mtime: f.mtime })
+      }
+      dirs = seenDirs.size
+      return { files, dirs, truncated }
+    } catch { /* 索引异常 → 回退磁盘遍历 */ }
+  }
   if (deps.root === null) return { files, dirs, truncated }
 
   const stack: { abs: string; rel: string; depth: number }[] = [{ abs: deps.root, rel: '', depth: 0 }]
@@ -352,8 +388,11 @@ export async function scanProject(deps: ScanDeps): Promise<Report> {
 
   const perDoc = await mapLimit(docEnts, LIMITS.ioConcurrency, async (doc) => {
     if (doc.size > LIMITS.maxParseBytes) return { doc, text: '' as string, skipped: true }
-    const abs = deps.join(deps.root as string, ...doc.path.split('/'))
-    const text = await deps.readText(abs).catch(() => '')
+    /* v6 扁平化：优先用 absOf 解析真实位置；没有就退回老布局的 root 拼接。 */
+    const abs = typeof deps.absOf === 'function'
+      ? (deps.absOf(doc.path) ?? '')
+      : deps.join(deps.root as string, ...doc.path.split('/'))
+    const text = abs === '' ? '' : await deps.readText(abs).catch(() => '')
     return { doc, text, skipped: false }
   })
 
@@ -388,9 +427,11 @@ export async function scanProject(deps: ScanDeps): Promise<Report> {
   const orphansTrunc = orphanEnts.length > LIMITS.maxOrphans
   const picked = orphanEnts.slice(0, LIMITS.maxOrphans)
   const orphans: Orphan[] = await mapLimit(picked, LIMITS.ioConcurrency, async (f) => {
-    const abs = deps.join(deps.root as string, ...f.path.split('/'))
+    const abs = typeof deps.absOf === 'function'
+      ? (deps.absOf(f.path) ?? '')
+      : deps.join(deps.root as string, ...f.path.split('/'))
     let size = f.size
-    if (await deps.isEncrypted(abs).catch(() => false)) size = Math.max(0, size - 36)
+    if (abs !== '' && await deps.isEncrypted(abs).catch(() => false)) size = Math.max(0, size - 36)
     return {
       project: deps.project,
       path: f.path,

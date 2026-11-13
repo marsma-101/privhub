@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path'
 import { existsSync, mkdirSync, symlinkSync } from 'node:fs'
 import { report, waitForServer, BASE } from './lib.mjs'
 import { build as buildSmoke } from './smoke.mjs'
+import { build as buildProductionSmoke } from './production-smoke.mjs'
 import { build as buildSecurity } from './security.mjs'
 import { build as buildHardening } from './hardening.mjs'
 import { build as buildFirstScreen } from './first-screen.mjs'
@@ -103,7 +104,7 @@ async function main() {
 
   // 首屏链放最前：它验证「能不能进得去」，是其它一切用例的前提
   const suites = [
-    buildFirstScreen(), buildSmoke(), buildSecurity(), buildHardening(),
+    buildFirstScreen(), buildSmoke(), buildProductionSmoke(), buildSecurity(), buildHardening(),
     buildPersonalSpace(), buildPersonalRename(), buildAgentSandbox(), buildTaskboard(),
     buildSelfService(),
     // W-A 新增：文件级 ACL 在 图谱/全文/查重 三处的过滤 + near 近似去重（放最后，避免
@@ -153,7 +154,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / 存储根与密钥安全 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 标题碰撞 / 思维导图 / 蓝绿运行时契约 / HTTP 更新源')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'nginx-direct.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }

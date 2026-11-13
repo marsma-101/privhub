@@ -22,6 +22,10 @@ async function loadTree(project, path) {
       children: (r.entries || []).map(e => ({
         name: e.name, path: path ? path + '/' + e.name : e.name, isDir: !!e.isDir,
         type: e.type, sizeText: e.sizeText, mtime: e.mtime,
+        /* 主索引稳定 ID 一并带进树缓存：树里点开文件也是 `openTab(entry)`，
+         * 少了它就只有"从列表点开"能走直读、从树点开走老路 —— 那正是要避免的分裂。
+         * 老接口/索引未就绪时 `e.id` 就是 undefined，留空即可（读取面自动回退）。 */
+        id: typeof e.id === 'string' ? e.id : '',
       })),
     }
   }

@@ -496,4 +496,335 @@ const WatermarkPanel = {
   `,
 }
 
-export { OverviewPanel, ProjectsPanel, PublishPanel, BackupPanel, WatermarkPanel, relTime, get }
+/* ==================== 存储迁移（v6 改造：老库 → 新扁平池） ==================== */
+
+/**
+ * 老库迁移面板。
+ *
+ * ## 为什么做成「两遍」而不是「一次性搬家」
+ *
+ * 用户的真实场景是：老库在 E 盘，新装 PrivHub 把数据位置设到 F 盘。如果
+ * 「一次性搬」，中途断电就会留下半新半旧、两边都不完整的库 —— 而用户手里
+ * 只有这一份数据。所以拆成两遍：
+ *
+ *   ① 只读扫描：把老库的层级/文件名/大小登记进索引（不碰字节，很快）；
+ *   ② 空闲慢搬：逐条复制到新扁平池，完成一条改一条索引。
+ *
+ * 任何时刻打断，老库都还是完整的原样；重跑只会重搬没搬完的。
+ *
+ * ## 安全约定
+ *
+ * - **绝不删除老库源文件**（搬完由管理员手动处理）；
+ * - 默认低并发，避免占满磁盘 IO；
+ * - 逐条记录失败，不因单个文件失败而中断整批。
+ */
+const MigratePanel = {
+  name: 'admin-migrate-panel',
+  components: { AdminSkeleton, AdminErrorState, AdminEmptyState },
+  data() {
+    return {
+      loading: true,
+      error: '',
+      oldRoot: '',
+      computeSha: false,
+      status: null,
+      busy: '',
+      lastResult: '',
+      /* 轮询句柄：迁移是后台慢任务，页面靠轮询看进度。 */
+      pollTimer: null,
+    }
+  },
+  computed: {
+    pct() {
+      const s = this.status
+      if (!s || !s.total) return 0
+      return Math.min(100, Math.round((s.migrated / s.total) * 100))
+    },
+    pending() {
+      const s = this.status
+      if (!s) return 0
+      return Math.max(0, (s.total || 0) - (s.migrated || 0))
+    },
+    totalsText() {
+      const s = this.status
+      if (!s) return '—'
+      return '共 ' + (s.total || 0) + ' 条 · 已搬 ' + (s.migrated || 0) + ' · 待搬 ' + this.pending
+        + (s.failed ? ' · 失败 ' + s.failed : '')
+    },
+  },
+  methods: {
+    async load() {
+      this.loading = true
+      this.error = ''
+      const r = await get('/privhub/api/storage/legacy-status')
+      if (!r.ok) {
+        this.error = r.error || '迁移状态读取失败'
+        this.status = null
+      } else {
+        this.status = r.data
+      }
+      this.loading = false
+      /* 有在跑的任务就继续轮询，跑完自动停。 */
+      if (this.status && this.status.running) this.startPoll()
+      else this.stopPoll()
+    },
+    startPoll() {
+      this.stopPoll()
+      this.pollTimer = setInterval(() => {
+        void get('/privhub/api/storage/legacy-status').then((r) => {
+          if (!r.ok) return
+          this.status = r.data
+          if (!r.data.running) this.stopPoll()
+        })
+      }, 2000)
+    },
+    stopPoll() {
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }
+    },
+    /** 第一遍：只读扫描老库，建立索引。不搬任何字节。 */
+    async scan() {
+      const root = String(this.oldRoot || '').trim()
+      if (!root) { adminToast('请先填写老库位置', 'error'); return }
+      const ok = await confirmAction({
+        title: '扫描老库',
+        message: '将只读遍历「' + root + '」，把它现有的目录层级与文件名登记进新库索引。\n\n'
+          + '这一遍不会移动、不会删除、也不会修改老库里的任何文件，可以随时中断或重复执行。',
+        confirmText: '开始扫描',
+      })
+      if (!ok) return
+      this.busy = 'scan'
+      const r = await send('/privhub/api/storage/legacy-scan', {
+        method: 'POST',
+        body: JSON.stringify({ oldRoot: root, computeSha: !!this.computeSha }),
+      })
+      this.busy = ''
+      if (!r.ok) { adminToast(r.error || '扫描失败', 'error'); return }
+      this.lastResult = '扫描完成：登记 ' + (r.data.created || 0) + ' 条，更新 ' + (r.data.updated || 0)
+        + ' 条' + (r.data.failed && r.data.failed.length ? '，失败 ' + r.data.failed.length : '')
+      adminToast(this.lastResult)
+      await this.load()
+    },
+    /** 第二遍：空闲把老库字节慢慢复制到新扁平池。 */
+    async migrate() {
+      const ok = await confirmAction({
+        title: '开始搬运',
+        message: '将把尚未迁移的文件逐条复制到新的扁平存储池。\n\n'
+          + '· 加密文件会在搬运时自动解密，新库里存的是明文；\n'
+          + '· 默认低并发，不影响正常读写；\n'
+          + '· 随时可以暂停，断电也不会丢数据（已完成的不会重搬）；\n'
+          + '· 老库源文件不会被删除，搬完后由你手动处理。',
+        confirmText: '开始搬运',
+      })
+      if (!ok) return
+      this.busy = 'migrate'
+      const r = await send('/privhub/api/storage/legacy-migrate', { method: 'POST', body: '{}' })
+      this.busy = ''
+      if (!r.ok) { adminToast(r.error || '启动搬运失败', 'error'); return }
+      adminToast('搬运已启动，可在本页查看进度')
+      await this.load()
+    },
+    async cancel() {
+      const r = await send('/privhub/api/storage/legacy-cancel', { method: 'POST', body: '{}' })
+      if (!r.ok) { adminToast(r.error || '取消失败', 'error'); return }
+      adminToast('已请求停止，当前文件搬完后会停下')
+      await this.load()
+    },
+  },
+  mounted() { void this.load() },
+  beforeUnmount() { this.stopPoll() },
+  template: `
+    <div class="ad-panel">
+      <AdminSkeleton v-if="loading" variant="card" :rows="3"></AdminSkeleton>
+      <AdminErrorState v-else-if="error" :message="error" @retry="load"></AdminErrorState>
+      <template v-else>
+        <div class="ad-section-card">
+          <div class="ad-section-card-head">
+            <span class="ad-section-card-title">📦 老库迁移 / 转明文</span>
+            <span class="ad-chip" :class="status && status.running ? 'on' : 'off'">
+              {{ status && status.running ? '搬运中' : '空闲' }}
+            </span>
+          </div>
+          <div class="ad-field">
+            <label class="ad-label">
+              老库位置
+              <span class="ad-help" title="旧版 PrivHub 的 data-files 目录，例如 E:\\privhub\\data-files。系统只读它，不会修改或删除其中任何文件。">ⓘ</span>
+            </label>
+            <input class="ad-input" v-model="oldRoot" placeholder="例如 E:\\privhub\\data-files" />
+          </div>
+          <label class="ad-check">
+            <input type="checkbox" v-model="computeSha" />
+            扫描时顺带计算内容指纹（更慢，但可以顺带查出重复文件）
+          </label>
+          <div class="ad-actions">
+            <button class="ad-btn ad-btn-primary ad-btn-sm" :disabled="busy === 'scan'" @click="scan">
+              {{ busy === 'scan' ? '扫描中…' : '① 扫描老库（只读）' }}
+            </button>
+            <button class="ad-btn ad-btn-sm" :disabled="busy === 'migrate' || (status && status.running)" @click="migrate">
+              ② 开始搬运
+            </button>
+            <button class="ad-btn ad-btn-sm" v-if="status && status.running" @click="cancel">停止</button>
+          </div>
+          <div v-if="lastResult" class="ad-dim" style="margin-top:8px">{{ lastResult }}</div>
+        </div>
+
+        <div class="ad-section-card" v-if="status">
+          <div class="ad-section-card-head"><span class="ad-section-card-title">📊 进度</span></div>
+          <div class="ad-kv"><span class="ad-kv-k">概况</span><span class="ad-kv-v">{{ totalsText }}</span></div>
+          <div class="ad-kv"><span class="ad-kv-k">完成度</span><span class="ad-kv-v">{{ pct }}%</span></div>
+          <div class="ad-progress"><div class="ad-progress-bar" :style="{ width: pct + '%' }"></div></div>
+          <div v-if="status.failed" class="ad-warn-block" style="margin-top:8px">
+            有 {{ status.failed }} 个文件搬运失败。失败项不会中断整批，可稍后重试；老库源文件仍然完好。
+          </div>
+        </div>
+
+        <div class="ad-hint-block">
+          迁移分两步：<strong>扫描</strong>只登记目录与文件名（不搬字节，很快）；
+          <strong>搬运</strong>在后台低并发地把文件复制到新的扁平存储池。
+          任何时刻中断都不会丢数据，重跑只补没完成的部分。
+          <br />
+          <strong>加密会自动转成明文</strong>：老库里 PHENC1 加密的文件，搬运时先解密再写入新库，
+          落到新地址的就是可直接读的明文（nginx 才能直读）。系统 JSON 与审计记录仍然加密。
+          <br />
+          <strong>老库源文件全程不会被删除</strong>，确认新库无误后由你手动处理。
+        </div>
+      </template>
+    </div>
+  `,
+}
+
+/**
+ * 系统自检。
+ *
+ * 扁平存储把「文件在哪」从磁盘目录结构搬进了主索引，于是出现一类新的失败姿态：
+ * **索引和磁盘不一致，但两边单独看都正常**。比如池里的字节被删了、索引还留着
+ * 条目 —— 服务照常启动、列表照常显示，只有用户点到那个文件才 404。
+ *
+ * 这一页的价值就是把这类问题**主动**摆出来，并且对能修的给一键修复。
+ * 检查本身是只读的，随时可以跑；修复必须显式点击。
+ */
+const DoctorPanel = {
+  name: 'admin-doctor-panel',
+  components: { AdminSkeleton, AdminErrorState, AdminEmptyState },
+  data() {
+    return {
+      loading: true,
+      error: '',
+      report: null,
+      busy: '',
+      lastAction: '',
+    }
+  },
+  computed: {
+    /* 有问题的项排前面，让管理员一眼看到重点。 */
+    sortedChecks() {
+      const r = this.report
+      if (!r || !Array.isArray(r.checks)) return []
+      const rank = { error: 0, warn: 1, skipped: 2, ok: 3 }
+      return [...r.checks].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
+    },
+    summaryText() {
+      const r = this.report
+      if (!r) return '—'
+      if (r.problems === 0) return '全部通过（' + r.checks.length + ' 项检查）'
+      return r.problems + ' 项需要关注'
+        + (r.fixableCount > 0 ? '，其中 ' + r.fixableCount + ' 项可一键修复' : '')
+    },
+    summaryClass() {
+      const r = this.report
+      if (!r) return 'off'
+      return r.problems === 0 ? 'on' : 'warn'
+    },
+  },
+  methods: {
+    iconOf(s) {
+      if (s === 'ok') return '✅'
+      if (s === 'warn') return '⚠️'
+      if (s === 'error') return '❌'
+      return '⏭️'
+    },
+    async run() {
+      this.busy = 'check'
+      this.error = ''
+      const r = await get('/privhub/api/doctor/check')
+      if (!r.ok) {
+        this.error = r.error || '自检失败'
+        this.report = null
+      } else {
+        this.report = r.data
+      }
+      this.busy = ''
+      this.loading = false
+    },
+    async repair(id) {
+      this.busy = id
+      const r = await send('/privhub/api/doctor/repair', { method: 'POST', body: JSON.stringify({ id }) })
+      if (!r.ok) {
+        adminToast(r.error || '修复失败', 'error')
+      } else {
+        this.lastAction = r.data && r.data.action ? r.data.action : '已修复'
+        adminToast(this.lastAction)
+        /* 修完立刻重扫：让管理员看到"修好了"而不是只看到一条提示。 */
+        await this.run()
+      }
+      this.busy = ''
+    },
+  },
+  mounted() { void this.run() },
+  template: `
+    <div class="ad-panel">
+      <AdminSkeleton v-if="loading" variant="card" :rows="4"></AdminSkeleton>
+      <AdminErrorState v-else-if="error" :message="error" @retry="run"></AdminErrorState>
+      <template v-else>
+        <div class="ad-section-card">
+          <div class="ad-section-card-head">
+            <span class="ad-section-card-title">🩺 系统自检</span>
+            <span class="ad-chip" :class="summaryClass">{{ summaryText }}</span>
+          </div>
+          <div class="ad-actions">
+            <button class="ad-btn ad-btn-primary ad-btn-sm" :disabled="busy === 'check'" @click="run">
+              {{ busy === 'check' ? '检查中…' : '重新检查' }}
+            </button>
+          </div>
+          <div v-if="lastAction" class="ad-dim" style="margin-top:8px">上次修复：{{ lastAction }}</div>
+        </div>
+
+        <div class="ad-section-card">
+          <div class="ad-section-card-head"><span class="ad-section-card-title">📋 检查项</span></div>
+          <div v-for="c in sortedChecks" :key="c.id" style="padding:10px 0;border-bottom:1px solid var(--ad-line)">
+            <div style="display:flex;align-items:baseline;gap:8px">
+              <span>{{ iconOf(c.status) }}</span>
+              <strong style="flex:1">{{ c.title }}</strong>
+              <button
+                v-if="c.fixable && (c.status === 'warn' || c.status === 'error')"
+                class="ad-btn ad-btn-sm"
+                :disabled="busy === c.id"
+                @click="repair(c.id)"
+              >{{ busy === c.id ? '修复中…' : '一键修复' }}</button>
+            </div>
+            <div class="ad-dim" style="margin-top:4px;padding-left:24px">{{ c.detail }}</div>
+            <div v-if="c.samples && c.samples.length" class="ad-dim"
+                 style="margin-top:4px;padding-left:24px;font-family:monospace;font-size:12px">
+              <div v-for="(s, i) in c.samples" :key="i">· {{ s }}</div>
+            </div>
+            <div v-if="c.advice" class="ad-dim" style="margin-top:4px;padding-left:24px">
+              处置建议：{{ c.advice }}
+            </div>
+          </div>
+          <AdminEmptyState v-if="!sortedChecks.length" message="没有检查项"></AdminEmptyState>
+        </div>
+
+        <div class="ad-hint-block">
+          <strong>自检是只读的</strong>，随时可以跑，不会改动任何文件。
+          「一键修复」只在能确定安全时出现，每项都会告诉你它做了什么、影响多少条。
+          <br />
+          这里查的是<strong>索引与磁盘的不一致</strong> —— 扁平存储下这类问题不会让服务起不来，
+          只会让某个具体文件打不开，所以必须主动扫出来。
+          <br />
+          ⚠️ 自检是兜底，不是保险：真正的可靠性来自写入路径本身的严谨（原子落盘、索引与磁盘同步变更）。
+        </div>
+      </template>
+    </div>
+  `,
+}
+
+export { OverviewPanel, ProjectsPanel, PublishPanel, BackupPanel, WatermarkPanel, MigratePanel, DoctorPanel, relTime, get }

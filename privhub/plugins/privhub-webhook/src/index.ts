@@ -115,7 +115,11 @@ export function apply(ctx: Context): void {
   let cfgLoaded = false
   const log: DeliveryRecord[] = []
   /** 每个订阅一条串行链：链内保序，链间并行。 */
-  const chains = new Map<string, Promise<void>>()
+  /* 每个 hook 一条串行链：保证同一 hook 的投递**按入队顺序**发出（并发的
+   * HTTP 请求会乱序到达对端）。链上只关心「前一次结束了吗」，不关心它的返回值，
+   * 所以类型写 `Promise<unknown>` —— `deliver()` 返回 `DeliveryRecord`，
+   * 写成 `Promise<void>` 会迫使链尾丢掉返回值，反而与实现不符。 */
+  const chains = new Map<string, Promise<unknown>>()
   /** 每个订阅的待投递积压数（超过 LIMITS.backlogMax 丢弃并计数）。 */
   const backlog = new Map<string, number>()
   let dropped = 0

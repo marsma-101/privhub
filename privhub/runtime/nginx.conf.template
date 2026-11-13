@@ -21,6 +21,29 @@ http {
     include "{{NGINX_DIR}}/conf/mime.types";
     default_type application/octet-stream;
 
+    # ---- MIME 补充（**由程序生成，不要手写**）-----------------------------
+    # 直读分支（X-Accel-Redirect）的 Content-Type 完全由 nginx 决定：它按 accel
+    # URI 的扩展名查 types{}，上游 Node 给的 Content-Type 被忽略。所以这张表
+    # 必须与 Node 那份 MIME 表**同源**，否则两边会漂移。
+    #
+    # 实测漂过：nginx 自带 mime.types 里**没有 md**，于是所有 Markdown 经直读都
+    # 拿到 application/octet-stream，浏览器不内联预览、直接下载 —— 而 Markdown
+    # 是本系统最主要的文件类型。这类缺陷只在直读分支出现，直连开发模式完全正常，
+    # 所以"本地跑得好好的"说明不了任何事。
+    #
+    # 现在由 `plugins/privhub-svc-fileindex/src/nginx-types.ts` 的 EXT_MIME
+    # 生成：读真实 mime.types，只补它没有的项（重复声明会打 duplicate 警告）。
+    # 下面这个占位符由 control.mjs 在渲染配置时替换。
+{{NGINX_TYPES_BLOCK}}
+
+    # SVG 专用严格 CSP：默认空串 = 不发该响应头（实测：空值 add_header 不出头）。
+    # $uri 是**内部重定向后**的 URI（即 X-Accel-Redirect 给的那个），所以
+    # 内部落盘前缀下的 .svg 能被正确识别。
+    map $uri $privhub_svg_csp {
+        default         "";
+        ~*\.svg$        "default-src 'none'; sandbox";
+    }
+
     sendfile on;
     tcp_nopush on;
     tcp_nodelay on;
@@ -108,6 +131,137 @@ http {
             }
 {{API_PROXY}}
         }
+
+        # ---- 文件内容直读（按不透明 ID，nginx 直接 sendfile）------------------
+        #
+        # 位置说明：放在 `/privhub/api/` 前缀**之外**，因此不受上面那条 409
+        # 版本门约束 —— 旧页面里的 <img>/<video> 仍能拿到字节，不会因为一次
+        # 切换就整页裂掉。
+        #
+        # 【为什么是这个形状，三种写法都实测过（nginx 1.28.3 / Windows）】
+        #
+        # ① `auth_request` + 子请求返回 X-Accel-Redirect —— **不成立**。
+        #    子请求里的 X-Accel-Redirect 只会被该**子请求自己**消费，不会作用到
+        #    主响应。实测：调试头里 X-Dbg-Accel 明明拿到了值，主响应仍是 404
+        #    （主 location 没有 content handler，回落 root html）。别再试这条。
+        #
+        # ② `auth_request_set $p $upstream_http_…; alias $p;` —— 语法上可行
+        #    （实测 200 并真发出字节），但有致命限制：
+        #      · Node 必须在响应头里放**物理路径**；而 nginx 的 alias **不会**
+        #        解码 %XX，`encodeURIComponent` 过的路径会被当字面量去 open
+        #        （实测 CreateFile "…/C%3A%2F…%E9%A1%B9…" 404）。
+        #      · 改传未编码的原始中文路径更糟：Node 的 setHeader 遇非 ASCII 直接
+        #        抛 ERR_INVALID_CHAR → 500（HTTP 头按规范只能是 latin1 字节）。
+        #    结论：中文/空格文件名（本仓库常态）走不通。
+        #    另外 `if (...) { set $t $p; }` 包一层会**必然 404**：if 在 rewrite
+        #    阶段执行，那时 auth 子请求还没回来，$upstream_http_* 还是空的。
+        #
+        # ③ 【采用】主请求直接 proxy 到 Node，由 Node 自己决定“谁发字节”：
+        #      · 盘上是**明文** → Node 回 `X-Accel-Redirect`，nginx sendfile 发；
+        #      · 盘上是 **PHENC1 密文**（老库未迁移 / plainFileLib 关闭）→
+        #        Node 自己解密后流式发送，nginx 只透传。
+        #    这个自适应让“加密开关关着”也不会坏，只是不提速；nginx 侧不需要
+        #    知道任何存储配置（判断在 Node，是唯一权威）。
+        #
+        #    X-Accel-Redirect 是当 **URI** 处理的（nginx 会正确 percent-decode），
+        #    所以中文/空格路径天然正确；这也是它胜过 alias-变量方案的根本原因。
+        #
+        #    代价：读路径仍有一次请求进 Node（只跑鉴权，明文时不搬数据）。
+        #
+        # 实测通过：ASCII/中文+空格文件名均 200 且 sha256 与磁盘字节完全一致；
+        # Range: bytes=0-4 → 206（视频拖动可用）；未授权 403 的 JSON 信封原样透传。
+        #
+        # 【扩展名部分为什么是 `(\.[^/]*)?` 而不是 `(\.[A-Za-z0-9]+)?`】
+        # 后者会漏掉双扩展名与非 ASCII 扩展名，请求直接落到 `location /` → 404。
+        # 实测对比（nginx 1.28.3）：
+        #   /f/abc.tar.gz  严格版 404  / 放宽版 200
+        #   /f/abc.中文     严格版 404  / 放宽版 200（nginx 的 $uri 已是解码后的）
+        # 放宽后仍然安全：id 段仍被限定为 `[A-Za-z0-9_-]+`（与 Node 的
+        # FILE_ID_RE 一致），扩展名用 `[^/]*` 只是允许"点之后任意非斜杠字符"，
+        # **不允许再出现 `/`**，所以不存在目录穿越。实测 /f/../../etc/passwd、
+        # /f/sub/dir/file.txt 均不匹配（404），仍回落到普通静态分支。
+        # 扩展名只影响 nginx 猜 MIME；真正的 Content-Type 由 Node 按索引里的
+        # ext 决定，所以前端拼不拼扩展名都不影响取到字节。
+        #
+        # 【id 用命名捕获 $fid，proxy_pass 写 $fid$is_args$args】
+        # 不用 `id=$1` 的字面原因：那样会把**来访的查询串整个丢掉**。实测
+        #   `proxy_pass .../file?id=$1`          → 请求 /f/vid1?t=123，上游只收到 id=vid1
+        #   `proxy_pass .../file?id=$1&$args`    → 无查询串时上游收到 `id=vid1&`（多一个 &）
+        #   `proxy_pass .../file?id=$fid$is_args$args` → 两种情况都干净：
+        #        无查询串 → id=vid1；有查询串 → id=vid1?t=123
+        # 现在前端只拼裸的 `/f/<id>`（见 files-explorer-v3/client/utils.js），
+        # 所以丢掉 query 暂时不影响功能；但这属于"以后谁加个 ?v= 防缓存就会
+        # 静默失效"的隐患，成本一行，顺手写对。
+        location ~ ^/f/(?<fid>[A-Za-z0-9_-]+)(\.[^/]*)?$ {
+            proxy_pass http://privhub_active/privhub/api/file?id=$fid$is_args$args;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header Cookie $http_cookie;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header X-Original-URI $request_uri;
+            proxy_set_header Connection "";
+            # Range 必须透传：<video> 拖进度条靠它。少这两个头 = 拖动卡死。
+            proxy_set_header Range $http_range;
+            proxy_set_header If-Range $http_if_range;
+            # 大文件既不在 nginx 落盘、也不整体缓冲进内存。
+            proxy_request_buffering off;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            # 【安全头**不**写在这里】—— 实测结论，别搬回来。
+            # X-Accel-Redirect 触发内部重定向后，nginx 会按**新 location**
+            # （即下面的 /__privhub_internal/）重新计算 add_header；
+            # 本 location 里加的响应头会被**丢弃**。
+            # 实测矩阵（nginx 1.28.3）：
+            #   · 只写这里       → 最终响应里 X-Content-Type-Options / Referrer-Policy
+            #                       **完全消失**（Cache-Control 之所以还在，是因为
+            #                       上游 204 自己带了 cache-control，不是这里的功劳）
+            #   · 只写 internal  → 三个安全头都在 ✓
+            #   · 两处都写      → 安全头在，但 Cache-Control 变两条（值同为 no-store，无害但脏）
+            # 所以安全头的**唯一归属地**是下面的 internal location。
+        }
+
+        # 内部落盘前缀：只接 X-Accel-Redirect，外部直连一律 404（internal）。
+        #
+        # 【alias 只能用字面前缀，不能用变量】变量版（`alias $phys`，值由
+        # auth_request_set 从响应头取）在中文路径上不可用，原因见上面 ②。
+        # 这里别名到**整个文件库根**而不是只到 `.pool/`：`source='legacy'`
+        # 的条目字节还躺在各自项目目录里。哪个路径能被发，由 Node 的
+        # withinNativeRoot() 逐条自证（pool 条目必须落在 .pool 内，legacy
+        # 必须落在本项目目录内），nginx 不做第二套白名单。
+        #
+        # 【`.pool` 点目录已实测可用，不需要单独的 pool 前缀】
+        # X-Accel-Redirect 的第二段就是 `.pool`（点开头的物理池目录名），拼出来
+        # 是 `<dataFiles>/.pool/7f3a….md`。曾担心点是特殊语义，实测：
+        #   /f/<id> → /__privhub_internal/.pool/test.md              200
+        #   /f/<id> → /__privhub_internal/.pool/7f3a9c2b.md          200
+        #   /f/<id> → /__privhub_internal/.pool/中文 文件.md          200（逐段编码）
+        #   /f/<id> → /__privhub_internal/proj-a/old.md  (legacy)    200
+        # alias 只是字符串前缀拼接，`.` 在路径里没有任何特殊语义。所以**保持
+        # 一个前缀 alias 到整个库根**，pool 与 legacy 共用，不必拆成两个 location。
+        location /__privhub_internal/ {
+            internal;
+            alias "{{DATA_FILES_DIR}}/";
+            # 安全头的唯一归属地（原因见上面 /f/ 里的实测矩阵：内部重定向后
+            # 会按本 location 重新计算，/f/ 里加的会被丢弃）。
+            #
+            # Cache-Control 之所以必须在这里再加一条：上游 Node 的 204 自带
+            # `cache-control: no-store`，经 X-Accel-Redirect 会被带进最终响应；
+            # 这里再 add_header 一次就会出现**两条**同名头（值都是 no-store）。
+            # 试过用 proxy_hide_header 去掉上游那条 —— **无效**，放在 /f/ 与
+            # 放在本 location 都试过，因为那条头是内部重定向之后才并入的。
+            # 想彻底只剩一条，只能让 Node 的 204 不带 cache-control（跨文件，
+            # 不在此处修改）；两条同值不影响任何客户端行为，按"安全头齐全"优先。
+            add_header Cache-Control "no-store" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            # SVG 必须加严格 CSP：改造前 /preview-raw 给 SVG 专门加过，
+            # 否则同源存储型 XSS（<svg onload> 直接拿到本站 origin）。
+            # 用 map 取值：非 SVG 时为空串，而空的 add_header 值**不会**产生
+            # 响应头（实测确认），所以不会给普通文件塞一条空 CSP。
+            add_header Content-Security-Policy $privhub_svg_csp always;
+        }
+{{VOLUME_LOCATIONS}}
 
         # ---- 插件前端静态（从当前 release 直接读盘，不再经 Node） ----
         # 声明 auth slot 的插件必须匿名可读（登录框本身由它们提供）。

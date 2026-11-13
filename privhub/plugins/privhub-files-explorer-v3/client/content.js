@@ -4,7 +4,7 @@
  */
 
 import { api, bus } from './deps.js'
-import { rawUrl, downloadUrl, textModeOf, extOf, mediaTagOf, isNativeMedia } from './utils.js'
+import { rawUrl, downloadUrl, textModeOf, extOf, mediaTagOf, isNativeMedia, contentUrls } from './utils.js'
 import { store } from './store.js'
 
 /* 自动进内嵌编辑态的体积闸（1 MB）。
@@ -151,8 +151,12 @@ async function loadContent(key) {
        * 这里安静下来，不是漏了通知。 */
       return
     }
-    if (tab.kind === 'image') { store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }; return }
-    if (tab.kind === 'pdf') { store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }; return }
+    /* 图片/PDF/音视频的直链：`contentUrls` 按「有没有主索引 ID」决定走
+     * `/f/<id>.<ext>`（直读）还是老的 `/api/preview-raw`（回退），
+     * 并在两者不同时附带 `fallbackUrl`，供视图在加载失败时就地切回。
+     * `tab.name` 必须一起传：URL 里的扩展名由它决定（后端 `extOf` 同口径）。 */
+    if (tab.kind === 'image') { store.content = { key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name) }; return }
+    if (tab.kind === 'pdf') { store.content = { key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name) }; return }
     /* 音视频（2026-10-09）：与图片/PDF 同一形状 —— 只给 `preview-raw` 的**直链**，
      * 让浏览器自己按 Range 分段取。**绝不**在这里把它 fetch 成 Blob/ObjectURL：
      * 那样几十 MB 的视频会整段进内存、且丢掉 Range/206（nowen-note 在 Android 上踩过，明写在
@@ -160,7 +164,7 @@ async function loadContent(key) {
      * 用 `<video>` 还是 `<audio>`、以及"能不能原生播"（不能 ⇒ 同一支路画兜底说明+下载）。 */
     if (tab.kind === 'media') {
       store.content = {
-        key, state: 'ready', url: rawUrl(tab.project, tab.path),
+        key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name),
         mediaTag: mediaTagOf(tab.name), native: isNativeMedia(tab.name),
         downloadUrl: downloadUrl(tab.project, tab.path),
       }
@@ -195,13 +199,13 @@ async function loadContent(key) {
         store.content.size = bytes
         store.content.autoEdit = !readonlyHint
         store.content.readonlyHint = readonlyHint
-      } else if (r.type === 'image') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
-      else if (r.type === 'pdf') store.content = { key, state: 'ready', url: rawUrl(tab.project, tab.path) }
+      } else if (r.type === 'image') store.content = { key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name) }
+      else if (r.type === 'pdf') store.content = { key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name) }
       /* 后端说这是媒体，但标签的 kind 没落在 'media' 上（例如从旧会话/别处带进来的 name）——
        * 按同一形状补上，避免"后端认、界面不认"的分裂（`.ico` 那次就是这种分裂）。 */
       else if (r.type === 'media') {
         store.content = {
-          key, state: 'ready', url: rawUrl(tab.project, tab.path),
+          key, state: 'ready', ...contentUrls(tab.project, tab.path, tab.id, tab.name),
           mediaTag: mediaTagOf(tab.name), native: isNativeMedia(tab.name),
           downloadUrl: downloadUrl(tab.project, tab.path),
         }

@@ -176,6 +176,56 @@ export class MetaService extends Service {
     await this.save()
   }
 
+  /**
+   * 文件/目录改名后同步标签：把 `from` 上的标签搬到 `to`，连同其**整棵子树**。
+   *
+   * 为什么必须搬：侧车数据是按 `project + relPath` 存的（见 `data` 的结构），
+   * 改一次名，路径就变了 ⇒ 标签留在旧键上，文件「丢了标签」。
+   * 目录改名时子项的键前缀同样要跟着换，否则整棵子树的标签全失联。
+   * 目标键已存在标签时以**并入**处理（不覆盖已有标签，避免丢数据）。
+   */
+  async renamePath(project: string, from: string, to: string): Promise<void> {
+    const bucket = this.data[project]
+    if (!bucket) return
+    const f = from.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    const t = to.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    if (f === '' || t === '' || f === t) return
+    const prefix = f + '/'
+    let changed = false
+    for (const key of Object.keys(bucket)) {
+      if (key !== f && !key.startsWith(prefix)) continue
+      const dest = key === f ? t : t + '/' + key.slice(prefix.length)
+      const tags = bucket[key].tags
+      if (bucket[dest]) {
+        bucket[dest] = { tags: [...new Set([...bucket[dest].tags, ...tags])] }
+      } else {
+        bucket[dest] = { tags }
+      }
+      delete bucket[key]
+      changed = true
+    }
+    if (changed) await this.save()
+  }
+
+  /** 文件/目录删除（进回收站或彻底删除）后清掉标签，含整棵子树。 */
+  async removePath(project: string, relPath: string): Promise<void> {
+    const bucket = this.data[project]
+    if (!bucket) return
+    const p = relPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    if (p === '') return
+    const prefix = p + '/'
+    let changed = false
+    for (const key of Object.keys(bucket)) {
+      if (key !== p && !key.startsWith(prefix)) continue
+      delete bucket[key]
+      changed = true
+    }
+    if (changed) {
+      if (Object.keys(bucket).length === 0) delete this.data[project]
+      await this.save()
+    }
+  }
+
   /** 项目内全部标签及使用计数（F19 标签云/筛选）。 */
   async allTags(project: string): Promise<{ tag: string; count: number }[]> {
     const counter = new Map<string, number>()
@@ -240,8 +290,37 @@ export class MetaService extends Service {
 
 /** 插件挂载：注册 MetaService 到 ctx.meta。 */
 export const name = 'privhub-svc-meta'
-export const inject = ['storage']
+/* eventBus 必须在 inject 里：cordis 的 `ctx.eventBus` 未注入时**直接抛错**，
+ * 可选链也挡不住（历史踩坑）。svc-events 在 main.ts 的挂载顺序里排在本插件之前，
+ * 所以这个注入是安全的。 */
+export const inject = ['storage', 'eventBus']
 export function apply(ctx: Context, config: Config): void {
-  new MetaService(ctx, config)
+  const svc = new MetaService(ctx, config)
+  /* 侧车数据按 `project + relPath` 存 ⇒ 文件改名/移动/删除后必须跟着搬或清，
+   * 否则标签留在旧路径上，文件「丢了标签」而旧键成了永远查不到的孤儿。
+   * 这条同步此前完全缺失（svc-meta 原先不监听任何事件），是「改文件名需要同步」
+   * 这个需求的实际缺口。 */
+  ctx.eventBus.declareListen('file:changed', 'privhub-svc-meta',
+    '改名/移动 → 标签跟着搬（含子树）；删除/清空 → 摘掉标签')
+  ctx.effect(() => {
+    const off = ctx.on('file:changed', (payload: unknown) => {
+      const e = payload as { project?: unknown; path?: unknown; action?: unknown; newPath?: unknown }
+      if (!e || typeof e.project !== 'string' || e.project === '') return
+      if (typeof e.path !== 'string' || e.path === '') return
+      const action = String(e.action ?? '')
+      const run = (fn: Promise<void>): void => {
+        void fn.catch((err) => {
+          ctx.logger?.warn?.('[meta] 同步标签失败（' + action + ' ' + e.path + '）：'
+            + (err instanceof Error ? err.message : String(err)))
+        })
+      }
+      if (action === 'renamed' || action === 'moved') {
+        if (typeof e.newPath === 'string' && e.newPath !== '') run(svc.renamePath(e.project, e.path, e.newPath))
+        return
+      }
+      if (action === 'deleted' || action === 'purged') run(svc.removePath(e.project, e.path))
+    })
+    return () => { off() }
+  })
 }
 

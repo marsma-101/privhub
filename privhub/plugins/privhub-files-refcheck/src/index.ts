@@ -125,6 +125,50 @@ export function apply(ctx: Context): void {
      * 存在性由 core 用 pathSet 自行裁决（这里只管"登记表怎么说"）。 */
     await ctx.links.ready
 
+    /* v6 扁平化：项目目录不在磁盘上（文件字节全在 `.pool/`），`root` 会是 null，
+     * readdir 版本会扫出 0 个文件 ⇒ 孤儿/断链全空，断言变成"两边都空"的假通过。
+     * 有主索引就给一份递归清单，没有才回退磁盘（老布局）。 */
+    const fiRef = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } })
+      .reflect?.get?.('fileindex', false) as
+      { listDir?: (p: string, v: string) => Array<{ name?: unknown; isDir?: unknown; size?: unknown; mtime?: unknown; trashed?: unknown }> } | undefined
+    let listIndex: (() => { path: string; name: string; ext: string; size: number; mtime: number }[]) | undefined
+    if (fiRef && typeof fiRef.listDir === 'function') {
+      const li = fiRef.listDir.bind(fiRef)
+      listIndex = () => {
+        const out: { path: string; name: string; ext: string; size: number; mtime: number }[] = []
+        const walkIdx = (dir: string): void => {
+          for (const e of li(project, dir)) {
+            const nm = String(e?.name ?? '')
+            if (nm === '' || nm.startsWith('.')) continue
+            if (e?.trashed === true) continue
+            const child = dir === '' ? nm : dir + '/' + nm
+            if (e?.isDir === true) { walkIdx(child); continue }
+            out.push({
+              path: child,
+              name: nm,
+              ext: nm.includes('.') ? nm.slice(nm.lastIndexOf('.') + 1).toLowerCase() : '',
+              size: typeof e?.size === 'number' ? e.size : 0,
+              mtime: typeof e?.mtime === 'number' ? e.mtime : 0,
+            })
+          }
+        }
+        walkIdx('')
+        return out
+      }
+    }
+
+    /* v6 扁平化：虚拟路径 → 物理位置的映射必须问 core 的 resolveReal（它是异步的，
+     * 而 ScanDeps.absOf 是同步签名），所以在扫描前一次性建表。 */
+    let absOf: ((rel: string) => string | null) | undefined
+    if (listIndex) {
+      const map = new Map<string, string>()
+      for (const f of listIndex()) {
+        const abs = await svc.resolveReal(project, f.path).catch(() => null)
+        if (abs !== null) map.set(f.path, abs)
+      }
+      absOf = (rel) => map.get(rel) ?? null
+    }
+
     const report = await scanProject({
       project,
       root,
@@ -134,6 +178,8 @@ export function apply(ctx: Context): void {
       isEncrypted: (abs) => ctx.storage.isEncrypted(abs),
       join,
       resolveAlias: (target) => ctx.links.lookup(project, target),
+      listIndex,
+      absOf,
     })
 
     cache.set(key, { at: Date.now(), report })

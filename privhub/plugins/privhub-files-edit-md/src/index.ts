@@ -24,6 +24,7 @@ import { existsSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
+import { lookupFileId } from '../../privhub-core/src/events'
 
 export const name = 'privhub-files-edit-md'
 export const inject = ['privhub', 'audit', 'storage', 'eventBus', 'lock']
@@ -62,7 +63,9 @@ export function apply(ctx: Context): void {
   ctx.eventBus.declareEmit('file:saved', 'privhub-files-edit-md', '文档保存广播（带 doc 内容，索引/图谱直用）')
   ctx.eventBus.declareEmit('file:changed', 'privhub-files-edit-md', '文档保存/回滚 → fulltext 索引维护')
   const changed = (project: string, path: string, action: string): void => {
-    ctx.emit('file:changed', { project, path, action })
+    /* B 批：带上主索引的稳定 fileId（容错：索引不可用/查不到 → 留空，绝不影响保存） */
+    const fileId = lookupFileId(ctx, project, path)
+    ctx.emit('file:changed', { project, path, action, ...(fileId ? { fileId } : {}) })
   }
 
   /* 审计埋点（F13 契约） */

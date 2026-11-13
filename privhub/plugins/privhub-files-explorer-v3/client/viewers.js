@@ -230,6 +230,27 @@ function extOfName(name) {
   return m ? '.' + m[1].toLowerCase() : ''
 }
 
+/**
+ * viewer 的挂载上下文（契约形状 + `id`）。
+ *
+ * `ctx = { project, path, name, key, ext }` 是既有契约，**一个字段都没改**；
+ * 只是多带一个可选 `id`（主索引的稳定文件 ID，不透明串）。
+ *
+ * 为什么必须带上：能整块接管内容区的 viewer（现在的 office2）自己要发子请求取字节
+ * （`/api/office2/raw`），它没法把一个 `<img src>` 交给浏览器就完事。有了 `id`，
+ * 它就能和宿主走**同一条**读路径（`/f/<id>`，失败回退老路）；没有 `id`（老标签 /
+ * 索引未就绪）就回老路 —— 与 `utils.js` 的 `contentUrlFor` 同一口径。
+ * 不带这一项也可以工作（viewer 拿 project+path 走老接口），所以它是**可选**的，
+ * 不是破坏性契约变更；`tests/personal-ui.mjs` 那几条只认 `id/exts/priority/mount`，
+ * 多一个字段不影响它们。
+ */
+function viewerCtxOf(tab, key, ext) {
+  return {
+    project: tab.project, path: tab.path, name: tab.name, key, ext,
+    id: typeof tab.id === 'string' ? tab.id : '',
+  }
+}
+
 /* =====================================================================
  * 注册表：插件声明的唯一去处；解析「这个扩展名谁能开」
  * ===================================================================== */
@@ -705,7 +726,7 @@ function createViewerSession(opts) {
 
       // ② 同类文件之间切换 → 复用：挂载点不重建、viewer 身份不变
       if (sameHost && sameViewer) {
-        const ctx = { project: tab.project, path: tab.path, name: tab.name, key, ext }
+        const ctx = viewerCtxOf(tab, key, ext)
         if (typeof decl.update === 'function') {
           try {
             decl.update(host, ctx)
@@ -719,12 +740,12 @@ function createViewerSession(opts) {
         }
         // 没声明 update（或 update 抛错）：同一个锚点里「先收后建」，同一批次完成 → 中间不给浏览器绘制机会
         unmount('swap')
-        return mountInto(decl, host, { project: tab.project, path: tab.path, name: tab.name, key, ext })
+        return mountInto(decl, host, viewerCtxOf(tab, key, ext))
       }
 
       // ③ 异类（或挂载点被 Vue 重建过）→ **先卸旧的、再挂新的**
       if (cur) unmount('switch')
-      return mountInto(decl, host, { project: tab.project, path: tab.path, name: tab.name, key, ext })
+      return mountInto(decl, host, viewerCtxOf(tab, key, ext))
     },
 
     /** 宿主组件 beforeUnmount / 内容区销毁时调用：把当前的 viewer 收干净。 */

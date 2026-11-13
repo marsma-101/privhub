@@ -1,0 +1,28 @@
+(node:33684) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:28288) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> privhub@3.5.0 typecheck
+> tsc --noEmit
+
+(node:34288) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+plugins/privhub-files-lock/src/index.ts(36,24): error TS2739: Type '{ username: string; role: string; }' is missing the following properties from type 'UserRecord': password, displayName, projects
+plugins/privhub-files-office2/src/index.ts(23,24): error TS2307: Cannot find module 'html-to-docx' or its corresponding type declarations.
+plugins/privhub-files-refcheck/src/index.ts(168,26): error TS2739: Type 'User' is missing the following properties from type 'UserRecord': password, displayName
+plugins/privhub-files-refcheck/src/index.ts(190,26): error TS2739: Type 'User' is missing the following properties from type 'UserRecord': password, displayName
+plugins/privhub-files/src/index.ts(258,23): error TS2741: Property 'role' is missing in type '{ username: string; }' but required in type 'Actor'.
+plugins/privhub-svc-model/src/index.ts(338,62): error TS2739: Type '{ profiles: never[]; activeId: null; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(345,5): error TS2739: Type '{ profiles: ModelProfile[]; activeId: string; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(349,12): error TS2739: Type '{ profiles: ModelProfile[]; activeId: string; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(351,3): error TS2739: Type '{ profiles: never[]; activeId: null; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(394,11): error TS2739: Type '{ profiles: never[]; activeId: null; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(448,7): error TS2739: Type '{ profiles: never[]; activeId: null; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-svc-model/src/index.ts(482,7): error TS2739: Type '{ profiles: ModelProfile[]; activeId: string; maxRetries: number; }' is missing the following properties from type 'ModelConfig': llm, embedding
+plugins/privhub-task-board/src/index.ts(341,30): error TS2769: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '{ project: string; action: string; cardId: string; review: string; columnId: string; fromColumnId?: string | undefined; }' is not assignable to parameter of type 'keyof Events'.
+plugins/privhub-webhook/src/index.ts(290,27): error TS2345: Argument of type 'Promise<void | DeliveryRecord>' is not assignable to parameter of type 'Promise<void>'.
+  Type 'void | DeliveryRecord' is not assignable to type 'void'.
+    Type 'DeliveryRecord' is not assignable to type 'void'.

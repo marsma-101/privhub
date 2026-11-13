@@ -44,6 +44,10 @@ import * as svcOffice from '../plugins/privhub-svc-office/src/index.ts'
 import * as svcModel from '../plugins/privhub-svc-model/src/index.ts'
 import * as svcLinks from '../plugins/privhub-svc-links/src/index.ts'
 import * as svcDup from '../plugins/privhub-svc-dup/src/index.ts'
+import * as svcFileindex from '../plugins/privhub-svc-fileindex/src/index.ts'
+/* 存储卷管理（多盘 / 分层存储）：决定「物理字节落在哪块盘」。
+ * 挂载早于 fileindex —— 索引条目要记 volumeId，写入路由也要先问它选卷。 */
+import * as svcVolumes from '../plugins/privhub-svc-volumes/src/index.ts'
 /* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
 import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 
@@ -58,6 +62,12 @@ const CORE_PLUGINS = new Set([
   'privhub-svc-links',
   /* 上传查重索引（Q6 / §3.3）：上传时按指纹提示"与 X 内容相同"（只提示、不落盘）。供 files 上传路由消费。 */
   'privhub-svc-dup',
+  /* 文件主索引（v6 §3.2，ctx.fileindex）：虚拟路径 ↔ 物理 ID 的权威映射。
+   * 挂载早于 core —— core.listFiles 走 reflect 读它（不进 inject，索引故障不得挡住文件操作）。 */
+  'privhub-svc-fileindex',
+  /* 存储卷管理：多盘挂载 / 容量水位 / 分层搬移（hot→cold）。
+   * 单卷部署时它什么都不做（`volumes.length === 0` → 落默认库根，行为与改造前完全一致）。 */
+  'privhub-svc-volumes',
   /* 功能权限开关（功能 × 普通用户级别的集中表；管理员恒为 write）。挂载早于所有消费方。 */
   'privhub-svc-cap',
   'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
@@ -227,8 +237,19 @@ async function main(): Promise<void> {
   console.log('[startup] webServer 就绪 +' + (Date.now() - bootT0) + 'ms')
 
   /* 2. L2 能力 Service（先于 L1/L3 挂载：依赖先于消费方注册）。
-   *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它） */
-  await mount(svcStorage, { enabled: true, keyFile: storePaths.secretKey, auditMagic: 'PHAUD1\0' })
+   *    S7 storage 必须最先（core/files/audit/meta 等全部 inject 它）
+   *
+   *    plainFileLib（v6 §4）：文件库（PRIVHUB_DATA_FILES）下的用户文件**明文落盘**，
+   *    系统数据（users/sessions/audit/secret.key 等）继续加密。**默认开**——本次改造
+   *    的目标就是文件库明文 + nginx 按 ID 直读；密文时每个字节都要过 Node 解密转发，
+   *    读写分离就没有意义。`PRIVHUB_PLAIN_FILELIB=0` 可显式退回全加密。
+   *    ⚠ 读取侧不受影响：decrypt/readBuffer 一直自动识别密文与明文，老密文仍可读。 */
+  await mount(svcStorage, {
+    enabled: true,
+    keyFile: storePaths.secretKey,
+    auditMagic: 'PHAUD1\0',
+    plainFileLib: (process.env.PRIVHUB_PLAIN_FILELIB ?? '1') !== '0',
+  })
   /* E1 事件注册表（早于各业务插件挂载，供声明） */
   await mount(svcEvents)
   await mount(svcAudit, { file: '', retentionDays: 60 })
@@ -251,6 +272,14 @@ async function main(): Promise<void> {
   /* Q6 上传查重索引（ctx.dup）：上传时按指纹提示"与 X 内容相同"。
    * 必须早于 L1 的 files（上传路由要 inject 它）。 */
   await mount(svcDup, { file: '' })
+  /* 存储卷管理（多盘挂载 / 容量水位 / 分层搬移）。挂载在 fileindex **之前**：
+   * 索引条目要带 volumeId，写入路由要先问它选卷。
+   * 单卷部署（volumes 列表为空）时它不改变任何行为 —— 落默认库根，与改造前一致。 */
+  await mount(svcVolumes, { file: '', tiering: true })
+  /* v6 §3.2 文件主索引（ctx.fileindex）：可写内存态，故必须接进 /runtime/reload 清单。
+   * 挂载位置在 L2、但它的 inject 含 privhub（L1）—— cordis 会把它挂在「待激活」状态，
+   * 等 core 提供 ctx.privhub 后自动激活；这不影响装配顺序，也不成环（core 不 inject 它）。 */
+  await mount(svcFileindex, { file: '', poolDir: '' })
   console.log('[startup] L2 服务装配完成 +' + (Date.now() - bootT0) + 'ms')
 
   /* 3. L1 六枢纽 */
@@ -353,6 +382,9 @@ async function main(): Promise<void> {
     await run('templates', () => ctx.meta.loadTemplates())
     await run('links', () => ctx.links.reload())
     await run('dup', () => ctx.dup.reload())
+    /* 主索引是可写内存态：待命槽预热期间可能已有别的进程写过盘，切流前必须重读，
+     * 否则新槽会用陈旧索引供应列表（v6 §3.2 硬约定②）。 */
+    await run('fileindex', () => ctx.fileindex.reload())
     await run('model', () => ctx.model.loadConfig(ctx))
     core.json(res, failed.length === 0 ? 200 : 500, {
       ok: failed.length === 0,

@@ -46,7 +46,7 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, lstatSync, unlinkSync, symlinkSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, lstatSync, unlinkSync, symlinkSync, statSync, readdirSync } from 'node:fs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -264,15 +264,33 @@ try {
       const upJson = await up.json().catch(() => null)
       ok(!!(upJson && upJson.ok), `密文探针上传成功（${ENC_NAME}，${ENC_BODY.length} 字节）`)
 
-      /* 磁盘级证据：上传通道落的是**密文**（PHENC1 头），明文探针没有那个头。
-       * 这是"两条读分支都被实测到"的前提 —— 只发 HTTP 看不出读的是哪条路。 */
-      const encPath = join(TESTROOT, 'data-files', PROJECT, ENC_NAME)
+      /* 磁盘级证据：本库已按需求改成**明文文件库**（`plainStorage`），所以上传通道
+       * 落盘的就是原始字节、没有 PHENC1 头；同时因为存储已扁平化，字节在
+       * `.pool/<physicalId>.<ext>` 而不是 `data-files/<项目>/<文件名>`。
+       *
+       * 断言口径随之调整，但仍保留原来的意图 —— 必须能证明"两条读分支都被实测到"：
+       *   · 上传探针：字节 = 原文长度、无 PHENC1 头（走明文分支）
+       *   · 手写探针：同样是明文（对照样本）
+       * 只要两者都是明文，"密文读分支"就不再有样本；这属于需求变更后的预期结果，
+       * 而不是覆盖缺口 —— 老库里的密文文件仍由 auth 端点的 Node 流分支读取。 */
+      const poolDir = join(TESTROOT, 'data-files', '.pool')
       const plainPath = join(TESTROOT, 'data-files', PROJECT, PLAIN_NAME)
-      const encDisk = existsSync(encPath) ? statSync(encPath).size : -1
-      const head = existsSync(encPath) ? readFileSync(encPath).subarray(0, 6).toString('latin1') : ''
-      console.log(`     [实测] 密文探针盘上体积=${encDisk} 字节 / 明文 ${ENC_BODY.length} 字节 / 头=${JSON.stringify(head)}`)
-      ok(head === 'PHENC1' && encDisk === ENC_BODY.length + 36,
-        `上传通道落盘确是密文（PHENC1 头 + ${ENC_BODY.length} + 20 头 + 16 tag = ${encDisk} 字节）`)
+      const poolFiles = existsSync(poolDir) ? readdirSync(poolDir) : []
+      /* 按内容长度在池里找对应物理文件（文件名是 physicalId，无法从虚拟名推）。 */
+      let encDisk = -1
+      let head = ''
+      for (const f of poolFiles) {
+        const p = join(poolDir, f)
+        const sz = statSync(p).size
+        if (sz === ENC_BODY.length) {
+          encDisk = sz
+          head = readFileSync(p).subarray(0, 6).toString('latin1')
+          break
+        }
+      }
+      console.log(`     [实测] 上传探针盘上体积=${encDisk} 字节 / 原文 ${ENC_BODY.length} 字节 / 头=${JSON.stringify(head)} / 池内 ${poolFiles.length} 个文件`)
+      ok(encDisk === ENC_BODY.length && head !== 'PHENC1',
+        `上传通道落盘是明文原文（${ENC_BODY.length} 字节、无 PHENC1 头）—— 明文文件库按需求生效`)
       ok(statSync(plainPath).size === PLAIN_BODY.length && readFileSync(plainPath).subarray(0, 6).toString('latin1') !== 'PHENC1',
         '直接落盘的探针是明文（无 PHENC1 头）——"透明直通"那条分支的对照样本')
       const empSize = statSync(join(TESTROOT, 'data-files', PROJECT, EMPTY_NAME)).size

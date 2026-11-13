@@ -57,6 +57,20 @@ const ROUTES = [
   /* 系统更新：视图与 slot 由 privhub-update 声明；蓝绿部署下可用，直连模式显示说明。 */
   { key: 'ops/update', label: '系统更新', short: '系统更新', section: 'ops', icon: '⬆️', view: 'admin-update', slot: 'admin-update', entryOf: 'admin-update', implemented: true },
   { key: 'ops/backup', label: '自动备份', short: '自动备份', section: 'ops', icon: '💾', view: '', builtin: 'backup', adminOnly: true },
+  /* 存储卷管理：多盘挂载 / 容量水位 / 热冷分层搬移。
+   *
+   * 为什么单独一页而不是塞进「存储迁移」：两者解决的问题不同 ——
+   * 迁移是「把老库搬进新布局」（一次性），卷管理是「决定字节落在哪块盘」
+   * （长期运维）。混在一起会让用户以为挂卷也在搬老数据。
+   * 接口由 privhub-svc-volumes 提供，本页自渲染（builtin）。 */
+  { key: 'ops/storage', label: '存储卷', short: '存储卷', section: 'ops', icon: '🗄️', view: '', builtin: 'storage', adminOnly: true },
+  /* 存储迁移（v6 改造）：老库只读扫描 → 建索引 → 空闲慢搬到新扁平池。
+   * 本页由本插件自渲染（builtin），不依赖 slot；接口由 privhub-admin 提供。 */
+  { key: 'ops/migrate', label: '存储迁移', short: '存储迁移', section: 'ops', icon: '📦', view: '', builtin: 'migrate', adminOnly: true },
+  /* 系统自检（v6 改造）：扁平存储把「文件在哪」搬进了主索引，索引与磁盘
+   * 可能不一致而两边单独看都正常。这一页主动扫出这类不一致并能一键修复，
+   * 让问题在程序内被发现，而不是等用户点到那个具体文件才报错。 */
+  { key: 'ops/doctor', label: '系统自检', short: '自检', section: 'ops', icon: '🩺', view: '', builtin: 'doctor', adminOnly: true },
   { key: 'ops/watermark', label: '水印配置', short: '水印配置', section: 'ops', icon: '💧', view: '', builtin: 'watermark', adminOnly: true },
 ]
 

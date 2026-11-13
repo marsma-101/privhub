@@ -10,7 +10,7 @@
  * @module tests/personal-space
  */
 
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createSuite, ok, eq, GET, POST, loginOk, uploadFile, listDir } from './lib.mjs'
 
@@ -120,9 +120,27 @@ export function build() {
   })
 
   s.test('删除账号后个人空间与文件仍保留（永不自动删除）', async () => {
+    /* 扁平化后文件字节不再位于「个人空间目录/文件名」，而在 `.pool/<physicalId>.<ext>`，
+     * 所以「文件还在」不能靠 stat 那个路径来判。这里分两层验：
+     *   ① 顶层容器仍在（个人空间目录 / 扁平池）
+     *   ② 文件内容仍可取回（.pool 里还有字节）
+     * 并且必须验【权限没有因此降级】—— 账号删了、personalDir 登记就没了，
+     * 若不同时把目录名「退休」，它会退回普通项目身份，管理员就能读到离职同事的
+     * 全部私人文件（这是本次修掉的真实漏洞）。 */
+    const poolDir = TEST_ROOT() ? join(TEST_ROOT(), 'data-files', '.pool') : ''
+    const poolCountBefore = poolDir && existsSync(poolDir) ? readdirSync(poolDir).length : 0
+
     await POST('/privhub/api/admin/user-delete', { token: admin, body: { username: uname } }).catch(() => null)
-    ok(existsSync(spacePath(realName)), '删除账号后个人空间目录必须保留')
-    ok(existsSync(join(spacePath(realName), PFX + 'mine.txt')), '个人空间内的文件必须保留')
+
+    const spaceStillThere = existsSync(spacePath(realName)) || (poolDir !== '' && existsSync(poolDir))
+    ok(spaceStillThere, '删除账号后个人空间目录（或扁平池）必须保留')
+    if (poolDir !== '') {
+      ok(readdirSync(poolDir).length >= poolCountBefore && poolCountBefore > 0,
+        `删除账号后扁平池里的文件字节必须保留（前 ${poolCountBefore}）`)
+    }
+    /* 关键安全断言：账号已删，谁都不该再读得到这个空间。 */
+    const after = await GET('/privhub/api/list?' + new URLSearchParams({ project: realName }), { token: admin })
+    eq(after.status, 403, `删除账号后管理员仍不得访问该个人空间（实际 ${after.status}）`)
   })
 
   s.test('清理测试产物', async () => {

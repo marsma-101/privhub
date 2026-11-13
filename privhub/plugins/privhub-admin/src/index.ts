@@ -10,6 +10,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { basename } from 'node:path'
 import { json, readBody, hashPassword } from '../../privhub-core/src/index'
+import { registerLegacyMigration } from './migrate'
 
 export const name = 'privhub-admin'
 export const inject = ['privhub', 'audit', 'eventBus', 'storage', 'cap']
@@ -113,9 +114,13 @@ export function apply(ctx: Context): void {
     const username = String(body.username ?? '')
     if (username === 'admin') return json(res, 400, { ok: false, error: '不能删除主管理员' })
     if (!svc.users.has(username)) return json(res, 404, { ok: false, error: '用户不存在' })
+    /* 先退休个人空间，再删账号。顺序不能反：`users.delete` 之后 personalDir 登记就没了，
+     * 该目录会退回普通项目身份 ⇒ 管理员能读到离职同事的全部私人文件（实测）。
+     * 个人空间内的文件按设计永不自动删除，所以这里只解除登记、不碰字节。 */
+    const retired = await svc.retirePersonalDirOnDelete(username)
     svc.users.delete(username)
     await svc.saveUsers()
-    json(res, 200, { ok: true })
+    json(res, 200, { ok: true, retiredPersonalDir: retired })
     void audit(u, 'user-delete', username)
   }, 'admin-user-delete')
 
@@ -194,4 +199,10 @@ export function apply(ctx: Context): void {
       })),
     })
   }, 'storage-migrate')
+
+  /* ---------- 老库迁移（两遍：只读扫描建索引 → 后台慢速搬字节）----------
+   * 放在独立模块里：这部分有后台循环、in-flight 单飞、进度落盘，
+   * 塞进本文件会让「用户管理」那些短路由淹没在一屏迁移逻辑里。
+   * 权限口径与本文件其余路由一致（管理员 + admin.storage/write）。 */
+  registerLegacyMigration(ctx, { audit })
 }

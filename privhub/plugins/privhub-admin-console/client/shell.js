@@ -29,7 +29,8 @@ import {
   AdminConfirmDialog, AdminToast, AdminListDetail, AdminDataTable,
   AdminBulkBar, AdminEmptyState, AdminSkeleton, AdminErrorState,
 } from './ui.js'
-import { OverviewPanel, ProjectsPanel, PublishPanel, BackupPanel, WatermarkPanel } from './panels.js'
+import { OverviewPanel, ProjectsPanel, PublishPanel, BackupPanel, WatermarkPanel, MigratePanel, DoctorPanel } from './panels.js'
+import { StoragePanel, STORAGE_PANEL_CSS } from './storage-panel.js'
 
 /** 由本插件自渲染的面板（builtin 名 → 组件）。 */
 const BUILTINS = {
@@ -37,7 +38,11 @@ const BUILTINS = {
   projects: ProjectsPanel,
   publish: PublishPanel,
   backup: BackupPanel,
+  migrate: MigratePanel,
+  doctor: DoctorPanel,
   watermark: WatermarkPanel,
+  /* 存储卷管理（多盘挂载 / 容量 / 分层搬移）。 */
+  storage: StoragePanel,
 }
 
 const AdminShell = {

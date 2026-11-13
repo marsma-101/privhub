@@ -19,7 +19,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-comments'
-export const inject = ['storage', 'privhub']
+export const inject = ['storage', 'privhub', 'eventBus']
 
 interface Reply { author: string; at: number; text: string }
 interface Comment {
@@ -52,6 +52,55 @@ async function save(storage: StorageLike, store: Store): Promise<void> {
 export function apply(ctx: Context): void {
   /* 单一来源：直接使用 ctx.privhub 的权威类型（删掉本地 unknown 影子类型）。 */
   const svc = ctx.privhub
+
+  /* 批注按 `project|path` 存（见各路由里的 `store[project + '|' + path]`）⇒
+   * 文件改名/移动后必须把键搬过去，删除后必须清掉。否则改名一次，
+   * 该文件的全部批注就永远查不到了（旧键成了孤儿）。
+   * 目录改名要连整棵子树的键一起搬。 */
+  const migrateKeys = async (
+    project: string,
+    from: string,
+    to: string | null,
+  ): Promise<void> => {
+    const store = await load(ctx.storage)
+    const srcPrefix = project + '|' + from
+    const keys = Object.keys(store).filter((k) => k === srcPrefix || k.startsWith(srcPrefix + '/'))
+    if (keys.length === 0) return
+    for (const k of keys) {
+      const tail = k.slice(srcPrefix.length)
+      if (to === null) {
+        delete store[k]
+      } else {
+        const dest = project + '|' + to + tail
+        store[dest] = (store[dest] ?? []).concat(store[k])
+        delete store[k]
+      }
+    }
+    await save(ctx.storage, store)
+  }
+
+  ctx.effect(() => {
+    const off = ctx.on('file:changed', (payload: unknown) => {
+      const e = payload as { project?: unknown; path?: unknown; action?: unknown; newPath?: unknown }
+      if (!e || typeof e.project !== 'string' || e.project === '') return
+      if (typeof e.path !== 'string' || e.path === '') return
+      const action = String(e.action ?? '')
+      const run = (p: Promise<void>): void => {
+        void p.catch((err) => {
+          ctx.logger?.warn?.('[comments] 同步批注失败（' + action + ' ' + e.path + '）：'
+            + (err instanceof Error ? err.message : String(err)))
+        })
+      }
+      if (action === 'renamed' || action === 'moved') {
+        if (typeof e.newPath === 'string' && e.newPath !== '') {
+          run(migrateKeys(e.project, e.path, e.newPath))
+        }
+        return
+      }
+      if (action === 'deleted' || action === 'purged') run(migrateKeys(e.project, e.path, null))
+    })
+    return () => { off() }
+  })
 
   const parseQuery = (req: unknown): URL => new URL(String((req as { url?: string }).url ?? '/'), 'http://x')
 

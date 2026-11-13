@@ -16,7 +16,9 @@ import type { Writable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readBody } from '../../privhub-core/src/index'
+import { lookupFileId } from '../../privhub-core/src/events'
 import { isMediaExt } from '../../privhub-core/src/file-exts'
+import { contentTypeOf } from '../../privhub-svc-fileindex/src/mime'
 import { parseSingleRange } from '../../privhub-core/src/http-range'
 import { NEAR_MAX_BYTES } from '../../privhub-svc-dup/src/core'
 
@@ -144,9 +146,21 @@ export function apply(ctx: Context): void {
   ctx.eventBus.declareEmit('audit:logged', 'privhub-files', '写操作成功审计广播（S1 闭环）')
   ctx.eventBus.declareEmit('file:changed', 'privhub-files', '文件系统变更专用事件（创建/删除/重命名/移动）→ fulltext 索引维护')
 
-  /* 文件变更广播（fulltext/kg 增量维护） */
-  const changed = (project: string, path: string, action: string, newPath?: string): void => {
-    ctx.emit('file:changed', { project, path, action, newPath })
+  /* 文件变更广播（fulltext/kg 增量维护）
+   *
+   * B 批：payload 附带主索引的稳定 fileId，让按 ID 关联的侧车状态（评论/标签/
+   * 版本/收藏/最近/全文/RAG/KG）不必各自实现「改名跟随」。
+   * `lookupFileId` 内部已全程容错：索引缺失/未就绪/查不到/抛异常都只是让
+   * fileId 留空，**绝不影响写入主流程**（索引是派生数据）。 */
+  const changed = (project: string, path: string, action: string, newPath?: string, trashed?: boolean): void => {
+    /* 改名/移动：ID 不变，但索引里的 virtualPath 可能已经跟着改了（或还没改），
+     * 两个路径都试一次，纯查表、不额外开销。 */
+    const fileId = lookupFileId(ctx, project, path) ?? (newPath ? lookupFileId(ctx, project, newPath) : undefined)
+    ctx.emit('file:changed', {
+      project, path, action, newPath,
+      ...(fileId ? { fileId } : {}),
+      ...(trashed === undefined ? {} : { trashed }),
+    })
   }
 
   /* 审计埋点（F13 契约）：成功后写审计并广播 audit:logged；失败静默，不影响主流程 */
@@ -246,7 +260,11 @@ export function apply(ctx: Context): void {
    * 任何失败只记日志，绝不影响「文件已经落盘成功」这个事实。
    */
   const finalizeUploadMeta = (
-    u: { username: string }, project: string, subPath: string, name: string, size: number,
+    /* 必须带 `role`：`ctx.cap.can()` 的 `Actor` 契约是 `{username, role}`，
+     * 管理员恒可、普通用户按功能表判。之前这里只声明 `{username}`，
+     * 于是类型上无法证明调用方传了 role —— 运行期靠调用方恰好传了完整用户对象
+     * 才正确。类型写全，这个前提才被编译器守住。 */
+    u: { username: string; role: string }, project: string, subPath: string, name: string, size: number,
     hasher: ReturnType<typeof createHash>, chunks: Buffer[], tooBigForNear: boolean,
   ): { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null => {
     let dup: { exact: Array<{ path: string; size: number }>; near: Array<{ path: string; score: number }> } | null = null
@@ -267,6 +285,26 @@ export function apply(ctx: Context): void {
   svc.route('/privhub/api/projects', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
+    /* 建项目（POST）。此前本路由不区分方法、永远只回列表，导致前端「新建项目」
+     * 静默无效 —— 建完刷新列表还是空的。扁平化后项目只存在于索引里，
+     * 没有磁盘目录可以「碰巧」证明它存在，这个缺陷才暴露出来。 */
+    if (req.method === 'POST') {
+      let body: { name?: unknown }
+      try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+      const name = String(body.name ?? '').trim()
+      if (name === '') return json(res, 400, { ok: false, error: '项目名不能为空' })
+      if (!svc.isValidProjectName(name)) return json(res, 400, { ok: false, error: '项目名非法（不能含路径分隔符等字符）' })
+      /* 已存在则幂等成功：重复点「新建」不该报错，也不该覆盖。 */
+      const existing = await svc.allProjects()
+      if (!existing.includes(name)) {
+        const created = await svc.createProject(name)
+        if (!created) return json(res, 400, { ok: false, error: '创建失败（项目名可能已存在或与个人空间重名）' })
+        void audit(u, 'project-create', name, '')
+      }
+      json(res, 200, { ok: true, projects: await svc.visibleProjects(u) })
+      return
+    }
+    if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
     json(res, 200, { ok: true, projects: await svc.visibleProjects(u) })
   }, 'projects')
 
@@ -281,8 +319,21 @@ export function apply(ctx: Context): void {
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
       /* JT-06：项目目录已被删除/改名时，此前返回空目录 —— 用户看到的是"空的"，
        * 分不清是「本来就没文件」还是「项目已经不存在」。权限已过，这里只判存在性。
-       * 前端 openDir 拿到 !ok 会把 error 弹出来（A6），无需改 UI。 */
-      if (!existsSync(join(svc.dataRoot, project))) {
+       * 前端 openDir 拿到 !ok 会把 error 弹出来（A6），无需改 UI。
+       *
+       * v6 扁平化后**磁盘上不再有项目目录**：文件字节全在 `.pool/` 里，项目只是
+       * 索引里的一个字段。所以「项目是否存在」不能再问磁盘，否则升级后每个项目
+       * 都会被判成「不存在」，整个界面打不开。
+       * 判定顺序：
+       *   ① 索引里有这个项目的任何条目（含目录/回收站之外）→ 存在；
+       *   ② 索引不可用或为空（还没扫描）→ 回退到原来的磁盘判定，保持旧语义。
+       * 两条都不满足才报 404。 */
+      const fi = ctx.reflect?.get?.('fileindex', false) as { listProject?: (p: string) => unknown[] } | undefined
+      let projectExists = false
+      if (fi && typeof fi.listProject === 'function') {
+        try { projectExists = fi.listProject(project).length > 0 } catch { /* 索引故障不挡读 */ }
+      }
+      if (!projectExists && !existsSync(join(svc.dataRoot, project))) {
         return json(res, 404, { ok: false, error: '项目不存在或已被删除（若刚刚改过名，请刷新项目列表）' })
       }
       json(res, 200, { ok: true, entries: await svc.listFiles(project, subPath) })
@@ -322,24 +373,19 @@ export function apply(ctx: Context): void {
     const s = await stat(target)
     if (s.isDirectory()) { res.writeHead(404); res.end('not found'); return }
     const ext = extname(target).slice(1).toLowerCase()
-    /* 【扩展名一处定义】这张表是「扩展名 → MIME」的映射（映射本身必须逐条写），
-     * 但它的**键集**受约束：必须恰好等于共享的 `IMAGE_EXTS` ∪ `{pdf}` ∪ `MEDIA_EXTS`。
-     * 这条不靠人记 —— `tests/file-exts.mjs` 有一组断言直接读这段源码取键、与
-     * `privhub-core/src/file-exts.ts` 的三个集合比对，漏一个（例如 `.ico`）立刻变红。
+    /* 【MIME 一处定义】走 `runtime/mime-map.json` —— 它与 nginx `types{}` 同源，
+     * 是读路径唯一的 MIME 真相。
      *
-     * ⚠ 音视频那一组（2026-10-09）**故意比"浏览器能播的"多**：`mov/qt/avi/mkv/3gp…`
-     * 只是"浏览器多半播不了"，但它们确实是媒体 —— 前端据此画**兜底说明 + 下载入口**
-     * （nowen-note 的原做法），比回一句"该文件类型不支持在线查看"诚实得多。 */
-    const mime: Record<string, string> = {
-      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
-      svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', pdf: 'application/pdf',
-      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
-      aac: 'audio/aac', m4a: 'audio/mp4', flac: 'audio/flac',
-      mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg',
-      mov: 'video/quicktime', qt: 'video/quicktime', '3gp': 'video/3gpp', '3g2': 'video/3gpp2',
-      avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-    }
-    const contentType = mime[ext] ?? 'application/octet-stream'
+     * 这里曾经手写一张只覆盖「图片 + PDF + 音视频」的表，文本类（含 Markdown）
+     * 全部落到 `application/octet-stream`。后果是用户点开 `.md` 不是预览而是
+     * 弹下载 —— 而 Markdown 恰恰是本系统最主要的文件类型。
+     *
+     * 那张手写表还有个更隐蔽的问题：它必须与 `file-exts.ts` 的集合逐项同步，
+     * 靠 `tests/file-exts.mjs` 盯着。改成读共享表后，新增类型只改一处，
+     * Node 与 nginx 自动同时跟上，**不可能再漂移**。
+     *
+     * SVG 要额外处理（见下），其余直接查表。 */
+    const contentType = contentTypeOf(ext)
 
     /* ── 音视频：走 Range 分支（2026-10-09）────────────────────────────────
      * 为什么音视频要单独一条路：`<video>` 拖动进度条时发的是**字节区间**请求，
@@ -443,8 +489,30 @@ export function apply(ctx: Context): void {
         }
       }
       // S7 安全加固：realpath 校验防 junction 目录写穿越
-      const dir = await svc.resolveReal(project, subPath)
-      if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+      /* v6 扁平化：上传目标由 core 统一解析 —— 扁平池里落 `.pool/<physicalId>.<ext>`，
+       * 传统布局仍落项目目录。**不能用 resolveReal(project, subPath)**：扁平化后
+       * 磁盘上没有项目目录，那会永远返回「目标目录不存在」。
+       *
+       * 多卷：把「这次要写多少字节」传下去，让选卷时能留够空间。
+       * 没有 content-length（chunked）时传 0 —— 只按水位判定，不预留具体大小。 */
+      const declaredBytes = Number(req.headers['content-length'])
+      const ut = await svc.resolveUploadTarget(
+        project, subPath, name,
+        Number.isFinite(declaredBytes) && declaredBytes > 0 ? declaredBytes : 0,
+      )
+      if (!ut.ok) {
+        /* 区分两种失败：目录不存在是**用户操作问题**（400），
+         * 没有可写卷是**运维问题**（507 Insufficient Storage）。
+         * 用同一个 400 会让管理员去查用户，用同一个 507 会让用户以为服务器坏了。 */
+        if (ut.reason === 'no-space') {
+          return json(res, 507, {
+            ok: false,
+            error: '没有可用的存储空间：所有存储卷都已满、离线或已停用。请联系管理员检查存储设置。',
+          })
+        }
+        return json(res, 400, { ok: false, error: '目标目录不存在' })
+      }
+      const dir = ut.dir
       /* A4（只做「不再静默」这一步）：同名文件已存在时【明确失败】，不再静默覆盖。
        *
        * 为什么不改写入语义、也不做自动备份：覆盖会改数据，属于「会动数据」的功能，
@@ -452,10 +520,50 @@ export function apply(ctx: Context): void {
        * （版本历史随覆盖清空的问题属另一批）。本批只让这一次拒绝被用户看见。
        * 校验必须在【读取请求体之前】，避免先落 .part 再报错、留下垃圾临时文件。
        * 已知影响面：同目录重名上传（含「复制副本」若同名副本已存在）会从
-       * 「静默覆盖」变成「明确失败并在界面提示」，这是有意的行为变化。 */
-      const target = join(dir, name)
-      if (existsSync(target)) {
-        return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+       * 「静默覆盖」变成「明确失败并在界面提示」，这是有意的行为变化。
+       *
+       * v6 冲突交互：用户明确要求「先查索引，再让用户选改名还是覆盖」。
+       * 判定顺序是 **索引优先**（扁平化后磁盘上没有项目目录，`existsSync` 只看得到池），
+       * 索引不可用时才回落到磁盘判定。冲突时不直接写，而是回 409 并带上
+       * 可执行的选项：`conflict: true` + `suggestName`（服务端算好的不重名候选）
+       * + `existing`（被挡住的条目信息），前端据此弹「改名 / 覆盖」二选一。
+       * 覆盖必须由客户端显式带 `overwrite=1` 再来一次，绝不做静默覆盖。 */
+      const vp = (subPath ? subPath + '/' : '') + name
+      const overwrite = url.searchParams.get('overwrite') === '1'
+      const fiUp = ctx.reflect?.get?.('fileindex', false) as
+        { getByPath?: (p: string, v: string) => unknown; listDirItems?: (p: string, s?: string) => ReadonlyArray<{ name?: unknown; isDir?: unknown; size?: unknown; id?: unknown }> } | undefined
+      let existing: { id?: unknown; size?: unknown; isDir?: unknown; physicalId?: unknown } | null = null
+      if (fiUp && typeof fiUp.getByPath === 'function') {
+        try {
+          const e = fiUp.getByPath(project, vp) as { id?: unknown; size?: unknown; isDir?: unknown; physicalId?: unknown; trashed?: unknown } | null
+          if (e && e.trashed !== true) existing = e
+        } catch { /* 索引故障不挡上传判定，回落磁盘 */ }
+      }
+      const target = ut.target
+      const onDisk = existsSync(target)
+      if ((existing || onDisk) && !overwrite) {
+        /* 服务端算一个不重名的候选名，前端可以直接拿来用，不必自己拼。 */
+        let suggest = name
+        try {
+          const siblings = fiUp && typeof fiUp.listDirItems === 'function'
+            ? fiUp.listDirItems(project, subPath).map((x) => String(x.name ?? ''))
+            : []
+          const dot = name.lastIndexOf('.')
+          const stem = dot > 0 ? name.slice(0, dot) : name
+          const ext = dot > 0 ? name.slice(dot) : ''
+          for (let i = 2; i < 200; i++) {
+            const cand = stem + ' (' + i + ')' + ext
+            if (!siblings.includes(cand)) { suggest = cand; break }
+          }
+        } catch { /* 算不出候选就用原名，前端仍可自己输入 */ }
+        return json(res, 409, {
+          ok: false,
+          conflict: true,
+          error: '同名文件已存在：' + name,
+          existing: existing ? { id: existing.id, size: existing.size } : null,
+          suggestName: suggest,
+          options: ['rename', 'overwrite'],
+        })
       }
       // A11+S7：流式加密落盘（storage.createWriteStream 内部写密文头+加密流+末尾 tag），不整读进内存；超限中断清理
       const tmp = target + '.part'
@@ -500,6 +608,47 @@ export function apply(ctx: Context): void {
         }).catch((e) => fail(e))
       }).catch(async (e) => { await unlink(tmp).catch(() => {}); throw e })
       await rename(tmp, target)
+      /* v6 扁平化：文件已落到池里，必须登记进主索引，否则列表/直读都看不到它。
+       * 登记失败不回滚字节（文件已经在盘上），但要**明确失败**——
+       * 静默成功会造成「上传成功但界面没有」的幽灵文件，比报错难查得多。 */
+      if (ut.flat && ut.physicalId) {
+        const fi = ctx.reflect?.get?.('fileindex', false) as
+          { createFile?: (i: { project: string; virtualPath: string; physicalId: string; size?: number; volumeId?: string | null }) => { id?: unknown } | null } | undefined
+        if (overwrite && existing) {
+          /* 覆盖：旧条目必须**先摘掉**再登记新条目，否则 byPath 里留着旧行，
+           * 列表会出现两个同名文件（一个指向已不存在的池文件）。
+           * 旧物理字节按引用计数释放：只有引用归零才真删，
+           * 同一份字节被别的条目共享时不能删掉别人的文件。 */
+          const fiAny = fi as unknown as {
+            removeEntry?: (id: string) => unknown
+            releasePhysical?: (pid: string, ext: string) => Promise<unknown>
+          } | undefined
+          const oldId = typeof (existing as { id?: unknown }).id === 'string' ? (existing as { id: string }).id : ''
+          const oldPid = typeof (existing as { physicalId?: unknown }).physicalId === 'string'
+            ? (existing as { physicalId: string }).physicalId : ''
+          if (oldId !== '') fiAny?.removeEntry?.(oldId)
+          if (oldPid !== '' && typeof fiAny?.releasePhysical === 'function') {
+            const dot = name.lastIndexOf('.')
+            const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+            await fiAny.releasePhysical(oldPid, ext).catch(() => { /* 释放失败不阻断上传 */ })
+          }
+        }
+        {
+          const created = fi?.createFile?.({
+            project,
+            virtualPath: vp,
+            physicalId: ut.physicalId,
+            size,
+            /* 多卷：记下这次字节落在哪个卷上。单卷部署时是 null，
+             * `createFile` 会**不写这个字段**（保持索引与改造前字节级一致）。 */
+            volumeId: ut.volumeId ?? null,
+          })
+          if (!created || typeof created.id !== 'string') {
+            ctx.logger?.warn?.('[upload] 索引登记失败：' + project + '/' + name)
+            return json(res, 500, { ok: false, error: '文件已写入，但索引登记失败，请联系管理员（文件不会出现在列表中）' })
+          }
+        }
+      }
       /* Q6：算指纹 → 同项目内查重（只提示）→ 登记，供下次上传命中（与分片合并共用）。 */
       const dup = finalizeUploadMeta(u, project, subPath, name, size, hasher, chunks, tooBigForNear)
       json(res, 200, { ok: true, size, ...(dup ? { duplicates: dup.exact, near: dup.near } : {}) })
@@ -551,10 +700,56 @@ export function apply(ctx: Context): void {
           + '。管理员可在「系统设置 → 单文件上传上限」调整（0 = 不限），或压缩后再传。',
       })
     }
-    const dir = await svc.resolveReal(project, subPath)
-    if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
-    if (existsSync(join(dir, name))) {
-      return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+    /* v6 扁平化：分片上传的目标目录同样不能再问 resolveReal ——
+     * 磁盘上没有项目目录，那会永远 400。改为：扁平池模式直接放行（目录是虚拟的，
+     * 存在性由索引保证），传统布局才校验物理目录。 */
+    const fiInit = ctx.reflect?.get?.('fileindex', false) as
+      { getByPath?: (p: string, v: string) => { trashed?: unknown } | null } | undefined
+    const flat = !!(fiInit && typeof fiInit.getByPath === 'function')
+    if (!flat) {
+      const dir = await svc.resolveReal(project, subPath)
+      if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
+    }
+    /* 同名冲突：与整文件上传同口径 —— 索引优先、带 conflict 标记让前端二选一。
+     * 分片上传的覆盖由 complete 阶段处理（客户端会在 init 时带 overwrite=1）。 */
+    const vpInit = (subPath ? subPath + '/' : '') + name
+    const overwriteInit = body.overwrite === true || body.overwrite === 1 || body.overwrite === '1'
+    if (!overwriteInit) {
+      let clash = false
+      if (fiInit && typeof fiInit.getByPath === 'function') {
+        try {
+          const e = fiInit.getByPath(project, vpInit)
+          if (e && e.trashed !== true) clash = true
+        } catch { /* 索引故障不挡上传 */ }
+      }
+      if (!clash) {
+        const dir2 = await svc.resolveReal(project, subPath)
+        if (dir2 !== null && existsSync(join(dir2, name))) clash = true
+      }
+      if (clash) {
+        let suggest = name
+        try {
+          const fiList = ctx.reflect?.get?.('fileindex', false) as
+            { listDirItems?: (p: string, s?: string) => ReadonlyArray<{ name?: unknown }> } | undefined
+          const siblings = fiList && typeof fiList.listDirItems === 'function'
+            ? fiList.listDirItems(project, subPath).map((x) => String(x.name ?? ''))
+            : []
+          const dot = name.lastIndexOf('.')
+          const stem = dot > 0 ? name.slice(0, dot) : name
+          const ext = dot > 0 ? name.slice(dot) : ''
+          for (let i = 2; i < 200; i++) {
+            const cand = stem + ' (' + i + ')' + ext
+            if (!siblings.includes(cand)) { suggest = cand; break }
+          }
+        } catch { /* 用原名兜底 */ }
+        return json(res, 409, {
+          ok: false,
+          conflict: true,
+          error: '同名文件已存在：' + name,
+          suggestName: suggest,
+          options: ['rename', 'overwrite'],
+        })
+      }
     }
     /* key 由客户端按「项目/目录/文件名/大小/修改时间」生成（FNV 摘要即可）：
      * 刷新页面后重新选择同一个文件，仍能命中未完成会话。 */
@@ -679,12 +874,19 @@ export function apply(ctx: Context): void {
       for (let i = 0; i < total; i++) if (!present.includes(i)) missing.push(i)
       return json(res, 409, { ok: false, error: '还有分片未上传（缺 ' + missing.length + ' 片）', missing, received: present.length, total })
     }
-    const dir = await svc.resolveReal(project, subPath)
-    if (dir === null || !existsSync(dir)) return json(res, 400, { ok: false, error: '目标目录不存在' })
-    const target = join(dir, name)
-    if (existsSync(target)) {
-      return json(res, 409, { ok: false, error: '同名文件已存在：' + name + '（为避免覆盖，请改名后重新上传）' })
+    /* v6 扁平化：合并目标同样要走 resolveUploadTarget（池路径 + 索引登记），
+     * 不能再用 resolveReal + join(dir, name)。 */
+    const utc = await svc.resolveUploadTarget(project, subPath, name)
+    if (!utc.ok) {
+      if (utc.reason === 'no-space') {
+        return json(res, 507, {
+          ok: false,
+          error: '没有可用的存储空间：所有存储卷都已满、离线或已停用。请联系管理员检查存储设置。',
+        })
+      }
+      return json(res, 400, { ok: false, error: '目标目录不存在' })
     }
+    const target = utc.target
     let merged: { size: number; dup: ReturnType<typeof finalizeUploadMeta> }
     try {
       merged = await svc.withFileLock('upload-complete:' + id, async () => {
@@ -728,6 +930,39 @@ export function apply(ctx: Context): void {
           throw new Error('分片总大小与声明不一致')
         }
         await rename(tmp, target)
+        /* v6 扁平化：分片合并完也必须登记索引，否则字节在池里、列表里看不见。
+         * 覆盖场景（init 时带了 overwrite=1）先摘掉旧条目，避免出现同名幽灵行。 */
+        const fiC = ctx.reflect?.get?.('fileindex', false) as {
+          getByPath?: (p: string, v: string) => { id?: unknown; physicalId?: unknown } | null
+          removeEntry?: (id: string) => unknown
+          releasePhysical?: (pid: string, ext: string) => Promise<unknown>
+          createFile?: (i: { project: string; virtualPath: string; physicalId: string; size?: number }) => { id?: unknown } | null
+        } | undefined
+        if (fiC && typeof fiC.createFile === 'function') {
+          const vpC = (subPath ? subPath + '/' : '') + name
+          if (typeof fiC.getByPath === 'function') {
+            const old = fiC.getByPath(project, vpC)
+            if (old && typeof old.id === 'string') {
+              fiC.removeEntry?.(old.id)
+              if (typeof old.physicalId === 'string' && old.physicalId !== '' && typeof fiC.releasePhysical === 'function') {
+                const dotC = name.lastIndexOf('.')
+                const extC = dotC > 0 ? name.slice(dotC + 1).toLowerCase() : ''
+                await fiC.releasePhysical(old.physicalId, extC).catch(() => { /* 释放失败不阻断 */ })
+              }
+            }
+          }
+          /* 只有扁平池才有 physicalId；传统布局（没 physicalId）不需要登记索引，
+           * 文件本来就在项目目录里，listFiles 走磁盘分支能看见。 */
+          if (typeof utc.physicalId === 'string' && utc.physicalId !== '') {
+            const createdC = fiC.createFile({
+              project, virtualPath: vpC, physicalId: utc.physicalId, size: cur.size,
+            })
+            if (!createdC || typeof createdC.id !== 'string') {
+              ctx.logger?.warn?.('[upload-complete] 索引登记失败：' + project + '/' + name)
+              throw new Error('索引登记失败')
+            }
+          }
+        }
         const dup = finalizeUploadMeta(u, project, subPath, name, cur.size, hasher, chunks, tooBigForNear)
         await removeSession(cur.id)
         return { size: written, dup }
@@ -785,7 +1020,7 @@ export function apply(ctx: Context): void {
     const ok = r.value
     json(res, ok ? 200 : 400, ok ? { ok: true } : { ok: false, error: '删除失败' })
     if (ok) void audit(u, 'delete', project + '/' + delPath)
-    if (ok) changed(project, delPath, 'deleted')
+    if (ok) changed(project, delPath, 'deleted', undefined, true)
   }, 'delete')
 
   /* 重命名 */
@@ -821,6 +1056,34 @@ export function apply(ctx: Context): void {
     if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限' })
     const from = String(body.from ?? '')
     const toDir = String(body.toDir ?? '').trim().replace(/^\/+|\/+$/g, '')
+    /* v6 扁平化：移动优先走索引 —— 磁盘上没有项目目录，纯物理 rename 必然「源不存在」。
+     * 扁平池里移动只是改 virtualPath（零字节搬运），物理文件按 physicalId 原地不动。 */
+    const fiMove = ctx.reflect?.get?.('fileindex', false) as {
+      getByPath?: (p: string, v: string) => { id?: unknown; isDir?: unknown } | null
+      moveEntry?: (id: string, toDir: string) => number
+    } | undefined
+    if (fiMove && typeof fiMove.moveEntry === 'function' && typeof fiMove.getByPath === 'function') {
+      try {
+        const srcEntry = fiMove.getByPath(project, from)
+        if (srcEntry && typeof srcEntry.id === 'string') {
+          /* 返回值语义：-1 = 失败（目标目录不存在 / 同名冲突），
+           * 0 = 已经在目标目录，>0 = 受影响条目数。只有 -1 才算失败。 */
+          const moved = fiMove.moveEntry(srcEntry.id, toDir)
+          if (typeof moved === 'number' && moved >= 0) {
+            const newPath = toDir === '' ? basename(from) : toDir + '/' + basename(from)
+            json(res, 200, { ok: true, to: toDir === '' ? '' : newPath })
+            void audit(u, 'move', project + '/' + from, '-> ' + newPath)
+            changed(project, from, 'moved', newPath)
+            return
+          }
+          if (moved === -1) {
+            /* 索引明确拒绝：给出与物理实现同口径的错误，不再往下走物理分支
+             * （扁平池下物理分支必然「源不存在」，会把真实原因盖掉）。 */
+            return json(res, 400, { ok: false, error: '目标目录不存在或已存在同名项' })
+          }
+        }
+      } catch { /* 索引异常 → 落到物理实现 */ }
+    }
     const base = resolve(svc.dataRoot, project)
     const src = resolve(base, from)
     if (src === base || !src.startsWith(base + sep) || !existsSync(src)) return json(res, 400, { ok: false, error: '源不存在' })
@@ -860,13 +1123,58 @@ export function apply(ctx: Context): void {
     const name = basename(target)
     // RFC 5987：filename* 支持中文；同时保留 ASCII 兜底
     const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))
-    // S7：下载解密读
-    const body = await ctx.storage.readBuffer(target)
-    res.writeHead(200, {
+    const baseHeaders: Record<string, string | number> = {
       'content-type': 'application/octet-stream',
       'content-disposition': "attachment; filename*=UTF-8''" + encoded + '; filename="download"',
-      'content-length': body.length,
-    })
+      /* v6：断点续传。用户明确要求「下载可以慢，但是要有断点续传」——
+       * 声明 accept-ranges 并真正实现 206，浏览器/下载器才会续传；
+       * 只声明不实现，客户端会在续传时拿到整段，反而更糟。
+       * Range 语义与 `/f/<id>`（svc-fileindex/auth.ts:404-430）和
+       * `/preview-raw` 同口径：只认单区间，坏语法/多区间/越界一律 416。 */
+      'accept-ranges': 'bytes',
+    }
+
+    let total: number
+    try {
+      total = Math.max(0, await ctx.storage.plainSize(target))
+    } catch {
+      /* plainSize 不可用（老 storage 实现）：退回直接整段读，不支持 Range。 */
+      const body = await ctx.storage.readBuffer(target)
+      res.writeHead(200, { ...baseHeaders, 'content-length': body.length })
+      res.end(body)
+      return
+    }
+
+    const parsed = parseSingleRange(req.headers.range, total)
+    if (parsed && !parsed.ok) {
+      res.writeHead(416, { ...baseHeaders, 'content-range': `bytes */${total}` })
+      res.end()
+      return
+    }
+
+    if (parsed && parsed.ok) {
+      let chunk: Buffer
+      try {
+        chunk = await ctx.storage.readRange(target, parsed.start, parsed.end)
+      } catch {
+        /* 区间在明文长度上合法却读不出来（文件在读取途中变了/密文损坏）：
+         * 不回半截数据，按 416 处理，客户端会重发一次不带 Range 的请求自愈。 */
+        res.writeHead(416, { ...baseHeaders, 'content-range': `bytes */${total}` })
+        res.end()
+        return
+      }
+      res.writeHead(206, {
+        ...baseHeaders,
+        'content-length': chunk.length,
+        'content-range': `bytes ${parsed.start}-${parsed.end}/${total}`,
+      })
+      res.end(chunk)
+      return
+    }
+
+    // S7：下载解密读（无 Range：整段下发，GCM tag 校验生效）
+    const body = await ctx.storage.readBuffer(target)
+    res.writeHead(200, { ...baseHeaders, 'content-length': body.length })
     res.end(body)
   }, 'download')
 }
