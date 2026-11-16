@@ -104,9 +104,8 @@ function openTab(entry, project, dirPath) {
   if (store.tabs.length > 30) store.tabs.splice(0, store.tabs.length - 30)
   store.activeKey = key
   persistTabs()
-  // 兼容 tags 等插件对「当前选中文件」的依赖；右侧详情面板随选中/打开显示
+  // 兼容 tags 等插件对「当前选中文件」的依赖（详情下拉由用户点 ℹ️ 打开，不自动弹）
   nav.selected = { ...entry }
-  nav.rightOpen = true
   void loadContent(key)
   bus.emit('v3:tab-opened', { project, path, name: entry.name })
 }
@@ -114,12 +113,11 @@ function activateTab(key) {
   const tab = store.tabs.find(t => t.key === key)
   // 切换激活前：通知编辑器静默保存未保存修改（md:interrupt → edit-md）
   if (store.activeKey && store.activeKey !== key) emitSaveIntent('tabs.activateTab')
-  // 幂等：即使已是激活标签也恢复选中/右侧面板（Esc/切视图后 rightOpen 被骨架清零）
+  // 幂等：即使已是激活标签也恢复选中（Esc/切视图后 selected 被骨架清零）
   if (tab) {
-    /* `id` 必须跟着走：详情面板/右键菜单拿 `nav.selected` 去拼内容 URL，
+    /* `id` 必须跟着走：详情下拉/右键菜单拿 `nav.selected` 去拼内容 URL，
      * 这里漏掉 id 就会出现"标签里有 ID、选中项没有"的分裂（列表能开、详情打不开）。 */
     nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type, id: tab.id || '' }
-    nav.rightOpen = true
   }
   if (store.activeKey !== key) {
     store.activeKey = key

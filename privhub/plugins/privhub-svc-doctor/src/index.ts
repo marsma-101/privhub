@@ -30,7 +30,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, isAbsolute } from 'node:path'
-import { json, readJsonBody } from '../../privhub-core/src/index'
+import { json, readJsonBody, roleAtLeast } from '../../privhub-core/src/index'
 import { checkTypesConsistency, loadExtMime, CODE_ROOT, MIME_MAP_PATH } from '../../privhub-svc-fileindex/src/nginx-types'
 
 /** 单项检查的结论。 */
@@ -624,7 +624,7 @@ export function apply(ctx: Context): void {
   route('/privhub/api/doctor/check', async (req: any, res: any) => {
     const u = (ctx as any).privhub.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可执行自检' })
+    if (!roleAtLeast(u.role, 'system_admin')) return json(res, 403, { ok: false, error: '仅系统管理员可执行自检' })
     try {
       const report = await svc.runChecks()
       json(res, 200, report)
@@ -637,7 +637,7 @@ export function apply(ctx: Context): void {
   route('/privhub/api/doctor/repair', async (req: any, res: any) => {
     const u = (ctx as any).privhub.requireUser(req, res)
     if (!u) return
-    if (u.role !== 'admin') return json(res, 403, { ok: false, error: '仅管理员可执行修复' })
+    if (!roleAtLeast(u.role, 'system_admin')) return json(res, 403, { ok: false, error: '仅系统管理员可执行修复' })
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     const body = await readJsonBody<{ id?: string }>(req, res)
     if (body === null) return

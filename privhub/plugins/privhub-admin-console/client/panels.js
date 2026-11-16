@@ -140,14 +140,14 @@ const ProjectsPanel = {
       return [
         { key: 'username', label: '用户名', width: '160px', nowrap: true },
         { key: 'displayName', label: '显示名', width: '150px', nowrap: true },
-        { key: 'role', label: '角色', width: '110px', nowrap: true, render: (r) => (r.role === 'admin' ? '管理员' : '普通用户') },
+        { key: 'role', label: '角色', width: '110px', nowrap: true, render: (r) => (window.PrivHub && window.PrivHub.roleLabel ? window.PrivHub.roleLabel(r.role) : r.role) },
         { key: 'projects', label: '可访问项目', render: (r) => (r.projects || []).join('、') || '（无）' },
       ]
     },
     rows() {
       const kw = this.q.trim().toLowerCase()
       let list = this.users
-      if (this.onlyAdmins) list = list.filter((u) => u.role === 'admin')
+      if (this.onlyAdmins) list = list.filter((u) => u.role === 'admin' || u.role === 'system_admin')
       if (kw) {
         list = list.filter((u) =>
           String(u.username || '').toLowerCase().includes(kw) ||
@@ -530,6 +530,12 @@ const MigratePanel = {
       status: null,
       busy: '',
       lastResult: '',
+      /** 扫描返回的提示（就地迁移等）；空串表示没有提示。 */
+      lastWarning: '',
+      /** 搬运目标卷 id（'' = 默认库根）。 */
+      targetVolumeId: '',
+      /** 可选的目标卷列表（从 /volumes/list 取）。 */
+      volumes: [],
       /* 轮询句柄：迁移是后台慢任务，页面靠轮询看进度。 */
       pollTimer: null,
     }
@@ -545,11 +551,54 @@ const MigratePanel = {
       if (!s) return 0
       return Math.max(0, (s.total || 0) - (s.migrated || 0))
     },
+    /** 除了系统库根之外，有没有别的卷可选（没有就提示"先挂卷"）。 */
+    targetVolMissing() {
+      const sys = new Set([''])
+      return !this.volumes.some((v) => v && !v.isSystemRoot && sys.has(v.id) === false)
+    },
+    /** 当前选中的目标卷（用于提示"将搬到 X"）。 */
+    targetVol() {
+      if (!this.targetVolumeId) return null
+      return this.volumes.find((v) => v.id === this.targetVolumeId) || null
+    },
     totalsText() {
       const s = this.status
       if (!s) return '—'
       return '共 ' + (s.total || 0) + ' 条 · 已搬 ' + (s.migrated || 0) + ' · 待搬 ' + this.pending
         + (s.failed ? ' · 失败 ' + s.failed : '')
+    },
+    /**
+     * 「上次搬完是什么时候」——2026-11-16 补。
+     *
+     * 为什么需要：搬运完成后 `待搬` 恒为 0，用户再点一次「开始搬运」时
+     * 界面数字**一点变化都没有**，看起来就像「点了没反应/没搬」。
+     * 实测就发生过这种误判（其实 11/13 就搬完了，老库密文仍保留在盘上）。
+     * 把「上次完成时间」显出来，用户才能分清「已完成」与「没执行」。
+     */
+    finishedText() {
+      const s = this.status
+      if (!s) return ''
+      const t = s.migratedAt || s.finishedAt
+      if (!t) return ''
+      const d = new Date(t)
+      if (Number.isNaN(d.getTime())) return ''
+      const p = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    },
+    /**
+     * 已完成时给一句明确结论，而不是让用户自己从数字里猜。
+     * 同时点明「老库源文件仍在」—— 这是本功能的既定行为（绝不删源），
+     * 但不说清会让人以为「没搬干净」。
+     */
+    doneHint() {
+      const s = this.status
+      if (!s) return ''
+      if (s.running) return ''
+      if (!s.total) return ''
+      if (this.pending > 0) return ''
+      return '全部已搬运完成' + (this.finishedText ? '（' + this.finishedText + '）' : '')
+        + '。老库里的原始文件**仍然保留在磁盘上**（本功能从不删除源文件），'
+        + '确认新库无误后可由你手动清理老库目录。'
     },
   },
   methods: {
@@ -563,6 +612,12 @@ const MigratePanel = {
       } else {
         this.status = r.data
       }
+      /* 可选目标卷：与「存储卷」段同一份数据，不另造名单。
+       * 拿不到就留空数组（下拉只有"默认库根"），不编造。 */
+      try {
+        const v = await get('/privhub/api/volumes/list')
+        this.volumes = (v.ok && v.data && Array.isArray(v.data.volumes)) ? v.data.volumes : []
+      } catch { this.volumes = [] }
       this.loading = false
       /* 有在跑的任务就继续轮询，跑完自动停。 */
       if (this.status && this.status.running) this.startPoll()
@@ -601,6 +656,10 @@ const MigratePanel = {
       if (!r.ok) { adminToast(r.error || '扫描失败', 'error'); return }
       this.lastResult = '扫描完成：登记 ' + (r.data.created || 0) + ' 条，更新 ' + (r.data.updated || 0)
         + ' 条' + (r.data.failed && r.data.failed.length ? '，失败 ' + r.data.failed.length : '')
+      /* 后端可能带回 warning（就地迁移 / 目录结构可疑）。2026-11-16 补：
+       * 以前这条 warning 被丢掉了，于是"填了当前库根"这种最常见的误解
+       * 完全没有任何提示，用户只会看到"点了没反应"。 */
+      this.lastWarning = typeof r.data.warning === 'string' ? r.data.warning : ''
       adminToast(this.lastResult)
       await this.load()
     },
@@ -608,16 +667,19 @@ const MigratePanel = {
     async migrate() {
       const ok = await confirmAction({
         title: '开始搬运',
-        message: '将把尚未迁移的文件逐条复制到新的扁平存储池。\n\n'
-          + '· 加密文件会在搬运时自动解密，新库里存的是明文；\n'
+        message: '将把尚未迁移的文件逐条复制到 ' + (this.targetVol ? ('卷「' + this.targetVol.label + '」') : '默认库根') + '。\n\n'
+          + '· 加密文件会在搬运时自动解密，落到目标盘的是明文；\n'
           + '· 默认低并发，不影响正常读写；\n'
           + '· 随时可以暂停，断电也不会丢数据（已完成的不会重搬）；\n'
-          + '· 老库源文件不会被删除，搬完后由你手动处理。',
+          + '· 源文件（老库）不会被删除，搬完后由你手动处理。',
         confirmText: '开始搬运',
       })
       if (!ok) return
       this.busy = 'migrate'
-      const r = await send('/privhub/api/storage/legacy-migrate', { method: 'POST', body: '{}' })
+      const r = await send('/privhub/api/storage/legacy-migrate', {
+        method: 'POST',
+        body: JSON.stringify({ targetVolumeId: this.targetVolumeId || null }),
+      })
       this.busy = ''
       if (!r.ok) { adminToast(r.error || '启动搬运失败', 'error'); return }
       adminToast('搬运已启动，可在本页查看进度')
@@ -646,11 +708,32 @@ const MigratePanel = {
           </div>
           <div class="ad-field">
             <label class="ad-label">
-              老库位置
-              <span class="ad-help" title="旧版 PrivHub 的 data-files 目录，例如 E:\\privhub\\data-files。系统只读它，不会修改或删除其中任何文件。">ⓘ</span>
+              老库位置（源）
+              <span class="ad-help" title="「老库」= 库根/默认地址，由程序固定解析（env PRIVHUB_DATA_FILES → config/store.json → 默认）。留空即用当前库根。也可以填外部老库的绝对路径（如 E:\\old\\data-files）。">ⓘ</span>
             </label>
-            <input class="ad-input" v-model="oldRoot" placeholder="例如 E:\\privhub\\data-files" />
+            <input class="ad-input" v-model="oldRoot" :placeholder="status && status.dataFiles ? status.dataFiles : '留空 = 当前库根（默认地址）'" />
+            <div class="ad-dim" style="margin-top:4px">留空即用当前库根；要搬外部老库才需要填。</div>
           </div>
+
+          <!-- 目标卷（2026-11-16 新增）：把源上的文件搬到哪块盘。
+               以前没有这个选择，字节只能落回默认池 —— 用户在新加的卷里
+               永远看不到文件，而界面照样报"搬移完成"。 -->
+          <div class="ad-field">
+            <label class="ad-label">
+              目标卷（搬到哪）
+              <span class="ad-help" title="选择要把文件搬到哪块存储卷。不选=默认库根。搬过去时若源是密文会自动解密。">ⓘ</span>
+            </label>
+            <select class="ad-input" v-model="targetVolumeId">
+              <option :value="''">默认库根（不换盘）</option>
+              <option v-for="v in volumes" :key="v.id" :value="v.id" :disabled="v.enabled === false">
+                {{ v.label }} — {{ v.root }}{{ v.enabled === false ? '（已停用）' : '' }}
+              </option>
+            </select>
+            <div v-if="targetVolMissing" class="ad-dim" style="margin-top:4px;color:var(--ad-warn)">
+              还没挂载其他卷。先在下面「存储卷」段挂一块新卷，才能跨盘搬运。
+            </div>
+          </div>
+
           <label class="ad-check">
             <input type="checkbox" v-model="computeSha" />
             扫描时顺带计算内容指纹（更慢，但可以顺带查出重复文件）
@@ -665,6 +748,8 @@ const MigratePanel = {
             <button class="ad-btn ad-btn-sm" v-if="status && status.running" @click="cancel">停止</button>
           </div>
           <div v-if="lastResult" class="ad-dim" style="margin-top:8px">{{ lastResult }}</div>
+          <!-- 就地迁移等提示：必须显出来，否则用户无从判断"为什么点了没变化" -->
+          <div v-if="lastWarning" class="ad-warn-block" style="margin-top:8px;line-height:1.7">{{ lastWarning }}</div>
         </div>
 
         <div class="ad-section-card" v-if="status">
@@ -672,6 +757,8 @@ const MigratePanel = {
           <div class="ad-kv"><span class="ad-kv-k">概况</span><span class="ad-kv-v">{{ totalsText }}</span></div>
           <div class="ad-kv"><span class="ad-kv-k">完成度</span><span class="ad-kv-v">{{ pct }}%</span></div>
           <div class="ad-progress"><div class="ad-progress-bar" :style="{ width: pct + '%' }"></div></div>
+          <!-- 已全部搬完时给明确结论：否则再点「开始搬运」数字毫无变化，会被误判成"没搬" -->
+          <div v-if="doneHint" class="ad-dim" style="margin-top:8px;line-height:1.7">{{ doneHint }}</div>
           <div v-if="status.failed" class="ad-warn-block" style="margin-top:8px">
             有 {{ status.failed }} 个文件搬运失败。失败项不会中断整批，可稍后重试；老库源文件仍然完好。
           </div>

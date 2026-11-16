@@ -3,7 +3,7 @@
   "title": "骨架",
   "icon": "🏠",
   "description": "页面骨架与层级导航：层级条（你在哪一层）+ 项目层固定四 tab（看板/任务/日程/文件）与更多抽屉 + 个人层「我的」+ 顶栏项目横排 / 用户区 / 图标栏 / 欢迎页。",
-  "slots": ["auth", "project-tabs", "user-area", "app-iconbar", "welcome", "layer-bar", "project-nav", "me-view"],
+  "slots": ["auth", "project-tabs", "user-area", "app-iconbar", "welcome", "layer-bar", "project-nav", "me-view", "app-rail", "project-head"],
   "barItems": [
     {
       "icon": "🏠",

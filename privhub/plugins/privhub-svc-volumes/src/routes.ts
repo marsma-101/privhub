@@ -15,7 +15,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { json, readJsonBody } from '../../privhub-core/src/index'
+import { json, readJsonBody, roleAtLeast } from '../../privhub-core/src/index'
 import { msgOf } from '../../privhub-core/src/json-store'
 import type { VolumeService } from './index'
 import type { VolumeStat } from './volumes-core'
@@ -84,7 +84,7 @@ export function registerVolumeRoutes(
   const adminOnly = (req: unknown, res: unknown): boolean => {
     const u = core.requireUser(req as never, res as never)
     if (!u) return false
-    if (u.role !== 'admin') {
+    if (!roleAtLeast(u.role, 'system_admin')) {
       json(res as never, 403, { ok: false, error: '仅管理员可管理存储卷' })
       return false
     }

@@ -218,7 +218,25 @@ export class StorageService extends Service {
     if (!this.plainFileLib) return false
     const abs = resolve(file)
     const root = this.plainRoot
-    return abs === root || abs.startsWith(root.endsWith(sep) ? root : root + sep)
+    if (abs === root || abs.startsWith(root.endsWith(sep) ? root : root + sep)) return true
+    /* 多卷（2026-11-15）：文件库根之外，**额外的存储卷**也属于「用户文件」。
+     * 卷的根目录（如 G:\privhub-files）不在 plainRoot 前缀内，若不认它，
+     * 同一个逻辑库里就会出现「默认卷明文、扩展卷密文」的分裂 —— 前端看不出，
+     * 但运维排查/备份/迁移时会误判（实测：库根 189 个明文，卷里 26 个密文）。
+     * 卷服务通过 reflect 可选获取：单卷部署拿不到就走原判断，不引入硬依赖。 */
+    try {
+      const c = this as unknown as { ctx?: { reflect?: { get?: (k: string, d?: unknown) => unknown } } }
+      const vols = c.ctx?.reflect?.get?.('volumes', false) as
+        { roots?: () => string[] } | null | undefined
+      if (vols && typeof vols.roots === 'function') {
+        for (const r of vols.roots()) {
+          if (typeof r !== 'string' || r === '') continue
+          const vr = resolve(r)
+          if (abs === vr || abs.startsWith(vr.endsWith(sep) ? vr : vr + sep)) return true
+        }
+      }
+    } catch { /* 卷服务异常 → 按默认库根判断（安全方向：加密） */ }
+    return false
   }
 
   /** 是否启用加密（读路径不受影响：自动识别密文头）。 */

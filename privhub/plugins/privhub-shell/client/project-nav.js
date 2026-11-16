@@ -4,7 +4,7 @@
  * ## 它解决什么
  * 旧界面把项目内的十几个功能平铺成图标栏，用户得记住「每个图标是什么、在哪一段」。
  * 新结构改成**层级**：选中项目后，首层只有四类每天要看的事 ——
- * 看板 · 任务 · 日程 · 文件；其余（知识 / AI）收进「更多」，一层可达，一条不删。
+ * 文件 · 看板 · 任务 · 日程；其余（知识 / AI）收进「更多」，一层可达，一条不删。
  *
  * ## 三条设计约束
  * 1. **单一状态源**：当前 tab 由 `nav.activeView` 反查（tabOfView），不另存一份 tab 状态。
@@ -26,6 +26,9 @@ const { nav, barItems, AUTH, badges } = window.PrivHub
 
 const ProjectNav = {
   name: 'shell-project-nav',
+  /* part：骨架同一个组件挂两次 —— 'scenes' 渲染进 T2 右端（场景页签），
+     'subs' 渲染进 T3 子页签层。缺省（老调用/回归直挂）按 'scenes' 处理。 */
+  props: { part: { type: String, default: 'scenes' } },
   data() {
     return {
       nav, barItems, badges,
@@ -36,7 +39,7 @@ const ProjectNav = {
     }
   },
   computed: {
-    isAdmin() { return !!(AUTH.user && AUTH.user.role === 'admin') },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     project() { return this.nav.project },
     activeView() { return this.nav.activeView },
     /** 当前视图属于哪个主 tab（同族视图共用一个 tab，高亮不掉）。 */
@@ -136,76 +139,77 @@ const ProjectNav = {
     },
   },
   template: `
-    <nav class="pnav" aria-label="项目内导航">
-      <div class="pnav-row">
-        <div class="pnav-tabs" role="tablist">
-          <button
-            v-for="t in tabs" :key="t.id"
-            class="pnav-tab" :class="{ on: isTabOn(t) }" type="button"
-            role="tab" :aria-selected="isTabOn(t) ? 'true' : 'false'"
-            :title="tabTitle(t)" :aria-label="t.label"
-            @click="openTab(t)"
-          >
-            <span class="pnav-ico">{{ t.icon }}</span>
-            <span class="pnav-label">{{ t.label }}</span>
-            <span v-if="t.id === 'files' && trashCount > 0" class="pnav-badge">{{ trashCount }}</span>
-          </button>
+    <!-- part="scenes"：渲染进 T2 右端的场景页签（唯一的主导航语言，下划线高亮）
+         part="subs"  ：渲染进 T3 的子页签层（文件族子入口 / 更多抽屉）
+         两处都读同一份 computed，状态一个没多存。 -->
+    <nav v-if="part === 'scenes'" class="ph-scenes" aria-label="项目内导航">
+      <button
+        v-for="t in tabs" :key="t.id"
+        class="ph-scene" :class="{ on: isTabOn(t) }" type="button"
+        role="tab" :aria-selected="isTabOn(t) ? 'true' : 'false'"
+        :title="tabTitle(t)" :aria-label="t.label"
+        @click="openTab(t)"
+      >
+        <span class="ti">{{ t.icon }}</span>
+        <span>{{ t.label }}</span>
+        <span v-if="t.id === 'files' && trashCount > 0" class="badge">{{ trashCount }}</span>
+      </button>
 
-          <button
-            v-if="moreCount > 0"
-            class="pnav-tab pnav-more" :class="{ on: moreOpen || moreHasActive }" type="button"
-            :aria-expanded="moreOpen ? 'true' : 'false'"
-            :title="'更多项目功能（' + moreCount + ' 项）：知识 / AI 等，低频但一条不少'"
-            aria-label="更多项目功能"
-            @click="toggleMore"
-          >
-            <span class="pnav-ico">🧰</span>
-            <span class="pnav-label">更多</span>
-            <span class="pnav-caret" :class="{ open: moreOpen }">▾</span>
-            <span v-if="moreHasActive && !moreOpen" class="pnav-dot"></span>
-          </button>
-        </div>
-
-        <!-- 文件族的子入口：只在「文件」tab 下出现，不占别处的版面 -->
-        <div v-if="currentTab === 'files'" class="pnav-subs">
-          <button
-            v-for="s in (tabs.find(t => t.id === 'files') || { subs: [] }).subs" :key="s.title"
-            class="pnav-sub" :class="{ on: isActive(s) }" type="button"
-            :title="s.desc || s.title" :aria-label="s.title"
-            @click="openItem(s)"
-          >
-            <span>{{ s.icon }}</span><span class="pnav-sub-t">{{ s.title }}</span>
-            <span v-if="(s.view || s.slot) === 'trash' && trashCount > 0" class="pnav-badge sm">{{ trashCount }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- 「更多」抽屉：低频功能的新家。一条不删，逐项可点、逐项有说明。 -->
-      <div v-if="moreOpen" class="pnav-drawer" role="region" aria-label="更多项目功能">
-        <div v-for="g in moreGroups" :key="g.id" class="pnav-grp">
-          <div class="pnav-grp-h" :title="g.desc">
-            <span>{{ g.icon }}</span><span>{{ g.label }}</span>
-            <span class="pnav-grp-n">{{ g.items.length }}</span>
-          </div>
-          <div class="pnav-grp-b">
-            <button
-              v-for="bi in g.items" :key="bi.title"
-              class="pnav-item" :class="{ on: isActive(bi) }" type="button"
-              :title="bi.desc || bi.title" :aria-label="bi.title"
-              @click="openItem(bi)"
-            >
-              <span class="pnav-item-ico">{{ bi.icon }}</span>
-              <span class="pnav-item-t">{{ bi.title }}</span>
-              <span v-if="bi.desc" class="pnav-item-d">{{ bi.desc }}</span>
-            </button>
-          </div>
-        </div>
-        <div class="pnav-drawer-foot">
-          <span>低频功能收在这里，一条没删。</span>
-          <button class="pnav-link" type="button" @click="closeMore">收起</button>
-        </div>
-      </div>
+      <button
+        v-if="moreCount > 0"
+        class="ph-scene more" :class="{ on: moreOpen || moreHasActive }" type="button"
+        :aria-expanded="moreOpen ? 'true' : 'false'"
+        :title="'更多项目功能（' + moreCount + ' 项）：知识 / AI 等，低频但一条不少'"
+        aria-label="更多项目功能"
+        @click="toggleMore"
+      >
+        <span class="ti">⋯</span><span>更多</span>
+      </button>
     </nav>
+
+    <!-- T3：子页签层。有文件族子入口或更多抽屉展开时才占高，否则整条不出现。 -->
+    <div v-else class="ph-t3" v-show="currentTab === 'files' || moreOpen" role="region" aria-label="子页签">
+      <span class="lab">文件</span>
+      <template v-if="currentTab === 'files'">
+        <button
+          v-for="s in (tabs.find(t => t.id === 'files') || { subs: [] }).subs" :key="s.title"
+          class="ph-sub" :class="{ on: isActive(s) }" type="button"
+          :title="s.desc || s.title" :aria-label="s.title"
+          @click="openItem(s)"
+        >
+          <span>{{ s.icon }}</span><span>{{ s.title }}</span>
+          <span v-if="(s.view || s.slot) === 'trash' && trashCount > 0" class="badge">{{ trashCount }}</span>
+        </button>
+      </template>
+      <span class="grow"></span>
+      <button v-if="moreOpen" class="ph-sub" type="button" @click="closeMore">收起更多</button>
+    </div>
+
+    <!-- 「更多」抽屉：悬浮面板，低频功能的新家。一条不删，逐项可点、逐项有说明。 -->
+    <div v-if="part === 'subs' && moreOpen" class="pnav-drawer" role="region" aria-label="更多项目功能">
+      <div v-for="g in moreGroups" :key="g.id" class="pnav-grp">
+        <div class="pnav-grp-h" :title="g.desc">
+          <span>{{ g.icon }}</span><span>{{ g.label }}</span>
+          <span class="pnav-grp-n">{{ g.items.length }}</span>
+        </div>
+        <div class="pnav-grp-b">
+          <button
+            v-for="bi in g.items" :key="bi.title"
+            class="pnav-item" :class="{ on: isActive(bi) }" type="button"
+            :title="bi.desc || bi.title" :aria-label="bi.title"
+            @click="openItem(bi)"
+          >
+            <span class="pnav-item-ico">{{ bi.icon }}</span>
+            <span class="pnav-item-t">{{ bi.title }}</span>
+            <span v-if="bi.desc" class="pnav-item-d">{{ bi.desc }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="pnav-drawer-foot">
+        <span>低频功能收在这里，一条没删。</span>
+        <button class="pnav-link" type="button" @click="closeMore">收起</button>
+      </div>
+    </div>
   `,
 }
 

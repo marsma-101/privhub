@@ -142,6 +142,25 @@ export class AclService extends Service {
   }
 
   /**
+   * 规则里的角色串 与 用户实际角色 是否算命中（三层角色后的兼容层）。
+   *
+   * ACL 规则以 `role` 字符串存盘，历史规则里写的多半是 `'admin'`。
+   * 三层角色上线后，原来的 admin 账号升级成了 `system_admin`，
+   * 若仍按**字符串精确相等**判定，那些老规则会**全部悄悄失效** ——
+   * 表现为「明明配了拒绝规则，文件又露出来了」（安全方向上的回归，必须挡住）。
+   *
+   * 匹配规则：
+   *   · 完全相同 → 命中；
+   *   · 规则写 'admin'（= 管理层泛称）→ 匹配 admin 与 system_admin；
+   *   · 规则写 'system_admin' → **只**匹配 system_admin（不会误伤管理员）。
+   */
+  private roleMatches(ruleRole: string, userRole: string): boolean {
+    if (ruleRole === userRole) return true
+    if (ruleRole === 'admin') return userRole === 'admin' || userRole === 'system_admin'
+    return false
+  }
+
+  /**
    * 判定 user 对 project/path 的 action 是否被 ACL 放行。
    * 规则匹配优先级：路径最具体 → 目录继承 → 项目根规则 → 全项目规则；
    * 同优先级下更精确的（role/action 命中）优先。
@@ -150,7 +169,7 @@ export class AclService extends Service {
   can(user: { username: string; role: string }, action: string, project: string, relPath = ''): AclDecision | undefined {
     const candidates = this.rules.filter((r) => {
       if (r.project !== '' && r.project !== project) return false
-      if (r.role !== '' && r.role !== user.role) return false
+      if (r.role !== '' && !this.roleMatches(r.role, user.role)) return false
       if (r.action !== '' && r.action !== action) return false
       return true
     })

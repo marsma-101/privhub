@@ -364,7 +364,7 @@ function otherSlot(activeSlotId) {
 }
 
 function snapshotActive(a) {
-  return {
+  const snap = {
     version: a.version,
     slot: a.slot,
     port: a.port,
@@ -372,10 +372,44 @@ function snapshotActive(a) {
     dataRoot: a.dataRoot,
     switchedAt: a.switchedAt,
   }
+  /* 槽版本表随历史一起带过去：回滚时要能看到「上一版的两个槽分别是什么」。 */
+  if (a.slotVersions && typeof a.slotVersions === 'object') snap.slotVersions = { ...a.slotVersions }
+  return snap
+}
+
+/**
+ * 每个槽当前承载的版本（`{ blue: '3.6.0', green: '3.5.0' }`）。
+ *
+ * 为什么要落盘：`SLOTS` 里的 version 只在内存，旧槽被 stop 后会被清空；
+ * 控制层重启（或窗口被关掉再起）就再也说不出「另一个槽是哪个版本」。
+ * 主人 2026-11-15 明确要求：切换后**两个槽各自显示自己承载的版本**
+ * （刚更新完 = 新版本 + 旧版本并存），因此必须持久化。
+ */
+function slotVersionsNow(fallback) {
+  const out = {}
+  for (const s of CONFIG.slots) {
+    const v = SLOTS.get(s.id)?.version
+    if (typeof v === 'string' && v !== '') out[s.id] = v
+    else if (fallback && typeof fallback[s.id] === 'string') out[s.id] = fallback[s.id]
+  }
+  return out
 }
 
 function buildActive(slot, info, previous) {
+  /* 槽版本表：切换前先取一遍（含旧槽当时的版本），切换后目标槽写新版本。
+   * 旧槽此刻可能还没停，它的版本就是从 `previous` 继承来的。 */
+  const prevSlots = previous && previous.slotVersions && typeof previous.slotVersions === 'object'
+    ? previous.slotVersions : null
+  const slotVersions = slotVersionsNow(prevSlots)
+  slotVersions[slot.id] = info.version
+
+  const other = CONFIG.slots.find((s) => s.id !== slot.id)
+  const otherVer = other ? slotVersions[other.id] : null
+
   return {
+    /* ── 当前版本（这一行就是主人要的「主文件里一行说明当前版本」）──
+     * 正在对外服务的是 `version`（在 `slot` 这个槽上）；
+     * 另一个槽 `otherVersion` 通常是上一版，切换过去它才会变成当前版本。 */
     version: info.version,
     slot: slot.id,
     port: slot.port,
@@ -383,6 +417,11 @@ function buildActive(slot, info, previous) {
     dataRoot: STORE_DIR,
     dataFiles: computeDataFiles().dir,
     switchedAt: new Date().toISOString(),
+    /* `当前版本` 的正本：active.version 是正在服务的那个槽的版本；
+     * slotVersions 是**蓝/绿两个槽各自**承载的版本（另一个通常是上一版）。 */
+    slotVersions,
+    currentNote: `当前版本 ${info.version}（槽 ${slot.id}）`
+      + (other && otherVer ? `；另一槽 ${other.id} 承载 ${otherVer}` : ''),
     previous: previous ? snapshotActive(previous) : null,
   }
 }
@@ -778,7 +817,7 @@ async function stopSlot(slot) {
   if (processAlive(pid)) {
     log(`槽 ${slot.id} 仍在运行，强制结束 pid=${pid}`)
     if (WIN) {
-      try { await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 }) }
+      try { await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000, windowsHide: true }) }
       catch (e) { log(`警告：taskkill ${pid} 失败：${String(e.stderr || e.message).trim()}`) }
     } else {
       try { process.kill(pid, 'SIGKILL') } catch (e) { log(`警告：kill -9 ${pid} 失败：${e.message}`) }
@@ -1114,7 +1153,9 @@ function renderNginxConfig(a) {
 
 async function nginxTest(confPath) {
   try {
-    await execFileAsync(NGINX_EXE, ['-t', '-p', NGINX_DIR, '-c', confPath], { timeout: 20_000 })
+    /* windowsHide: nginx.exe 是控制台程序，不加会弹黑框；-t / -s 都是短命令，
+     * 每次切换会连跑好几个，扎堆闪屏。只隐藏窗口，不改任何行为。 */
+    await execFileAsync(NGINX_EXE, ['-t', '-p', NGINX_DIR, '-c', confPath], { timeout: 20_000, windowsHide: true })
   } catch (e) {
     const detail = String(e.stderr || e.stdout || e.message || '').trim()
     throw httpError(500, `nginx -t 未通过：${detail}`, 'PRIVHUB_NGINX_TEST_FAILED')
@@ -1123,7 +1164,7 @@ async function nginxTest(confPath) {
 
 async function nginxReload() {
   try {
-    await execFileAsync(NGINX_EXE, ['-s', 'reload', '-p', NGINX_DIR, '-c', NGINX_CONF], { timeout: 15_000 })
+    await execFileAsync(NGINX_EXE, ['-s', 'reload', '-p', NGINX_DIR, '-c', NGINX_CONF], { timeout: 15_000, windowsHide: true })
   } catch (e) {
     const detail = String(e.stderr || e.stdout || e.message || '').trim()
     throw httpError(500, `nginx 重载失败：${detail}`, 'PRIVHUB_NGINX_RELOAD_FAILED')
@@ -1198,7 +1239,7 @@ async function stopNginx() {
   const pid = nginxPid()
   log(`停止 nginx（pid=${pid}）`)
   try {
-    await execFileAsync(NGINX_EXE, ['-s', 'quit', '-p', NGINX_DIR, '-c', NGINX_CONF], { timeout: 15_000 })
+    await execFileAsync(NGINX_EXE, ['-s', 'quit', '-p', NGINX_DIR, '-c', NGINX_CONF], { timeout: 15_000, windowsHide: true })
   } catch (e) {
     log(`nginx quit 失败：${e.message}`)
   }
@@ -1206,7 +1247,7 @@ async function stopNginx() {
   while (pid && processAlive(pid) && Date.now() < deadline) await sleep(250)
   if (pid && processAlive(pid)) {
     if (WIN) {
-      try { await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 }) } catch { /* ignore */ }
+      try { await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000, windowsHide: true }) } catch { /* ignore */ }
     } else {
       try { process.kill(pid, 'SIGKILL') } catch { /* ignore */ }
     }
@@ -1414,14 +1455,19 @@ async function ensureActiveRunning() {
 }
 
 async function statusSnapshot() {
+  /* 落盘的槽版本表（控制层重启后内存里没有旧槽信息，只能靠它）。 */
+  const persisted = active?.slotVersions && typeof active.slotVersions === 'object' ? active.slotVersions : {}
   const slotHealth = await Promise.all(CONFIG.slots.map(async (s) => {
     const slot = SLOTS.get(s.id)
     const h = slot.pid ? await healthCheck(s.port, 1200) : { ok: false }
+    const memoryVersion = slot.version ?? h.version ?? null
     return {
       id: s.id,
       port: s.port,
       pid: slot.pid ?? h.pid ?? null,
-      version: slot.version ?? h.version ?? null,
+      /* 优先级：内存（正在跑，最可信）→ 落盘（停车状态的历史值）→ null */
+      version: memoryVersion ?? (typeof persisted[s.id] === 'string' ? persisted[s.id] : null),
+      active: active?.slot === s.id,
       releaseDir: slot.releaseDir ?? null,
       healthy: h.ok === true,
       frozen: h.body?.frozen ?? null,
@@ -1430,9 +1476,12 @@ async function statusSnapshot() {
   }))
   return {
     ok: true,
+    /* 主人要求的那行「当前版本」：就是 active 槽承载的版本。 */
     version: active?.version ?? null,
+    currentVersion: active?.version ?? null,
     switchedAt: active?.switchedAt ?? null,
     active: active ? snapshotActive(active) : null,
+    slotVersions: slotVersionsNow(persisted),
     busy,
     dataRoot: STORE_DIR,
     dataFiles: computeDataFiles().dir,

@@ -127,6 +127,43 @@
       --ui-zoom: 1;
     }
     [data-theme="dark"] { --shadow-rgb: 0 0 0; }
+
+    /* ============================================================
+     * 交互原型令牌层（issue #3《PrivHub-导航简化方案-交互原型.html》）
+     *
+     * 主子要求：界面/位置/样式先按原型走，功能比原型多、按文字规则安置。
+     * 这里把原型的视觉语言（indigo→cyan 主色族、左 rail 驾驶舱、卡片色脊、
+     * 渐变实底 tab、右侧抽屉）落成一套**带命名空间的令牌**（--p-*），
+     * 与既有 WCAG 校准令牌（--accent/--panel/…）并存：
+     *   · 原型令牌只服务「按原型走」的新表面（rail / 驾驶舱 / 项目 tab / 我的）；
+     *   · 既有令牌继续服务全部业务插件（文件/知识/管理/设置），不删不改，
+     *     避免一处换肤把几十个插件的对比度一起拉下水。
+     * 两套主题各自覆盖，切主题不出现「一冷一暖」的错相。
+     * ============================================================ */
+    :root {
+      --p-indigo: #4f46e5; --p-blue: #2563eb; --p-cyan: #0891b2;
+      --p-green: #16a34a; --p-amber: #d97706; --p-red: #dc2626;
+      --p-magenta: #db2777; --p-violet: #7c3aed;
+      --p-bg: #eef1f8; --p-surface: #ffffff; --p-surface2: #f5f7fc;
+      --p-overlay: #ffffff; --p-border: #dfe5f0;
+      --p-text: #141d33; --p-muted: #566381; --p-faint: #8b97b0;
+      --p-rail-w: 212px; --p-top-h: 56px;
+      --p-shadow: 0 12px 32px rgba(20,29,51,.12);
+      --p-shadow-sm: 0 2px 8px rgba(20,29,51,.06);
+      --p-grad: linear-gradient(135deg, var(--p-indigo), var(--p-cyan));
+      --p-grad-btn: linear-gradient(135deg, var(--p-indigo), var(--p-blue));
+    }
+    [data-theme="dark"] {
+      --p-indigo: #818cf8; --p-blue: #60a5fa; --p-cyan: #22d3ee;
+      --p-green: #4ade80; --p-amber: #fbbf24; --p-red: #f87171;
+      --p-magenta: #f472b6; --p-violet: #a78bfa;
+      --p-bg: #0b0f16; --p-surface: #141b26; --p-surface2: #1a2432;
+      --p-overlay: #1c2635; --p-border: #2c3a4e;
+      --p-text: #e8eef6; --p-muted: #93a1b5; --p-faint: #5f6d80;
+      --p-shadow: 0 12px 34px rgba(0,0,0,.5);
+      --p-shadow-sm: 0 2px 10px rgba(0,0,0,.4);
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body {
@@ -248,6 +285,15 @@
     .tree-item .name { flex: 1; }
     .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
     .main-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 14px; }
+    /* 欢迎页项目选择（左侧目录树取消后，未选项目时在这里挑项目） */
+    .welcome-projects { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 640px; margin-top: 6px; }
+    .welcome-project {
+      padding: 10px 18px; border-radius: 10px; border: 1px solid var(--p-border, var(--line));
+      background: var(--p-surface, var(--panel2)); color: var(--p-text, var(--text));
+      font-size: 13.5px; cursor: pointer; transition: .15s;
+    }
+    .welcome-project:hover { border-color: var(--p-indigo, var(--accent)); color: var(--p-indigo, var(--accent)); transform: translateY(-2px); box-shadow: var(--p-shadow-sm, var(--sh-2)); }
+    .welcome-project:focus-visible { outline: 2px solid var(--p-indigo, var(--accent)); outline-offset: 2px; }
     .main-welcome .big { font-size: var(--fs-xl); color: var(--text); }
     /* 项目选择栏（shell 插件 welcome：未选项目时左侧栏显示，选中后变目录树） */
     .project-sidebar .project-list { display: flex; flex-direction: column; gap: 2px; }
@@ -690,6 +736,338 @@
       outline: 2px solid var(--accent); outline-offset: 1px; border-radius: inherit;
     }
     .icon-btn, .small-btn { min-height: 32px; min-width: 32px; }
+
+    /* ============================================================
+     * 交互原型组件层（issue #3 样机）—— L0 框架 / 驾驶舱 / 项目 tab / 抽屉
+     *
+     * 全部走 --p-* 原型令牌，类名带 ph- 前缀避免与业务插件撞名。
+     * 既有业务插件仍用 --accent/--panel 那套，互不干扰。
+     * ============================================================ */
+
+    /* ---- L0 顶栏：品牌 · 身份+角色徽标 · 全局偏好 ---- */
+    .ph-top {
+      height: var(--p-top-h); flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+      padding: 0 16px; background: var(--p-surface); border-bottom: 1px solid var(--p-border);
+      position: relative; z-index: var(--z-raised); box-shadow: var(--p-shadow-sm);
+    }
+    .ph-top::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+      background: linear-gradient(90deg, var(--p-indigo), var(--p-cyan) 45%, var(--p-magenta));
+      opacity: .55; pointer-events: none;
+    }
+    .ph-logo { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--p-text); cursor: pointer; }
+    .ph-logo .mark {
+      width: 28px; height: 28px; border-radius: 8px; background: var(--p-grad);
+      display: grid; place-items: center; color: #fff; font-size: 15px;
+    }
+    .ph-logo small { color: var(--p-muted); font-weight: 500; font-size: 12px; }
+    .ph-persona {
+      display: flex; align-items: center; gap: 8px; background: var(--p-surface2);
+      border: 1px solid var(--p-border); border-radius: 10px; padding: 5px 10px;
+    }
+    .ph-persona .who { font-size: 13px; color: var(--p-text); font-weight: 600; }
+    .ph-rolebadge { font-size: 11px; border-radius: 99px; padding: 2px 9px; border: 1px solid; white-space: nowrap; }
+    .ph-rolebadge.admin { color: var(--p-red); border-color: var(--p-red); }
+    .ph-rolebadge.user { color: var(--p-blue); border-color: var(--p-blue); }
+    .ph-iconbtn {
+      width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+      color: var(--p-muted); font-size: 16px; background: none; border: none; cursor: pointer;
+    }
+    .ph-iconbtn:hover { background: var(--p-surface2); color: var(--p-text); }
+    .ph-iconbtn:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
+
+    /* ---- L0 框架：左 rail + 内容区 ---- */
+    .ph-shell { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .ph-rail {
+      width: var(--p-rail-w); flex: 0 0 var(--p-rail-w); background: var(--p-surface);
+      border-right: 1px solid var(--p-border); padding: 12px 10px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    /* 展示区 / 控制区两块：中间弹性空白把控制区推到底，设置钉最底 */
+    .ph-zone { display: flex; flex-direction: column; gap: 3px; }
+    .ph-zone.show { flex: 0 0 auto; }
+    .ph-zone.control {
+      margin-top: auto; flex: 0 0 auto; padding-top: 12px; position: relative;
+      border-top: 1px dashed var(--p-border);
+    }
+    .ph-zone.control::before {
+      content: ''; position: absolute; top: -1px; left: 10px; right: 10px; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--p-amber), transparent); opacity: .5;
+    }
+    .ph-zone-h {
+      display: flex; align-items: center; gap: 6px; padding: 5px 8px 6px;
+      font-size: 10px; letter-spacing: .14em; color: var(--p-faint); white-space: nowrap;
+    }
+    .ph-zone-h .dot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 5px; }
+    .ph-zone-h .dot.cyan { background: var(--p-cyan); }
+    .ph-zone-h .dot.amber { background: var(--p-amber); }
+    .ph-nav .lock {
+      margin-left: auto; font-size: 9.5px; color: var(--p-faint);
+      border: 1px solid var(--p-border); border-radius: 4px; padding: 0 4px; line-height: 1.4;
+    }
+    .ph-nav.active .lock { color: rgba(255,255,255,.8); border-color: rgba(255,255,255,.4); }
+    .ph-ghead { padding: 6px 8px 3px; color: var(--p-faint); font-size: 11px; letter-spacing: .08em; }
+    .ph-nav {
+      display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px;
+      color: var(--p-muted); font-size: 13.5px; width: 100%; text-align: left;
+      background: none; border: none; cursor: pointer; position: relative;
+    }
+    .ph-nav .ic { width: 18px; text-align: center; }
+    .ph-nav:hover { background: var(--p-surface2); color: var(--p-text); }
+    .ph-nav.active {
+      background: color-mix(in srgb, var(--p-indigo) 12%, transparent);
+      color: var(--p-indigo); font-weight: 600;
+    }
+    .ph-nav.active::before {
+      content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px;
+      border-radius: 2px; background: linear-gradient(180deg, var(--p-indigo), var(--p-cyan));
+    }
+    .ph-nav.disabled { opacity: .4; cursor: not-allowed; }
+    .ph-nav:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
+    .ph-railnote {
+      margin: 10px 6px 0; padding: 9px 10px; border: 1px dashed var(--p-border);
+      border-radius: 9px; color: var(--p-faint); font-size: 11px; line-height: 1.55;
+    }
+    .ph-railnote b { color: var(--p-indigo); }
+    .ph-content { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* ---- T2 位置层（位置链 + 场景页签）：全站只有一条 ----
+       改造前这里同时叠着 层级条 / 项目条 / 二级页签 / 文件标签 四条带，
+       四条各用一套视觉语言（chip / 胶囊 / 方块 tab），看起来乱且没有层级递进。
+       现在 T2 一条到底：左位置链、右场景页签，统一「下划线」语言。 */
+    .ph-t2 {
+      flex: 0 0 auto; display: flex; align-items: stretch; gap: 14px; min-height: 46px;
+      padding: 0 18px; background: var(--p-surface); border-bottom: 1px solid var(--p-border);
+      position: relative;
+    }
+    .ph-t2::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--p-indigo) 55%, transparent),
+        color-mix(in srgb, var(--p-cyan) 40%, transparent), transparent 70%);
+      pointer-events: none;
+    }
+    .ph-trail { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+    .ph-tnode {
+      display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; color: var(--p-muted); white-space: nowrap; background: none; border: none;
+      cursor: pointer; transition: .15s; min-width: 0;
+    }
+    .ph-tnode:hover { background: var(--p-surface2); color: var(--p-text); }
+    .ph-tnode .ti { font-size: 12.5px; opacity: .85; }
+    .ph-tnode.root { color: var(--p-faint); }
+    .ph-tnode.proj { color: var(--p-text); font-weight: 600; }
+    .ph-tnode.fam { color: var(--p-amber); font-weight: 600; }
+    .ph-tnode.here { color: var(--p-cyan); font-weight: 600; cursor: default; }
+    .ph-tnode.here:hover { background: none; }
+    .ph-tnode .ell { overflow: hidden; text-overflow: ellipsis; }
+    .ph-tarrow { color: var(--p-faint); font-size: 10px; opacity: .65; flex: 0 0 auto; padding: 0 1px; }
+    .ph-t2 .grow { flex: 1; min-width: 8px; }
+
+    /* 场景页签：T2 右端，唯一的主导航样式 */
+    .ph-scenes { display: flex; align-items: stretch; gap: 1px; flex: 0 0 auto; }
+    .ph-scene {
+      position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 0 13px;
+      font-size: 12.5px; color: var(--p-muted); white-space: nowrap; background: none; border: none;
+      cursor: pointer; transition: .15s;
+    }
+    .ph-scene .ti { font-size: 13px; opacity: .8; }
+    .ph-scene:hover { color: var(--p-text); background: color-mix(in srgb, var(--p-surface2) 70%, transparent); }
+    .ph-scene::after {
+      content: ''; position: absolute; left: 11px; right: 11px; bottom: 0; height: 2px;
+      border-radius: 2px 2px 0 0; background: transparent; transition: .18s;
+    }
+    .ph-scene.on { color: var(--p-text); font-weight: 650; }
+    .ph-scene.on .ti { opacity: 1; }
+    .ph-scene.on::after {
+      background: var(--p-grad-btn);
+      box-shadow: 0 -2px 10px color-mix(in srgb, var(--p-indigo) 55%, transparent);
+    }
+    .ph-scene.more { color: var(--p-faint); }
+    .ph-scene.more:hover { color: var(--p-cyan); }
+    .ph-scene .badge {
+      min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--p-red);
+      color: #fff; font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
+    }
+
+    /* ---- T3 子页签（仅真有子屏时出现）：与 T2 同族下划线，小一号更轻 ---- */
+    .ph-t3 {
+      flex: 0 0 auto; display: flex; align-items: stretch; gap: 0; padding: 0 18px; min-height: 38px;
+      background: color-mix(in srgb, var(--p-surface2) 55%, transparent);
+      border-bottom: 1px solid var(--p-border); overflow-x: auto; scrollbar-width: none;
+    }
+    .ph-t3::-webkit-scrollbar { height: 0; }
+    .ph-t3 .lab {
+      display: flex; align-items: center; font-size: 9.5px; letter-spacing: .14em; color: var(--p-faint);
+      padding-right: 12px; margin-right: 4px; border-right: 1px solid var(--p-border);
+      white-space: nowrap; flex: 0 0 auto;
+    }
+    .ph-sub {
+      position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
+      font-size: 12px; color: var(--p-muted); white-space: nowrap; background: none; border: none;
+      cursor: pointer; transition: .15s; flex: 0 0 auto;
+    }
+    .ph-sub:hover { color: var(--p-text); }
+    .ph-sub::after {
+      content: ''; position: absolute; left: 9px; right: 9px; bottom: 0; height: 2px;
+      border-radius: 2px; background: transparent; transition: .18s;
+    }
+    .ph-sub.on { color: var(--p-cyan); font-weight: 600; }
+    .ph-sub.on::after { background: var(--p-cyan); }
+    .ph-sub.up { color: var(--p-faint); padding-right: 13px; margin-right: 5px; border-right: 1px solid var(--p-border); }
+    .ph-sub.up:hover { color: var(--p-cyan); }
+    .ph-sub.up::after { display: none; }
+    .ph-sub .badge {
+      min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--p-red);
+      color: #fff; font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
+    }
+    .ph-t3 .grow { flex: 1; min-width: 6px; }
+    .ph-t3 .tail { display: flex; align-items: center; gap: 4px; padding-left: 10px; flex: 0 0 auto; }
+
+    /* T2 右端项目元信息（节点 / 截止）：低调文字，不与导航抢注意力 */
+    .ph-projmeta { display: inline-flex; align-items: center; gap: 8px; flex: 0 1 auto; overflow: hidden; padding-left: 8px; min-width: 0; }
+    .ph-pm {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--p-muted);
+      padding: 3px 9px; border-radius: 99px; border: 1px solid var(--p-border);
+      background: var(--p-surface2); white-space: nowrap; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .ph-pm .k { color: var(--p-faint); font-size: 10.5px; }
+    .ph-pm.late { color: var(--p-red); border-color: color-mix(in srgb, var(--p-red) 40%, transparent);
+      background: color-mix(in srgb, var(--p-red) 10%, transparent); font-weight: 600; }
+
+    @media (max-width: 1180px) {
+      .ph-t2 { gap: 10px; padding: 0 14px; }
+      .ph-scene { padding: 0 10px; font-size: 12px; }
+      .ph-tnode { padding: 5px 6px; }
+    }
+    @media (max-width: 860px) {
+      .ph-t2 { flex-wrap: wrap; min-height: 0; padding: 6px 12px; gap: 6px; }
+      .ph-trail { width: 100%; order: 1; }
+      .ph-scenes { width: 100%; order: 2; min-height: 36px; border-top: 1px solid var(--p-border); }
+      .ph-t2 .grow { display: none; }
+      .ph-t3 { padding: 0 12px; }
+      .ph-t3 .lab { display: none; }
+    }
+
+    /* ---- 驾驶舱 / 通用卡片 ---- */
+    .ph-vhead { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    .ph-vhead h2 { font-size: 18px; color: var(--p-text); }
+    .ph-vhead .sub { color: var(--p-muted); font-size: 12.5px; }
+    .ph-blocktitle { display: flex; align-items: center; gap: 8px; margin: 18px 0 10px; font-size: 14px; font-weight: 700; color: var(--p-text); }
+    .ph-blocktitle .bar { width: 4px; height: 16px; border-radius: 2px; background: linear-gradient(180deg, var(--p-indigo), var(--p-cyan)); }
+    .ph-blocktitle .muted { font-weight: 400; font-size: 12px; color: var(--p-muted); margin-left: 8px; }
+    .ph-pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+    .ph-pcard {
+      background: var(--p-surface); border: 1px solid var(--p-border); border-radius: 14px;
+      padding: 16px; cursor: pointer; transition: .18s; position: relative; overflow: hidden;
+      text-align: left; width: 100%;
+    }
+    .ph-pcard:hover { border-color: var(--p-indigo); transform: translateY(-2px); box-shadow: var(--p-shadow); }
+    .ph-pcard:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 2px; }
+    .ph-pcard .band { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+    .ph-pcard h3 { font-size: 15px; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--p-text); }
+    .ph-pcard .desc { color: var(--p-muted); font-size: 12px; }
+    .ph-prog { height: 8px; border-radius: 99px; background: var(--p-surface2); border: 1px solid var(--p-border); margin: 10px 0 6px; overflow: hidden; }
+    .ph-prog i { display: block; height: 100%; border-radius: 99px; transition: width .55s cubic-bezier(.4,0,.2,1); }
+    .ph-pmeta { display: flex; gap: 12px; color: var(--p-muted); font-size: 12px; align-items: center; flex-wrap: wrap; }
+    .ph-nodechip { font-size: 11px; border: 1px solid var(--p-border); border-radius: 99px; padding: 2px 9px; color: var(--p-indigo); background: color-mix(in srgb, var(--p-indigo) 8%, transparent); }
+    .ph-blockbadge { font-size: 11px; border-radius: 99px; padding: 2px 9px; color: var(--p-red); background: color-mix(in srgb, var(--p-red) 10%, transparent); border: 1px solid color-mix(in srgb, var(--p-red) 40%, transparent); }
+    .ph-health { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+
+    /* ---- KPI 行 ---- */
+    .ph-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .ph-kpi {
+      background: var(--p-surface); border: 1px solid var(--p-border); border-radius: 12px;
+      padding: 14px 16px; position: relative; overflow: hidden; box-shadow: var(--p-shadow-sm); transition: .18s;
+    }
+    .ph-kpi::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: linear-gradient(180deg, var(--p-indigo), var(--p-cyan)); }
+    .ph-kpi:hover { transform: translateY(-2px); box-shadow: var(--p-shadow); }
+    .ph-kpi .v { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: var(--p-text); }
+    .ph-kpi .l { color: var(--p-muted); font-size: 12px; margin-top: 3px; }
+    .ph-kpi .hint { color: var(--p-faint); font-size: 11px; margin-top: 4px; line-height: 1.5; }
+    .ph-kpi.bad .v { color: var(--p-red); }
+    .ph-kpi.warn .v { color: var(--p-amber); }
+    .ph-kpi.ok .v { color: var(--p-green); }
+
+    /* ---- 管线聚合 ---- */
+    .ph-pipeline { background: var(--p-surface); border: 1px solid var(--p-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--p-shadow-sm); margin-bottom: 14px; }
+    .ph-pipebar { display: flex; height: 28px; border-radius: 8px; overflow: hidden; border: 1px solid var(--p-border); background: var(--p-surface2); }
+    .ph-pipebar span { display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; min-width: 0; transition: flex-grow .5s cubic-bezier(.4,0,.2,1); }
+    .ph-pipelegend { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; font-size: 12px; color: var(--p-muted); align-items: center; }
+    .ph-pipelegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+    .ph-pipelegend .total { margin-left: auto; font-weight: 600; }
+
+    /* ---- 项目层固定 tab（原型渐变实底）---- */
+    .ph-tabs { display: flex; gap: 6px; margin: 6px 0 14px; flex-wrap: wrap; }
+    .ph-tab {
+      padding: 7px 14px; border-radius: 9px; border: 1px solid var(--p-border);
+      background: var(--p-surface); color: var(--p-muted); font-size: 13px; cursor: pointer; transition: .15s;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .ph-tab:not(.on):hover { border-color: var(--p-indigo); color: var(--p-indigo); }
+    .ph-tab.on {
+      background: var(--p-grad-btn); border-color: transparent; color: #fff; font-weight: 600;
+      box-shadow: 0 4px 12px color-mix(in srgb, var(--p-indigo) 30%, transparent);
+    }
+    .ph-tab:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
+    .ph-tab .badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px; background: var(--p-red); color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
+    .ph-tab.on .badge { background: rgba(255,255,255,.28); }
+
+    /* ---- 工具按钮 / 筛选 chip / 搜索框 ---- */
+    .ph-tbtn {
+      display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 9px;
+      border: 1px solid var(--p-border); background: var(--p-surface); font-size: 13px;
+      color: var(--p-text); cursor: pointer; transition: .15s;
+    }
+    .ph-tbtn:hover { border-color: var(--p-indigo); color: var(--p-indigo); }
+    .ph-tbtn.primary { background: var(--p-grad-btn); border-color: transparent; color: #fff; box-shadow: 0 4px 12px color-mix(in srgb, var(--p-indigo) 25%, transparent); }
+    .ph-tbtn.primary:hover { filter: brightness(1.08); color: #fff; }
+    .ph-tbtn[disabled] { opacity: .45; cursor: not-allowed; }
+    .ph-tbtn:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
+    .ph-chipf { border: 1px solid var(--p-border); background: var(--p-surface); color: var(--p-muted); border-radius: 99px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+    .ph-chipf.on { background: color-mix(in srgb, var(--p-indigo) 12%, transparent); border-color: var(--p-indigo); color: var(--p-indigo); }
+    .ph-chipf:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
+    .ph-searchbox { display: flex; align-items: center; gap: 8px; border: 1px solid var(--p-border); background: var(--p-surface); border-radius: 9px; padding: 6px 10px; }
+    .ph-searchbox input { border: none; outline: none; background: none; flex: 1; font-size: 13px; color: var(--p-text); }
+
+    /* ---- 右侧抽屉（L3 详情操作层）---- */
+    .ph-drawer {
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 94vw);
+      background: var(--p-surface); border-left: 1px solid var(--p-border);
+      box-shadow: var(--p-shadow); z-index: var(--z-modal); transform: translateX(100%);
+      transition: transform .25s; display: flex; flex-direction: column;
+    }
+    .ph-drawer.open { transform: none; }
+    .ph-drawer .dhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--p-border); color: var(--p-text); }
+    .ph-drawer .dbody { flex: 1; overflow: auto; padding: 16px; }
+    .ph-drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: var(--z-scrim); }
+
+    /* ---- 空态 / 日程行 / 卡点行 ---- */
+    .ph-empty { color: var(--p-muted); text-align: center; padding: 30px 0; font-size: 13px; line-height: 1.8; }
+    .ph-evrow { display: flex; gap: 12px; align-items: flex-start; background: var(--p-surface); border: 1px solid var(--p-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+    .ph-evdate { flex: 0 0 52px; text-align: center; border-radius: 8px; background: color-mix(in srgb, var(--p-indigo) 10%, transparent); color: var(--p-indigo); padding: 6px 0; font-weight: 700; }
+    .ph-evdate small { display: block; font-size: 10px; font-weight: 500; }
+    .ph-blockitem { display: flex; align-items: center; gap: 10px; background: var(--p-surface); border: 1px solid color-mix(in srgb, var(--p-red) 35%, transparent); border-left: 4px solid var(--p-red); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+
+    /* ---- 入场动画：只有导航态变化才触发（数据态不重放）---- */
+    .ph-anim .ph-kpi { animation: ph-rise .4s backwards; }
+    .ph-anim .ph-kpi:nth-child(2) { animation-delay: .05s; }
+    .ph-anim .ph-kpi:nth-child(3) { animation-delay: .1s; }
+    .ph-anim .ph-kpi:nth-child(4) { animation-delay: .15s; }
+    .ph-anim .ph-pipeline { animation: ph-rise .4s .08s backwards; }
+    .ph-anim .ph-pgrid .ph-pcard { animation: ph-rise .42s backwards; }
+    .ph-anim .ph-pgrid .ph-pcard:nth-child(2) { animation-delay: .07s; }
+    .ph-anim .ph-pgrid .ph-pcard:nth-child(3) { animation-delay: .14s; }
+    .ph-anim .ph-pgrid .ph-pcard:nth-child(4) { animation-delay: .21s; }
+    @keyframes ph-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .ph-anim * { animation: none !important; } }
+
+    /* 窄屏：rail 收成图标条 */
+    @media (max-width: 860px) {
+      .ph-rail { width: 60px; flex-basis: 60px; padding: 10px 6px; }
+      .ph-nav .lbl, .ph-ghead, .ph-railnote, .ph-zone-h, .ph-nav .lock { display: none; }
+      .ph-nav { justify-content: center; padding: 10px 0; }
+    }
   </style>
 </head>
 <body>
@@ -912,7 +1290,7 @@
      * ============================================================ */
     /* 选项目后落到哪个视图：按优先级挑第一个「真装得上」的。
      * 想改落地页（例如改成任务看板），只动这一行的顺序即可；留空 [] = 回到旧行为（进文件）。 */
-    const PROJECT_LANDING = ['dashboard', 'taskboard']   // 项目看板 → 任务看板
+    const PROJECT_LANDING = ['files', 'dashboard', 'taskboard']   // 文件 → 项目看板 → 任务看板（2026-11-13：进项目先看见文件）
     const nav = reactive({
       project: null,          // 当前项目名（null = 欢迎页）
       path: '',               // 项目内相对路径
@@ -934,9 +1312,16 @@
       helpDoc: null,
       /* P2-3：骨架级内联输入模态（{ title, value, onOk } | null） */
       inputState: null,
-      viewMode: 'grid',
+      /* 2026-11-14（主人第 13 轮意见）：文件区默认改**列表**。
+         卡片一格占 ~110px 高、一屏只放得下 8~10 个，且只显示「名字 + 一行小字」；
+         列表一行 ~33px，同屏 20+ 条，并把大小/类型/时间拉到同一行对齐可比。
+         卡片仍保留（▦ 可切回），偏好按本机持久化，只影响自己。 */
+      viewMode: localStorage.getItem('privhub_view_mode') === 'grid' ? 'grid' : 'list',
       sortKey: 'name',
       sortAsc: true,
+      /* 文件区「只看文件夹」筛选（2026-11-13 重排：文件夹与文件同列中间区，
+         此开关让用户在目录导航与文件浏览之间快速切换）。持久化在本机。 */
+      dirOnly: localStorage.getItem('privhub_dir_only') === '1',
       checked: {},            // 批量多选：name -> true
       uploading: false,
       uploadDone: 0,
@@ -993,8 +1378,8 @@
         if (!r.ok && r.error) toast(r.error, 'error')
         bus.emit('file:opened', { project, path: nav.path })
       },
-      /* 选项目 = 进入这个项目：默认落到项目的「看板」（见 PROJECT_LANDING），而不是文件夹。
-       * opts.view 显式指定落地视图——文件图标回文件视图、看板/日历内部切项目原地同步时用。 */
+      /* 选项目 = 进入这个项目：默认落到「文件」（见 PROJECT_LANDING，2026-11-13 用户要求进项目先看见文件）。
+       * opts.view 显式指定落地视图——看板/日历内部切项目原地同步时用。 */
       async openProject(name, opts) {
         await nav.openDir(name, '')
         const key = nav.treeKey(name, '')
@@ -1066,7 +1451,11 @@
         if (nav.sortKey === key) nav.sortAsc = !nav.sortAsc
         else { nav.sortKey = key; nav.sortAsc = true }
       },
-      setViewMode(m) { nav.viewMode = m },
+      /* 切视图时记住偏好（只影响自己）：下次进来还是上次那个形态。 */
+      setViewMode(m) {
+        nav.viewMode = m
+        try { localStorage.setItem('privhub_view_mode', m) } catch { /* 隐私模式忽略 */ }
+      },
 
       /* ---- 使用说明（帮助弹层）----
        * 读站内《使用说明》文档（服务端 /privhub/api/help，登录即可读，见 privhub-shell）。
@@ -1242,7 +1631,8 @@
     }
 
     /* 文件图标辅助 */
-    function fileIcon(type) {
+    function fileIcon(type, isDir) {
+      if (isDir) return '📁'
       const t = (type || '').toLowerCase()
       const map = {
         'png': '🖼', 'jpg': '🖼', 'jpeg': '🖼', 'gif': '🖼', 'webp': '🖼', 'svg': '🖼', 'bmp': '🖼',
@@ -1401,9 +1791,46 @@
      * 管理员恒通过（与服务端 levelFor 一致）；普通用户按表判定。
      * 未登录 / 未加载 / 网络失败一律按「不可用」处理（失败收敛到最保守）。 */
     window.PrivHub.cap = reactive({ levels: {}, loaded: false })
+
+    /* ── 三层角色（2026-11-15）──
+       system_admin 系统管理员 > admin 管理员 > user 用户。
+       前端所有「是不是管理层 / 能不能管」的判定都走这三个工具，
+       **不要再写 `role === 'admin'`** —— 那样会把「管理员」当成最高角色，
+       于是管理员也能看见系统设置、系统更新这些该由系统管理员独占的入口。 */
+    const ROLE_RANK = { user: 0, admin: 1, system_admin: 2 }
+    const roleRank = (r) => (typeof r === 'string' && ROLE_RANK[r] !== undefined ? ROLE_RANK[r] : -1)
+    /** 当前用户是否达到某角色（默认 admin = 管理层）。 */
+    window.PrivHub.roleAtLeast = (need) => {
+      const u = AUTH.user
+      if (!u) return false
+      return roleRank(u.role) >= (ROLE_RANK[need] === undefined ? ROLE_RANK.admin : ROLE_RANK[need])
+    }
+    /** 是否管理层（管理员或系统管理员）：能进管理控制台。 */
+    window.PrivHub.isManager = () => window.PrivHub.roleAtLeast('admin')
+    /** 是否系统管理员：系统本体（设置/更新/存储/审计/集成）才归它。 */
+    window.PrivHub.isSystemAdmin = () => window.PrivHub.roleAtLeast('system_admin')
+    /** 角色中文名（界面显示用）。 */
+    window.PrivHub.roleLabel = (r) => {
+      const role = r || (AUTH.user && AUTH.user.role)
+      return role === 'system_admin' ? '系统管理员' : role === 'admin' ? '管理员' : '用户'
+    }
+
     const CAP_RANK = { none: 0, read: 1, write: 2 }
     window.PrivHub.capCan = (feature, need) => {
-      if (AUTH.user && AUTH.user.role === 'admin') return true
+      /* 服务端 levelFor 的判定顺序是「先角色、后开关表」，前端必须同口径：
+       * 管理层按角色判定（不看本地表），普通用户才看本地级别表。
+       * 这里不能简单 `return true` —— 管理员对「系统本体」类功能仍应被拒。 */
+      const u = AUTH.user
+      if (u && roleRank(u.role) > ROLE_RANK.user) {
+        const lv = window.PrivHub.cap.levels || {}
+        /* 服务端会按 minRole 再筛一遍；本地表里有该功能就直接用服务端算好的值，
+         * 没有（未加载）时按「管理层放行」的保守可读口径。 */
+        if (lv[feature] !== undefined) {
+          const nr = need === 'write' ? 2 : (need === 'none' ? 0 : 1)
+          return (CAP_RANK[lv[feature]] || 0) >= nr
+        }
+        return need !== 'write'
+      }
       const lv = (window.PrivHub.cap.levels || {})[feature] || 'none'
       const nr = need === 'write' ? 2 : (need === 'none' ? 0 : 1)
       return (CAP_RANK[lv] || 0) >= nr
@@ -1510,6 +1937,12 @@
         cancelNavInput() { this.nav.inputState = null },
         /* 版本阻断层的唯一动作：整页重载（重新拿到新版本 HTML + 新 Cookie） */
         reloadNow() { window.location.reload() },
+        /* L0 品牌点击 / rail「项目总览」：回到 L1 驾驶舱（原型首页）。
+         * home 插件缺席时退回项目列表，不留点了没反应的死入口。 */
+        goHome() {
+          if (nav.hasBarView('home')) nav.setActiveView('home', { noToggle: true })
+          else nav.backToWelcome()
+        },
         /* 插件加载失败 / 首屏超时后的重试入口（清空错误状态后重新拉取 manifest 并 import） */
         async retryLoadPlugins() {
           this.failedPlugins = []
@@ -1639,7 +2072,11 @@
           if (v) {
             // 角标初始值：登录后主动拉一次回收站（否则图标栏角标恒为 0，
             // 直到用户第一次打开回收站视图才更新）
-            const afterLogin = () => { nav.loadProjects(); void nav.loadTrash(); bus.emit('auth:login') }
+            // 原型首页 = L1 驾驶舱：登录/恢复后默认落在项目总览（home 装得上时）。
+            const afterLogin = () => {
+              nav.loadProjects(); void nav.loadTrash(); bus.emit('auth:login')
+              if (nav.hasBarView('home')) nav.setActiveView('home', { noToggle: true })
+            }
             // 先拉功能开关表再重算图标栏：登录前拿到的是「登录所需的最小集合」，
             // 必须重拉完整清单；若已是完整清单（刷新场景）则只需刷新图标栏。
             void window.PrivHub.loadCap().then(() => {
@@ -1664,6 +2101,8 @@
           // B2：me 恢复用户后必须重刷 barItems（此前 loadBarItems 在 AUTH.user 为 null 时已把 adminOnly 项过滤掉）；
           // 同时把功能开关表拉回来，否则声明了 capFeature 的条目会被误判为不可用
           await window.PrivHub.refreshCaps()
+          // 原型首页 = L1 驾驶舱（与 afterLogin 同口径）
+          if (nav.hasBarView('home')) nav.setActiveView('home', { noToggle: true })
         }
         /* ⑤ 功能面板 = 视图（llm_wiki 范式）：Esc 回到文件视图（供插件兼容调用）
          *
@@ -1722,48 +2161,57 @@
 
         <!-- 已登录 -->
         <div v-if="loggedIn" class="app">
-          <!-- 顶栏：品牌 + 项目横排（shell 插件 project-tabs）+ 右侧用户区（shell 用户区 + F03 最近等） -->
-          <div class="topbar">
-            <div class="logo" @click="nav.backToWelcome" style="cursor:pointer"><span class="logo-dot"></span>私域枢纽</div>
+          <!-- L0 顶栏（原型）：品牌 · 项目选择 · 当前身份+角色徽标 · 全局偏好（主题等）。
+               品牌/身份/偏好是骨架与 user-area 的既有能力，这里换成原型的 .ph-top 视觉。 -->
+          <div class="ph-top">
+            <div class="ph-logo" @click="goHome" title="回到项目总览">
+              <span class="mark">▣</span>PrivHub <small>· 项目驾驶舱</small>
+            </div>
             <component v-for="c in slotComps['project-tabs']" :is="c" :key="c.name"></component>
+            <div class="spacer"></div>
             <div class="tp-right">
               <component v-for="c in slotComps['user-area']" :is="c" :key="c.name"></component>
             </div>
           </div>
 
-          <!-- [layer-bar] 层级条：把「你在哪一层」显式画出来，并给出回上一层的出口。
-               缺了它，用户从总览点进项目再点进功能后，很难回答「我在哪、怎么回去」。 -->
-          <component v-for="c in slotComps['layer-bar']" :is="c" :key="c.name"></component>
-          <!-- [project-nav] 项目层主导航：固定四 tab（看板/任务/日程/文件）+「更多」抽屉。
-               只在选中项目后出现；未选项目时无从谈起。 -->
-          <component v-for="c in slotComps['project-nav']" :is="c" :key="c.name" v-if="nav.project !== null"></component>
-
-          <div class="body">
-            <!-- 图标栏（shell 插件 app-iconbar）：新层级导航接管后，它是**紧凑模式的备用入口**。
+          <!-- L0 框架（原型）：左 rail（常驻导航）+ 内容区（唯一渲染出口）。
+               rail 由 shell 插件 app-rail 槽提供；紧凑模式下额外保留旧图标竖栏（一条不删）。 -->
+          <div class="ph-shell">
+            <component v-for="c in slotComps['app-rail']" :is="c" :key="c.name"></component>
+            <!-- 图标栏（shell 插件 app-iconbar）：紧凑模式的备用入口。
                  默认不渲染（两套导航同时显示会让人不知道该点哪个），
                  但组件与契约都保留：用户在偏好里可切回紧凑竖栏，一条功能都不少。 -->
             <template v-if="nav.compactRail">
               <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
             </template>
 
-            <!-- 左侧栏：未选项目 = 项目选择（shell welcome），已选项目 = 目录树（F07） -->
-            <div
-              v-if="nav.activeView === 'files' && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)"
-              class="side-wrap"
-              :style="{ width: nav.sidebarWidth + 'px', flex: '0 0 auto', overflow: 'hidden', borderRight: nav.sidebarWidth > 40 ? '1px solid var(--line)' : 'none' }"
-            >
-              <template v-if="nav.project !== null">
-                <component v-for="c in slotComps.tree" :is="c" :key="c.name"></component>
-              </template>
-              <template v-else>
-                <component v-for="c in slotComps.welcome" :is="c" :key="c.name"></component>
-              </template>
-            </div>
-            <div class="resize-handle" v-if="nav.activeView === 'files' && nav.sidebarWidth > 40 && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)" @mousedown="startResize" @dblclick="nav.toggleSidebar" :title="'拖拽调宽 · 双击折叠'"></div>
-            <!-- 侧边栏已收起时：左侧固定小按钮展开 -->
-            <button
-              v-if="nav.activeView === 'files' && nav.sidebarWidth <= 40 && (slotComps.tree && slotComps.tree.length || slotComps.welcome && slotComps.welcome.length)"
-              class="side-expand" title="展开侧边栏" @click="nav.toggleSidebar">☰</button>
+            <!-- 内容区：三层脊柱 T2 + T3，然后是工作区。
+                 改造前这里是 4 条并排横带（layer-bar / project-head / project-nav / tabs），
+                 各用一套视觉语言，看起来乱、且没有层级递进。现在收成两层：
+                   T2 = 位置链（layer-bar）+ 场景页签（project-nav 的主 tab）
+                   T3 = 子页签（project-nav 的子入口 / 文件标签）
+                 两个组件的 computed/methods 一个没动（回归钉着），只改它们渲染出来的形状。 -->
+            <div class="ph-content">
+              <!-- T2：位置层。layer-bar 渲染成位置链，project-nav 渲染成右侧场景页签。 -->
+              <div class="ph-t2">
+                <component v-for="c in slotComps['layer-bar']" :is="c" :key="'lb-'+c.name"></component>
+                <span class="grow"></span>
+                <!-- 场景页签只在**项目层**出现：管理层/个人层/AI 等不属于任何项目，
+                     在那里显示「文件/看板/任务/日程」只会误导（点了还得再选项目）。 -->
+                <component v-for="c in slotComps['project-nav']" :is="c" :key="'pn-t2-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="scenes"></component>
+                <component v-for="c in slotComps['project-head']" :is="c" :key="'ph-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="meta"></component>
+              </div>
+              <!-- T3：子页签层。只在真有子屏时自己渲染内容（组件内部判断，空则不占高）。 -->
+              <component v-for="c in slotComps['project-nav']" :is="c" :key="'pn-t3-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="subs"></component>
+
+              <div class="body">
+
+            <!-- 文件区布局（2026-11-13 重排）：
+                 · 左侧目录树侧边栏已取消 —— 文件夹与文件一起进中间列表（panel 渲染）；
+                 · 添加/上传等动作收进 panel 自己的右侧动作栏；
+                 · 原右侧详情面板改为文件右上角的下拉菜单（panel 内的 overlay）。
+                 tree / welcome / preview 槽不再在这里挂载，但插件仍声明它们
+                 （first-screen / security 的 manifest 契约不变），组件代码保留可回退。 -->
 
             <!-- 中间（⑤ 视图化：单一 activeView 状态源，功能面板 = main 全宽视图） -->
             <div class="main">
@@ -1824,10 +2272,14 @@
                 <div class="big">工作台未装载</div>
                 <div style="font-size:12px">请检查 plugins/privhub-shell-home 是否存在并已在图标栏出现。</div>
               </div>
-              <!-- 欢迎页（未选项目：简单文案，选项目在左侧栏） -->
+              <!-- 欢迎页（未选项目）：左侧目录树已取消，项目选择收进这里 -->
               <div v-else-if="nav.activeView === 'files' && nav.project === null" class="main-welcome">
                 <div class="big">欢迎使用私域枢纽 · 公司文件管理系统</div>
-                <div>从左侧选择一个项目开始浏览文件</div>
+                <div>选择一个项目开始浏览文件</div>
+                <div class="welcome-projects">
+                  <button v-for="p in nav.projectsList" :key="p" class="welcome-project" @click="nav.openProject(p)">📂 {{ p }}</button>
+                </div>
+                <div v-if="!nav.projectsList.length" style="font-size:12px;color:var(--muted)">暂无可用项目，请联系管理员开通权限</div>
               </div>
               <!-- 文件面板（F07 files-explorer 提供） -->
               <component v-for="c in slotComps.panel" :is="c" :key="c.name" v-else-if="nav.activeView === 'files' && slotComps.panel && slotComps.panel.length"></component>
@@ -1850,14 +2302,16 @@
               </div>
             </div>
 
-            <!-- 右侧预览（F08 files-preview 提供；仅文件视图） -->
-            <component v-for="c in slotComps.preview" :is="c" :key="c.name" v-if="nav.rightOpen && nav.activeView === 'files' && slotComps.preview && slotComps.preview.length"></component>
+            <!-- 原右侧预览槽：详情已收进文件右上角下拉（panel 内 overlay），骨架不再挂载。
+                 槽声明与组件保留（manifest 契约 + 可回退）。 -->
 
             <!-- 上传控制器（F11，不可见：拖拽/文件选择） -->
             <component v-for="c in slotComps.upload" :is="c" :key="c.name" v-if="slotComps.upload && slotComps.upload.length"></component>
             <!-- 上传队列抽屉（F12） -->
             <component v-for="c in slotComps['upload-queue']" :is="c" :key="c.name" v-if="slotComps['upload-queue'] && slotComps['upload-queue'].length"></component>
-          </div>
+              </div><!-- /.body -->
+            </div><!-- /.ph-content -->
+          </div><!-- /.ph-shell -->
 
           <!-- 水印叠加（F05 auth-watermark 提供） -->
           <component v-for="c in slotComps.watermark" :is="c" :key="c.name" v-if="loggedIn && slotComps.watermark && slotComps.watermark.length"></component>

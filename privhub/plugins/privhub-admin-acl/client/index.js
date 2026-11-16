@@ -56,7 +56,7 @@ const AclAdmin = {
       return '全部操作'
     },
     ruleText(r) {
-      const who = r.role === '' ? '所有人' : (r.role === 'admin' ? '管理员' : '普通用户')
+      const who = r.role === '' ? '所有人' : ((window.PrivHub && window.PrivHub.roleLabel) ? window.PrivHub.roleLabel(r.role) : r.role)
       const act = this.actionText(r.action)
       return (r.allow ? '✅ 允许' : '⛔ 拒绝') + ' · ' + who + ' · ' + act
     },

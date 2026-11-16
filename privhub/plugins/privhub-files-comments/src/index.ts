@@ -16,7 +16,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore, isManagerRole } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-comments'
 export const inject = ['storage', 'privhub', 'eventBus']
@@ -129,7 +129,7 @@ export function apply(ctx: Context): void {
         const arr = store[key] || []
         const hit = arr.find(c => c.id === id)
         if (!hit) return json(res, 404, { ok: false, error: '评论不存在' })
-        if (hit.author !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅作者或管理员可删除' })
+        if (hit.author !== u.username && !isManagerRole(u.role)) return json(res, 403, { ok: false, error: '仅作者或管理员可删除' })
         store[key] = arr.filter(c => c.id !== id)
         await save(ctx.storage, store)
         json(res, 200, { ok: true })

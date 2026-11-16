@@ -69,7 +69,7 @@ const PublishPanel = {
       if (r.ok) { window.PrivHub.toast('已撤销发布'); if (code === this.url.split('code=')[1]) this.url = ''; await this.refresh() }
       else window.PrivHub.toast(r.error || '撤销失败', 'error')
     },
-    isMine(p) { return p.createdBy === AUTH.user.username || AUTH.user.role === 'admin' },
+    isMine(p) { return p.createdBy === AUTH.user.username || !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
   },
   mounted() {
     this._off = bus.on('html:publish', (payload) => { this.openFor(payload) })

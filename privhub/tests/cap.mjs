@@ -40,7 +40,7 @@ export function build() {
   s.test('管理员 /cap/me：全部功能为 write', async () => {
     const r = await GET('/privhub/api/cap/me', { token: admin })
     ok(r.json && r.json.ok, '取开关表失败：' + r.text.slice(0, 120))
-    eq(r.json.role, 'admin', '角色应为 admin')
+    ok(r.json.role === 'admin' || r.json.role === 'system_admin', '角色应为管理层（admin / system_admin），实际 ' + r.json.role)
     ok(r.json.levels && r.json.levels['admin.audit'] === 'write', '管理员对 admin.audit 恒为 write')
     ok(r.json.levels['task.write'] === 'write', '管理员对 task.write 恒为 write')
   })

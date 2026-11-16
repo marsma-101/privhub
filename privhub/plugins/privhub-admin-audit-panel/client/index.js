@@ -50,7 +50,7 @@ const AuditPanel = {
     }
   },
   computed: {
-    isAdmin() { const u = AUTH.user; return u && u.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     pages() { return Math.max(1, Math.ceil(this.total / this.pageSize)) },
   },
   methods: {

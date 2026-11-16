@@ -51,6 +51,18 @@ export interface FeatureSpec {
   desc: string
   /** 普通用户默认级别。**必须等于上线前的实际行为**（见模块头注释）。 */
   userDefault: Level
+  /**
+   * 该功能所需的**最低角色**（三层角色，2026-11-15）。
+   *
+   *   'user'         — 普通用户就可能拿到（是否真的给，再看 userDefault 与开关表）
+   *   'admin'        — 至少要「管理员」：业务与用户管理、内容治理
+   *   'system_admin' — 至少要「系统管理员」：系统本体（存储/更新/迁移/自检/集成/权限开关表）
+   *
+   * 语义是**天花板**：达到该角色即恒为 write（不再查表），低于它则恒为 none
+   * —— 所以这条比 userDefault 更硬，用户能调的只有"给不给普通用户"。
+   * 缺省视为 'user'（保持既有功能的原有行为）。
+   */
+  minRole?: 'user' | 'admin' | 'system_admin'
 }
 
 /**
@@ -60,29 +72,34 @@ export interface FeatureSpec {
  * 更安全，直接删只影响「表里已有该 id 的旧配置」——会被 {@link normalizeTable} 丢掉）。
  */
 export const FEATURES: readonly FeatureSpec[] = [
-  /* ---- 管理（管理控制台各页） ---- */
-  { id: 'admin.console', group: '管理', title: '管理控制台', desc: '管理控制台入口与其中各管理页', userDefault: 'none' },
-  { id: 'admin.users', group: '管理', title: '用户管理', desc: '新建/编辑/删除用户、重置密码', userDefault: 'none' },
-  { id: 'admin.project.create', group: '管理', title: '新建项目', desc: '创建新的顶层项目目录', userDefault: 'none' },
-  { id: 'admin.project.delete', group: '管理', title: '删除项目', desc: '删除整个项目及其内容', userDefault: 'none' },
-  { id: 'admin.invite', group: '管理', title: '邀请码', desc: '生成 / 查看 / 撤销邀请码', userDefault: 'none' },
-  { id: 'admin.template', group: '管理', title: '模板管理', desc: '新建 / 编辑 / 删除文件模板（读取模板对所有人开放）', userDefault: 'none' },
-  { id: 'admin.trash.clean', group: '管理', title: '清空回收站', desc: '彻底清空回收站（不可恢复）', userDefault: 'none' },
-  { id: 'admin.lock', group: '管理', title: '锁管理', desc: '强制解锁他人占用、查看锁统计', userDefault: 'none' },
-  { id: 'admin.settings', group: '管理', title: '系统设置', desc: '全局设置：读取对所有人开放，写入管理员专属', userDefault: 'read' },
-  { id: 'admin.update', group: '管理', title: '系统更新', desc: '检查 / 一键更新 / 回滚（仅蓝绿部署可用）', userDefault: 'none' },
+  /* ---- 管理（管理控制台各页） ----
+   * 三层角色下的归属（2026-11-15 主人口径）：
+   *   管理员 = 数据文件 + 用户与项目权限 + 内容治理；
+   *   系统管理员 = 账号体系本身与系统本体（设置/更新/存储/迁移/自检/集成/开关表）。 */
+  { id: 'admin.console', group: '管理', title: '管理控制台', desc: '管理控制台入口与其中各管理页', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.users', group: '管理', title: '用户管理', desc: '新建/编辑/删除用户、重置密码', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.project.create', group: '管理', title: '新建项目', desc: '创建新的顶层项目目录', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.project.delete', group: '管理', title: '删除项目', desc: '删除整个项目及其内容', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.invite', group: '管理', title: '邀请码', desc: '生成 / 查看 / 撤销邀请码', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.template', group: '管理', title: '模板管理', desc: '新建 / 编辑 / 删除文件模板（读取模板对所有人开放）', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.trash.clean', group: '管理', title: '清空回收站', desc: '彻底清空回收站（不可恢复）', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.lock', group: '管理', title: '锁管理', desc: '强制解锁他人占用、查看锁统计', userDefault: 'none', minRole: 'admin' },
+  /* 系统设置/系统更新是「系统本体」，管理员碰不到（主人明确：这些归系统管理员） */
+  { id: 'admin.settings', group: '管理', title: '系统设置', desc: '全局设置：读取对所有人开放，写入仅系统管理员', userDefault: 'none', minRole: 'system_admin' },
+  { id: 'admin.update', group: '管理', title: '系统更新', desc: '检查 / 一键更新 / 回滚（仅系统管理员，仅蓝绿部署可用）', userDefault: 'none', minRole: 'system_admin' },
 
   /* ---- 安全 ---- */
-  { id: 'admin.audit', group: '安全', title: '审计日志', desc: '查看 / 导出操作流水', userDefault: 'none' },
-  { id: 'admin.acl', group: '安全', title: '权限规则', desc: '文件 / 目录级访问控制规则', userDefault: 'none' },
-  { id: 'admin.storage', group: '安全', title: '存储维护', desc: '明文数据清单与加密迁移', userDefault: 'none' },
+  { id: 'admin.audit', group: '安全', title: '审计日志', desc: '查看 / 导出操作流水', userDefault: 'none', minRole: 'system_admin' },
+  /* 文件/目录级 ACL 属「用户可见性」治理 → 管理员；存储加密迁移属系统本体 → 系统管理员 */
+  { id: 'admin.acl', group: '安全', title: '权限规则', desc: '文件 / 目录级访问控制规则', userDefault: 'none', minRole: 'admin' },
+  { id: 'admin.storage', group: '安全', title: '存储维护', desc: '明文数据清单与加密迁移', userDefault: 'none', minRole: 'system_admin' },
 
-  /* ---- 集成 ---- */
-  { id: 'admin.webhook', group: '集成', title: 'Webhook 订阅', desc: '事件订阅、投递日志与重放', userDefault: 'none' },
-  { id: 'admin.rag', group: '集成', title: 'RAG 与模型治理', desc: '语料摄取 / 策展 / 向量化、模型配置与自检', userDefault: 'none' },
-  { id: 'admin.agent.keys', group: '集成', title: '智能体密钥', desc: '签发 / 吊销 / 轮换 pha_ 密钥', userDefault: 'none' },
-  { id: 'admin.agent.trash', group: '集成', title: '智能体回收站', desc: '查看 / 恢复 / 清空智能体删除项', userDefault: 'none' },
-  { id: 'admin.office.ai', group: '集成', title: 'Office AI 密钥', desc: 'Office 写作助手的模型密钥', userDefault: 'none' },
+  /* ---- 集成（系统本体） ---- */
+  { id: 'admin.webhook', group: '集成', title: 'Webhook 订阅', desc: '事件订阅、投递日志与重放', userDefault: 'none', minRole: 'system_admin' },
+  { id: 'admin.rag', group: '集成', title: 'RAG 与模型治理', desc: '语料摄取 / 策展 / 向量化、模型配置与自检', userDefault: 'none', minRole: 'system_admin' },
+  { id: 'admin.agent.keys', group: '集成', title: '智能体密钥', desc: '签发 / 吊销 / 轮换 pha_ 密钥', userDefault: 'none', minRole: 'system_admin' },
+  { id: 'admin.agent.trash', group: '集成', title: '智能体回收站', desc: '查看 / 恢复 / 清空智能体删除项', userDefault: 'none', minRole: 'system_admin' },
+  { id: 'admin.office.ai', group: '集成', title: 'Office AI 密钥', desc: 'Office 写作助手的模型密钥', userDefault: 'none', minRole: 'system_admin' },
 
   /* ---- 协作（普通用户日常功能） ---- */
   { id: 'task.write', group: '协作', title: '任务看板写入', desc: '建卡 / 改卡 / 拖拽 / 列操作（只读则仅可查看）', userDefault: 'write' },
@@ -181,18 +198,69 @@ export interface Actor {
   role: string
 }
 
+/** 角色强弱（与 core 的 ROLE_RANK 同口径；这里独立一份避免 svc-cap 反向依赖 core）。 */
+const ROLE_LEVEL: Record<string, number> = { user: 0, admin: 1, system_admin: 2 }
+
 /**
- * 求某角色对某功能的**有效级别**。
+ * 求 actor 的权限档位。
  *
- * 管理员恒为 `write`（用户口径：对管理员全部开放）—— 表里那一列只影响非管理员。
- * 未在表里（含被 {@link normalizeTable} 丢弃的未知 id）的功能退回其 `userDefault`；
- * 连功能都没登记时一律 `'none'`（**未知功能默认关闭**，比默认打开安全）。
+ * **非人类账号（如管家车道的 `__butler__`）按「普通用户」档处理**：
+ * 它们没有三层角色，权限完全由开关表决定（`agent.butler*` 那组开关就是给它们用的）。
+ * 这一点必须保留 —— 三层改造前 `role !== 'admin'` 的伪身份就是走开关表的，
+ * 若在这里把未知角色判成 none，管家车道整条会 403（改坏过一次）。
+ *
+ * 其余未知/非法角色值仍然按 none 处理（最小权限，避免拼错角色名反而提权）。
+ */
+function rankOf(role: string | null | undefined): number {
+  if (typeof role !== 'string' || role === '') return -1
+  if (ROLE_LEVEL[role] !== undefined) return ROLE_LEVEL[role]
+  /* 非人类身份：视作普通用户档（受开关表管辖） */
+  return NON_HUMAN_ROLES.has(role) ? ROLE_LEVEL.user : -1
+}
+
+/** 已知的非人类身份（没有三层角色，按开关表走）。 */
+const NON_HUMAN_ROLES = new Set(['agent', 'butler', 'system', 'scheduler'])
+
+/**
+ * 求某角色对某功能的**有效级别**（三层角色，2026-11-15）。
+ *
+ * ## 关键口径：`minRole` 管的是「**管理层内部**谁够格」，不是「谁能用」
+ *
+ * 开关表（capabilities.json）从第一天起就是**普通用户那一列**的唯一真源：
+ * 把 `admin.audit` 设成 read，普通用户就该能用 —— 这是既有契约（cap.mjs 钉死的）。
+ * 所以分层不能把普通用户挡在表外面，否则「管理员想把审计开放给某个人」就失效了。
+ *
+ * 判定顺序：
+ *   1. 未登录 / 未登记功能 → none。
+ *   2. 普通用户 → **只看开关表**（表值 → userDefault）。与三层改造前完全一致。
+ *   3. 管理层（admin / system_admin）：
+ *      · 角色 ≥ 该功能的 `minRole` → **write**（够格就全开，不必逐项查表）；
+ *      · 角色 <  `minRole` → **none**（管理员碰不到系统本体）。
+ *
+ * 一句话：`minRole` 是**管理层内部的天花板**，不是对普通用户的墙。
  */
 export function levelFor(actor: Actor | null | undefined, feature: string, table: Record<string, Level>): Level {
-  if (actor && actor.role === 'admin') return 'write'
-  if (table[feature] !== undefined) return table[feature]
   const spec = FEATURE_BY_ID.get(feature)
-  return spec ? spec.userDefault : 'none'
+  if (!actor) return 'none'
+  if (!spec) return 'none'                     // 未登记功能默认关闭（比默认打开安全）
+
+  const got = rankOf(actor.role)
+  if (got < 0) return 'none'                   // 角色值非法/未知 → 一律不放行
+
+  /* ① 普通用户：开关表说了算（既有契约，不因三层角色而改变） */
+  if (got === ROLE_LEVEL.user) {
+    if (table[feature] !== undefined) return table[feature]
+    return spec.userDefault
+  }
+
+  /* ② 管理层：达到该功能最低角色即全开，否则完全不可用 */
+  const need = ROLE_LEVEL[spec.minRole ?? 'user'] ?? 0
+  return got >= need ? 'write' : 'none'
+}
+
+/** 该角色是否能看见这个功能（read 及以上）。界面据此渲染入口。 */
+export function visibleFor(actor: Actor | null | undefined, feature: string, table: Record<string, Level>): boolean {
+  return allows(levelFor(actor, feature, table), 'read')
 }
 
 /** 级别是否满足所需（`need` 默认为 `read`）。 */

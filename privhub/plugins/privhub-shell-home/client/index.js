@@ -88,7 +88,7 @@ const Home = {
   },
   computed: {
     /* AUTH 是骨架的 reactive，这里读它即可自动跟随登录态变化 */
-    isAdmin() { return !!(AUTH.user && AUTH.user.role === 'admin') },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     /* 两条通道都通才算「可用」。此前模板引用了这个键却没有定义，
      * 徽标恒落到「待处理」—— 状态显示与实际不符，属于静默失真，这里补上真源。 */
     modelOk() {

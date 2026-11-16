@@ -20,6 +20,12 @@ const UserAdmin = {
       resetPwdValue: '',
     }
   },
+  computed: {
+    /** 只有系统管理员能分配「系统管理员」角色（服务端还会再校验一次）。 */
+    canAssignSystem() {
+      return !!(window.PrivHub && window.PrivHub.isSystemAdmin && window.PrivHub.isSystemAdmin())
+    },
+  },
   async mounted() {
     await this.load()
   },
@@ -70,7 +76,7 @@ const UserAdmin = {
               <tr class="u-row" v-for="u in adminUsers" :key="u.username">
                 <td>{{ u.username }}</td>
                 <td>{{ u.displayName }}</td>
-                <td>{{ u.role === 'admin' ? '管理员' : '普通用户' }}</td>
+                <td>{{ (window.PrivHub && window.PrivHub.roleLabel) ? window.PrivHub.roleLabel(u.role) : u.role }}</td>
                 <td><span class="u-project-chip" v-for="p in u.projects" :key="p">{{ p }}</span></td>
                 <td>
                   <button class="small-btn" @click="openEditUser(u)">编辑</button>
@@ -107,9 +113,16 @@ const UserAdmin = {
             <div class="field">
               <label>角色</label>
               <select v-model="editUser.role" style="width:100%;padding:9px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text)">
-                <option value="user">普通用户</option>
-                <option value="admin">管理员</option>
+                <option value="user">用户 — 只能动文件</option>
+                <option value="admin">管理员 — 管数据文件与用户权限</option>
+                <!-- 系统管理员选项只有系统管理员能分配（服务端另有校验，这里不给越权入口） -->
+                <option v-if="canAssignSystem" value="system_admin">系统管理员 — 账号与系统本体</option>
               </select>
+              <div class="field-hint">
+                系统管理员：账号、角色、系统设置/更新/存储/审计/集成。<br />
+                管理员：数据文件、用户与项目权限、内容治理（不含系统设置）。<br />
+                用户：只能读写自己有权访问的项目文件。
+              </div>
             </div>
             <div class="field">
               <label>负责的项目（勾选其可访问的项目）</label>

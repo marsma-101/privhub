@@ -187,6 +187,36 @@ export function apply(ctx: Context): void {
     void audit(u.username, 'password-change', u.username, '本人修改密码，其它会话已失效')
   }, 'me-password')
 
+  /* 我的规则（owner-only 自由文本）：每个登录用户保存一段自己的规则文本。
+   * 隐私边界：路由只认 u.username（当前登录者），绝不接受 body/query 里的 username
+   * 去读他人文件——天然 owner-only，连 admin 也读不到别人的规则。它不是项目文件
+   * 路由，因此【不进】admin-acl 的 GUARD_PATHS。数据经 ctx.storage 透明加密落盘。 */
+  svc.route('/privhub/api/me/rules', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    const file = join(rootDirForSettings, 'data', 'user-rules', u.username + '.json')
+    if (req.method === 'GET') {
+      // 文件不存在 / 读失败一律回空规则（默认空，不报错）：新用户没有规则文件是常态
+      try {
+        if (!existsSync(file)) return json(res, 200, { ok: true, rules: '' })
+        const parsed = JSON.parse(await ctx.storage.readText(file)) as { rules?: unknown }
+        return json(res, 200, { ok: true, rules: String(parsed.rules ?? '') })
+      } catch {
+        return json(res, 200, { ok: true, rules: '' })
+      }
+    }
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const rules = String(body.rules ?? '')
+    if (rules.length > 20000) return json(res, 400, { ok: false, error: '规则内容过长（上限 20000 字符）' })
+    // 原子加密落盘：writeText 自动建目录 + 临时文件 rename；withFileLock 串行化并发写
+    await svc.withFileLock(file, async () => {
+      await ctx.storage.writeText(file, JSON.stringify({ rules, updatedAt: Date.now() }, null, 2))
+    })
+    json(res, 200, { ok: true, rules })
+  }, 'me-rules')
+
   /* 退出登录 */
   svc.route('/privhub/api/logout', async (req, res) => {
     const t = tokenOf(req)

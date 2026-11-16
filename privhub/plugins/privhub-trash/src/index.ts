@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, isManagerRole } from '../../privhub-core/src/index'
 import { lookupFileId } from '../../privhub-core/src/events'
 
 export const name = 'privhub-trash'
@@ -173,7 +173,7 @@ export function apply(ctx: Context, config: Config): void {
           return isP.call(svc, p) && owner.call(svc, p) !== u.username
         }
         const filtered = idxTrash
-          .filter((e) => (u.role === 'admin' ? true : (typeof e.trashedBy === 'string' ? e.trashedBy === u.username : false)))
+          .filter((e) => (isManagerRole(u.role) ? true : (typeof e.trashedBy === 'string' ? e.trashedBy === u.username : false)))
           .filter((e) => !personal(typeof e.project === 'string' ? e.project : ''))
           .map((e) => toTrashRecord(e))
           /* 只保留形状完整的条目（没有 id / project 的行无法操作，直接丢）。 */
@@ -192,7 +192,7 @@ export function apply(ctx: Context, config: Config): void {
     /* ② 物理回退（改造前的实现，原样保留）。 */
     const list = await svc.loadTrash()
     // 普通用户只看自己删除的；管理员看全部
-    let filtered = u.role === 'admin' ? list : list.filter((r) => r.deletedBy === u.username)
+    let filtered = isManagerRole(u.role) ? list : list.filter((r) => r.deletedBy === u.username)
     // P2-2：指定项目时按项目过滤（整个项目删除的条目 relPath==='' 视为该项目；空参数 = 全量）
     if (projectParam !== '') {
       filtered = filtered.filter((r) => r.project === projectParam || r.relPath === '')
@@ -232,7 +232,7 @@ export function apply(ctx: Context, config: Config): void {
       const from = typeof ie.trashedFrom === 'string' ? ie.trashedFrom : ''
       const dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : ''
       const who = typeof ie.trashedBy === 'string' ? ie.trashedBy : ''
-      if (u.role !== 'admin' && who !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
+      if (!isManagerRole(u.role) && who !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
       const aclD = ctx.acl.can(u, 'edit', project, from)
       if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
@@ -252,7 +252,7 @@ export function apply(ctx: Context, config: Config): void {
     const rec = (await svc.loadTrash()).find((r) => r.id === id)
     if (!rec) return json(res, 404, { ok: false, error: '条目不存在' })
     // P1-1：条目归属校验（管理员可操作全部，普通用户仅自己删除的）
-    if (u.role !== 'admin' && rec.deletedBy !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
+    if (!isManagerRole(u.role) && rec.deletedBy !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
     // P1-1：恢复 = 写入项目，须有项目权限（权限已收回的项目不可恢复）
     if (!svc.canAccess(u, rec.project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
     // P2-1：恢复 = 写回原路径，纳入文件级 ACL（edit 动作）裁决
@@ -280,7 +280,7 @@ export function apply(ctx: Context, config: Config): void {
       const project = typeof ie.project === 'string' ? ie.project : ''
       const from = typeof ie.trashedFrom === 'string' ? ie.trashedFrom : ''
       const who = typeof ie.trashedBy === 'string' ? ie.trashedBy : ''
-      if (u.role !== 'admin' && who !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
+      if (!isManagerRole(u.role) && who !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
       if (!svc.canAccess(u, project)) return json(res, 403, { ok: false, error: '无权限访问该项目' })
       const aclD = ctx.acl.can(u, 'delete', project, from)
       if (aclD && !aclD.allow) return json(res, 403, { ok: false, error: 'ACL 拒绝访问' })
@@ -308,7 +308,7 @@ export function apply(ctx: Context, config: Config): void {
     const rec = (await svc.loadTrash()).find((r) => r.id === id)
     if (!rec) return json(res, 404, { ok: false, error: '条目不存在' })
     // P1-1：条目归属校验（管理员可操作全部，普通用户仅自己删除的）
-    if (u.role !== 'admin' && rec.deletedBy !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
+    if (!isManagerRole(u.role) && rec.deletedBy !== u.username) return json(res, 403, { ok: false, error: '无权限操作该条目' })
     // S9 安全修复：彻底删除是【不可逆】的物理删除，必须与 restore 对称地
     // 校验项目权限与文件级 ACL。此前只校验了归属，导致「已被移出项目的用户
     // 仍能永久删除该项目回收站里的文件」。

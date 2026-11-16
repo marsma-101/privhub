@@ -55,7 +55,7 @@ const TemplateDoc = {
     }
   },
   computed: {
-    isAdmin() { const u = AUTH.user; return u && u.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     fmtMeta() { return FORMATS.find((f) => f.id === this.fmt) || FORMATS[0] },
     picked() { return this.templates.find((t) => t.id === this.pick) || null },
     projectName() { return nav.project || '（未进入项目）' },

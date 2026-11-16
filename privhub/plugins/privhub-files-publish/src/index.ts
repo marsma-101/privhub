@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join, dirname, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody, readJsonStore } from '../../privhub-core/src/index'
+import { json, readBody, readJsonStore, isManagerRole } from '../../privhub-core/src/index'
 
 export const name = 'privhub-files-publish'
 export const inject = ['storage', 'privhub']
@@ -76,7 +76,7 @@ export function apply(ctx: Context): void {
         const list = await load(ctx.storage)
         const hit = list.find(p => p.code === code)
         if (!hit) return json(res, 404, { ok: false, error: '发布不存在' })
-        if (hit.createdBy !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅创建者或管理员可撤销' })
+        if (hit.createdBy !== u.username && !isManagerRole(u.role)) return json(res, 403, { ok: false, error: '仅创建者或管理员可撤销' })
         await save(ctx.storage, list.filter(p => p.code !== code))
         json(res, 200, { ok: true })
       })
@@ -119,7 +119,7 @@ export function apply(ctx: Context): void {
     const u = svc.requireUser(_req, res)
     if (!u) return
     const list = await load(ctx.storage)
-    const mine = u.role === 'admin' ? list : list.filter(p => p.createdBy === u.username)
+    const mine = isManagerRole(u.role) ? list : list.filter(p => p.createdBy === u.username)
     json(res, 200, { ok: true, publishes: mine.map(p => ({ ...p, url: '/pub?code=' + p.code })) })
   }, 'publish-list')
 

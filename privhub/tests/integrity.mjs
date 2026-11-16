@@ -369,16 +369,16 @@ ok(/manifestsPartial/.test(feSrc), '骨架记录 manifest 是否为最小集合�
 ok(/bootTimedOut/.test(feSrc) && /登录界面加载失败/.test(feSrc),
   '首屏超时兜底：8 秒未渲染出界面时给出可见原因与重试（不再静默卡死）')
 
-/* ══════════ 选项目 = 进项目看板（2026-10-15） ══════════
- * 需求：从工作台 / 左栏项目列表 / 顶栏「选择项目」下拉里选中一个项目，落地页应是**该项目的看板**，
- * 而不是它的文件夹。守两道「容易被改回去」的线：
- *   · 落地视图被硬编码回 'files'（或 PROJECT_LANDING 被删空）—— 又变回进文件夹；
+/* ══════════ 选项目 = 进文件视图（2026-11-13 用户要求：进项目先看见文件） ══════════
+ * 需求：从工作台 / 左栏项目列表 / 顶栏「选择项目」下拉里选中一个项目，落地页应是**文件**，
+ * 看板/任务/日程依次兜底。守两道「容易被改回去」的线：
+ *   · 落地视图被硬编码回别的（或 PROJECT_LANDING 被删空）—— 又变回进看板；
  *   · 视图内部的「切项目」写成默认落地 —— 在任务看板 / 日历里换项目会被弹去别的视图（原地不同步）。
  */
-console.log('\n── 选项目落地页（项目看板） ──')
+console.log('\n── 选项目落地页（文件优先） ──')
 
-ok(/const PROJECT_LANDING\s*=\s*\[[^\]]*'dashboard'/.test(feSrc),
-  '骨架定义 PROJECT_LANDING（选项目默认落到项目看板；换落地页只改这一行）')
+ok(/const PROJECT_LANDING\s*=\s*\[\s*'files'/.test(feSrc),
+  '骨架定义 PROJECT_LANDING 且文件优先（选项目默认落到文件；换落地页只改这一行）')
 ok(/async openProject\(name,\s*opts\)/.test(feSrc) && /opts\.view/.test(feSrc),
   'openProject 支持显式落地视图（opts.view），视图内切项目可原地停留')
 ok(/view:\s*'files'\s*\}/.test(feSrc),

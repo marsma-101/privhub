@@ -41,7 +41,8 @@ const BUILTINS = {
   migrate: MigratePanel,
   doctor: DoctorPanel,
   watermark: WatermarkPanel,
-  /* 存储卷管理（多盘挂载 / 容量 / 分层搬移）。 */
+  /* 存储（2026-11-16 合并）：卷管理 + 数据形态 + 老库迁移同页。
+   * 「存储卷」与「存储迁移」两个入口都指向它（后者作为别名保留旧链接）。 */
   storage: StoragePanel,
 }
 

@@ -32,10 +32,13 @@ const SettingsPanel = {
       version: '',
       uptime: '',
       origin: (typeof location !== 'undefined' && location.origin) || '',
+      /* 「关于」：当前版本 + 蓝绿槽版本 + 更新记录（后两项仅管理员看得到）。
+         主人 2026-11-15：版本标注只放在关于里，前端其他地方不显示槽信息。 */
+      about: { current: '', deployment: '', slots: [], history: [], switchedAt: null, note: '', controlReachable: null },
     }
   },
   computed: {
-    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     /** 当前登录态的真实姓名（= 名下文件夹的名字） */
     currentName() { return (AUTH.user && AUTH.user.displayName) || '' },
     /** 本人名下文件夹的目录名；未开通为 null */
@@ -71,8 +74,25 @@ const SettingsPanel = {
         this.uptime = s >= 86400 ? Math.floor(s / 86400) + ' 天' : s >= 3600 ? Math.floor(s / 3600) + ' 小时' : Math.floor(s / 60) + ' 分钟'
       }
     } catch { /* 健康接口不可用时留空 */ }
+
+    /* 「关于」：只有管理员能拿到槽版本与更新记录（接口也做了一次校验，
+       前端 `v-if="isAdmin"` 只是不再白跑一次必然 403 的请求）。 */
+    if (this.isAdmin) {
+      try {
+        const a = await api('/privhub/api/update/about')
+        if (a && a.ok) this.about = Object.assign(this.about, a)
+      } catch { /* 非蓝绿部署 / 控制层不可达：保持默认空值，界面不显示槽块 */ }
+    }
   },
   methods: {
+    /** ISO → 本地「MM-DD HH:mm」，关于页只做简短标注，不引入日期库。 */
+    fmtTime(iso) {
+      if (!iso) return ''
+      const d = new Date(iso)
+      if (Number.isNaN(d.getTime())) return ''
+      const p = (n) => String(n).padStart(2, '0')
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    },
     setTheme(t) {
       this.theme.theme = t
       applyTheme()
@@ -324,11 +344,52 @@ const SettingsPanel = {
             <button class="btn btn-primary" style="width:auto" @click="openAdmin">👥 用户管理</button>
           </div>
         </div>
-        <!-- JT-09 / JT-21：版本与服务器地址，出问题时用户能直接报出这两个值 -->
-        <div v-if="version || origin" style="margin-top:20px;padding-top:12px;border-top:1px solid rgba(128,128,128,.25);font-size:12px;color:var(--muted)">
-          <span v-if="version">PrivHub v{{ version }}</span>
-          <span v-if="version && uptime"> · 已运行 {{ uptime }}</span>
-          <div v-if="origin" style="margin-top:4px">服务器地址：{{ origin }}</div>
+        <!-- ── 关于 ──────────────────────────────────────────────
+             主人 2026-11-15：版本信息只在这里显示（主版本），**前端不显示蓝绿槽**；
+             蓝/绿两个槽各自承载的版本只在**管理员**的「关于」里出现，
+             用来确认「刚更新完 = 新版本 + 旧版本并存」。
+             普通用户只看得到当前版本这一行。 -->
+        <div style="margin-top:20px;padding-top:12px;border-top:1px solid rgba(128,128,128,.25);font-size:12px;color:var(--muted)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:13px;color:var(--text);font-weight:600">关于</span>
+            <span v-if="about.deployment" style="font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)">{{ about.deployment }}</span>
+          </div>
+
+          <!-- 当前版本（所有人可见；这就是「主版本」） -->
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+            <span style="color:var(--text);font-weight:600;font-size:13px">PrivHub v{{ about.current || version || '—' }}</span>
+            <span v-if="uptime"> · 已运行 {{ uptime }}</span>
+          </div>
+          <div v-if="about.switchedAt" style="margin-bottom:6px">
+            最近更新：{{ fmtTime(about.switchedAt) }}
+          </div>
+
+          <!-- 蓝绿槽版本：仅管理员。措辞刻意用「槽」而非字母，避免让人以为是两个站点 -->
+          <div v-if="isAdmin && about.slots && about.slots.length" style="margin:10px 0;padding:10px 12px;border-radius:8px;background:var(--surface2);border:1px solid var(--line)">
+            <div style="font-size:11px;color:var(--faint);margin-bottom:8px">蓝绿槽（仅管理员可见；前端不展示）</div>
+            <div v-for="s in about.slots" :key="s.id" style="display:flex;align-items:center;gap:8px;padding:3px 0">
+              <span style="width:46px;color:var(--muted)">{{ s.id === 'blue' ? '蓝槽' : '绿槽' }}</span>
+              <span style="color:var(--text);font-weight:600">v{{ s.version || '—' }}</span>
+              <span v-if="s.active" style="font-size:10px;padding:1px 6px;border-radius:99px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)">正在服务</span>
+              <span v-else-if="s.healthy === false" style="font-size:10px;color:var(--faint)">待命</span>
+            </div>
+          </div>
+
+          <!-- 更新记录 -->
+          <div v-if="isAdmin && about.history && about.history.length" style="margin-top:8px">
+            <div style="font-size:11px;color:var(--faint);margin-bottom:6px">更新记录</div>
+            <div v-for="(h, i) in about.history" :key="i" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+              <span style="color:var(--text)">v{{ h.version }}</span>
+              <span v-if="h.current" style="font-size:10px;color:var(--accent)">当前</span>
+              <span v-else style="font-size:10px;color:var(--faint)">上一版</span>
+              <span v-if="h.at" style="color:var(--faint);font-size:11px">{{ fmtTime(h.at) }}</span>
+            </div>
+          </div>
+
+          <div v-if="origin" style="margin-top:8px">服务器地址：{{ origin }}</div>
+          <div v-if="isAdmin && about.controlReachable === false" style="margin-top:6px;color:var(--warn)">
+            控制层暂时不可达：槽状态读不到实时值（显示的是上次记录）
+          </div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="$emit('close')">关 闭</button>

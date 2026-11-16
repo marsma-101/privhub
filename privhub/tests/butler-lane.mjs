@@ -128,7 +128,7 @@ export function build() {
     }
     eq(r.json.capabilities.files, 'write', '默认 files 应为 write')
     ok(r.json.key && r.json.key.name, '应回带钥匙信息')
-    eq(r.json.user?.role, 'admin', '绑定身份应为管理员')
+    ok(r.json.user?.role === 'admin' || r.json.user?.role === 'system_admin', '绑定身份应为管理层（admin / system_admin），实际 ' + r.json.user?.role)
   })
 
   s.test('E 内容通道钥匙不得越界到管家车道（AGENT-4037）', async () => {

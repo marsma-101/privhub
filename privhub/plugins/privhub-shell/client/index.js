@@ -16,6 +16,8 @@
 import LayerBar from './layer-bar.js'
 import ProjectNav from './project-nav.js'
 import MeView from './me.js'
+import Rail from './rail.js'
+import ProjectHead from './project-head.js'
 import { SECTION_DEFS, GLOBAL_ORDER, SYSTEM_ORDER, KNOWN_GROUPS, PRIMARY_COUNT, byOrder } from './ia.js'
 
 const { api, AUTH, nav, barItems, badges, THEME, applyTheme, toast } = window.PrivHub
@@ -36,7 +38,7 @@ const ProjectTabs = {
   name: 'shell-project-tabs',
   data() { return { nav } },
   computed: {
-    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
   },
   methods: {
     onSelect(e) {
@@ -65,7 +67,15 @@ const TopbarUser = {
   name: 'shell-topbar-user',
   data() { return { auth: AUTH, nav, theme: THEME } },
   computed: {
-    isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
+    /** 三层角色的徽标文案（系统管理员 / 管理员 / 用户）。 */
+    roleBadgeText() {
+      const u = this.auth.user
+      const role = u && u.role
+      if (role === 'system_admin') return '🛡 系统管理员'
+      if (role === 'admin') return '👑 管理员'
+      return '👤 用户'
+    },
     displayName() {
       const u = this.auth.user
       return u ? (u.displayName || u.username) : ''
@@ -88,11 +98,10 @@ const TopbarUser = {
     },
   },
   template: `
-    <span class="badge" :class="{ admin: isAdmin }">{{ isAdmin ? '👑 管理员' : '👤 普通用户' }}</span>
+    <span class="badge" :class="{ admin: isAdmin }">{{ roleBadgeText }}</span>
     <div class="avatar">{{ initial }}</div>
     <span class="uname">{{ displayName }}</span>
     <button class="icon-btn" :class="{ on: isDark }" :title="themeTitle" :aria-label="themeTitle" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }} {{ themeLabel }}</button>
-    <button class="icon-btn" :class="{ on: nav.rightOpen }" @click="nav.rightOpen = !nav.rightOpen">{{ nav.rightOpen ? '收起侧栏' : '打开侧栏' }}</button>
     <button class="icon-btn" @click="nav.doLogout">退出</button>
   `,
 }
@@ -342,7 +351,7 @@ const WelcomeView = {
   name: 'shell-welcome',
   data() { return { nav, auth: AUTH } },
   computed: {
-    isAdmin() { return this.auth.user && this.auth.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     projects() { return this.nav.projectsList || [] },
     /* 工作台是另一个插件提供的：它没装载（或管理员用开关对普通用户关了）时就不显示入口，
      * 点了也是空壳。读 cap 过滤后的 barItems，而不是原始 manifest。 */
@@ -402,5 +411,11 @@ export default {
     'layer-bar': LayerBar,
     'project-nav': ProjectNav,
     'me-view': MeView,
+    /* ---- L0 全局框架（issue #3 交互原型本体）----
+     * app-rail：左侧导航栏（驾驶舱组 / 全局组 / 管理组 + 设计哲学注脚）。
+     * 顶栏与内容区由骨架渲染，rail 是原型三段框架里常驻的那一条。 */
+    'app-rail': Rail,
+    /* project-head：项目层头部（返回总览 + 项目名 + 当前节点 + 最近截止）。 */
+    'project-head': ProjectHead,
   },
 }

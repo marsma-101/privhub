@@ -129,6 +129,14 @@ export interface VolumeView extends VolumeRecord {
   bytes: number
   /** 是否正在被选为写入目标（按当前策略判定）。 */
   writable: boolean
+  /**
+   * 是否「系统库根卷」。
+   *
+   * 库根由系统从 env / config/store.json / 默认值自动解析，**不需要人工添加**，
+   * 所以它出现在列表里不是「谁配的」，而是「系统自报家底」。
+   * 界面据此：标一个「主库（系统）」徽标、root 不给改（它是环境事实）。
+   */
+  isSystemRoot?: boolean
 }
 
 /**
@@ -329,14 +337,45 @@ export function selectTieringCandidates(
   limit = 50,
 ): Array<{ id: string; volumeId: string | null; size: number }> {
   if (!store.tieringEnabled) return []
+
+  /* 「源」的定义（2026-11-16 修）：
+   *
+   * 以前只认 `volumeId ∈ 热卷`。但**库根上的条目 `volumeId` 是 null**（单卷时代的
+   * 位置，也是"老库"），于是「把库根上加密的老文件搬到新加的卷」这条最常用的
+   * 路径**永远选不到候选** → 界面报"搬移完成：成功 0 个"，目标卷里什么都没有。
+   * 用户实测就是这么被误导的：功能说成功，但文件没出现在目标卷。
+   *
+   * 正确语义：库根（volumeId=null）**也是可搬的源**，与热卷同级 ——
+   * 它同样是"文件当前所在的盘"，只是没显式配卷。 */
   const hotIds = new Set(store.volumes.filter((v) => v.role === 'hot').map((v) => v.id))
-  if (hotIds.size === 0) return []
   /* 冷卷必须有可写的，否则搬了也没地方放。 */
   if (pickColdVolume(store, stats) === null) return []
 
-  const onHot = files.filter((f) => f.volumeId !== null && hotIds.has(f.volumeId))
-  if (onHot.length === 0) return []
-  return [...onHot].sort((a, b) => a.size - b.size).slice(0, limit)
+  /* 源 = 热卷上的文件 ∪ 库根上的文件（volumeId 为 null） ∪ 系统库根卷上的文件。
+   * 系统库根卷在列表里是一个显式的卷（isSystemRoot），它的条目可能被标了
+   * 该系统卷 id，也可能仍是 null —— 两种都要认。 */
+  const sysVolIds = new Set(store.volumes.filter((v, _i) => isSystemRootVolume(v, store)).map((v) => v.id))
+  const isSource = (f: { volumeId: string | null }): boolean =>
+    f.volumeId === null || hotIds.has(f.volumeId) || sysVolIds.has(f.volumeId)
+
+  const movable = files.filter(isSource)
+  if (movable.length === 0) return []
+  return [...movable].sort((a, b) => a.size - b.size).slice(0, limit)
+}
+
+/**
+ * 判断某个卷是不是「系统库根卷」（库根由系统解析，不是用户挂的盘）。
+ *
+ * 注意：这个判断必须与 `VolumeService.isSystemVolume` 同口径，否则
+ * 「候选筛选」和「实际搬移」会对同一块盘给出不同结论。
+ */
+function isSystemRootVolume(v: { id: string; root: string }, store: VolumeStore): boolean {
+  /* 固定 id 优先（SYSTEM_VOLUME_ID 常量在 index.ts；这里按形状判断避免循环依赖）。 */
+  if (/^V0{31}[0-9a-f]$/.test(v.id)) return true
+  /* 兜底：与 defaultRoot 无关，用「是否在卷列表里被标记」无法判断，
+   * 因此这里只认固定 id。用户手工把库根加成普通卷的情形由 index.ts 的
+   * ensureSystemVolume 打上 isSystemRoot 标记后，候选仍会因 volumeId 匹配而入选。 */
+  return false
 }
 
 /**

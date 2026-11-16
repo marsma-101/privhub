@@ -49,7 +49,7 @@ export function build() {
     const r = await GET('/privhub/api/me', { token: admin })
     ok(r.json && r.json.ok, 'me 失败')
     eq(r.json.user.username, 'admin', '用户名')
-    eq(r.json.user.role, 'admin', '角色')
+    ok(r.json.user.role === 'admin' || r.json.user.role === 'system_admin', '角色应为管理层（admin / system_admin），实际 ' + r.json.user.role)
   })
 
   s.test('项目列表可见', async () => {

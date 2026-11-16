@@ -78,7 +78,7 @@ const Overview = {
     }
   },
   computed: {
-    isAdmin() { return !!(AUTH.user && AUTH.user.role === 'admin') },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     userName() { const u = AUTH.user || {}; return u.displayName || u.username || '' },
     sorts() { return SORTS },
     blockerHint() { return BLOCKER_HINT },

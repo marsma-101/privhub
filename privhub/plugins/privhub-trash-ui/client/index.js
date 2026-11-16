@@ -35,7 +35,7 @@ const TrashView = {
   name: 'trash-view',
   data() { return { nav } },
   computed: {
-    isAdmin() { const u = window.PrivHub.AUTH.user; return u && u.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     // 项目上下文：只显示当前项目内的回收条目（整个项目删除的条目视为该项目）
     shown() {
       if (!this.nav.project) return []

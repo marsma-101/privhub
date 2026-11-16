@@ -5,7 +5,7 @@
  *
  *   L0 入口层   登录 / 会话（骨架负责，不在这里）
  *   L1 总览层   工作台 = 整个盘子怎么样（跨项目 KPI / 管线 / 项目卡片）
- *   L2 项目层   选中一个项目后，固定 4 个主 tab：看板 · 任务 · 日程 · 文件
+ *   L2 项目层   选中一个项目后，固定 4 个主 tab：文件 · 看板 · 任务 · 日程
  *               其余项目内功能（知识 / AI / 治理）收进「更多」——低频只下沉，不删除
  *   L2 个人层   我的：任务 / 日程 / 文件 / 偏好
  *   L3 管理层   管理控制台（自带分区路由，非 admin 不可见）
@@ -52,14 +52,14 @@ export const PRIMARY_COUNT = 2
  * 其余是同族视图（点进搜索/收藏/回收站时，主 tab 仍停在「文件」，
  * 因为那确实是文件这一族的事，不该让 tab 高亮凭空消失）。
  *
- * 为什么「看板」排在最前：选项目进来最该先看「这个项目怎么样了」，
- * 与骨架的 PROJECT_LANDING（项目看板 → 任务看板）同一口径。
+ * 为什么「文件」排在最前：选项目进来最该先看「这个项目里有什么文件」，
+ * 与骨架的 PROJECT_LANDING（文件 → 看板 → 任务）同一口径（2026-11-13 用户要求）。
  */
 export const PROJECT_TABS = [
+  { id: 'files', label: '文件', icon: '🗄️', views: ['files', 'search', 'favorites', 'trash'], desc: '项目文件：浏览 / 上传 / 搜索 / 收藏 / 回收站。' },
   { id: 'board', label: '看板', icon: '📊', views: ['dashboard'], desc: '这个项目的进度与计划：分区看板，AI 可维护。' },
   { id: 'tasks', label: '任务', icon: '📋', views: ['taskboard'], desc: '任务卡：待办 / 进行中 / 待审核 / 已完成，指派到人。' },
   { id: 'schedule', label: '日程', icon: '📅', views: ['calendar'], desc: '按日期看任务：月 / 周 / 日三视图，数据同任务看板。' },
-  { id: 'files', label: '文件', icon: '🗄️', views: ['files', 'search', 'favorites', 'trash'], desc: '项目文件：浏览 / 上传 / 搜索 / 收藏 / 回收站。' },
 ]
 
 /**

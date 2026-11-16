@@ -45,6 +45,21 @@ if (typeof document !== 'undefined' && document.head && typeof document.createEl
   background:transparent; color:var(--text); font-size:13px; cursor:pointer; }
 .ai-menu-i:hover { background:var(--accent-soft, rgba(127,127,127,.14)); }
 .ai-menu-i:disabled { color:var(--muted); cursor:default; }
+/* 2026-11-13 工具条合并：编辑/下载/分屏 三个下拉（内嵌时挂进宿主标签行 .v3-editor-ops）。
+   与 .ai-menu 同一套视觉口径，z-index 走令牌。 */
+.ed-dd { position:relative; display:inline-flex; }
+.ed-btn { font-size:12px; padding:4px 10px; border-radius:6px; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; white-space:nowrap; }
+.ed-btn:hover, .ed-btn.on { color:var(--accent); border-color:var(--accent); }
+.ed-btn[disabled] { opacity:.5; cursor:not-allowed; }
+.ed-menu { position:absolute; top:calc(100% + 4px); right:0; min-width:168px; z-index:var(--z-menu,120); background:var(--panel2); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.28); padding:4px; }
+.ed-menu-i { display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:6px 10px; border:none; border-radius:6px; background:transparent; color:var(--text); font-size:12.5px; cursor:pointer; white-space:nowrap; }
+.ed-menu-i:hover { background:var(--accent-soft, rgba(127,127,127,.14)); color:var(--accent); }
+.ed-menu-i.on { color:var(--accent); font-weight:600; }
+.ed-menu-i[disabled] { color:var(--muted); cursor:default; }
+.ed-menu-sep { height:1px; background:var(--line); margin:4px 0; }
+.ed-status { font-size:11.5px; color:var(--muted); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ed-status.warn { color:var(--warn); }
+.ed-status.err { color:var(--danger); }
 `.trim()
   try { document.head.appendChild(aiStyle) } catch { /* 注入失败：功能仍在，只是菜单没样式 */ }
 }
@@ -249,6 +264,11 @@ const MdEditor = {
       aiLoaded: false,
       aiMenuOpen: false,
       aiBusy: false,
+      /* 2026-11-13 工具条合并：三个下拉（编辑 / 下载 / 分屏）的开合状态。
+       * 同一时刻只开一个（toggleMenu 互斥）。AI 功能未设计完，aiEnabled=false 先隐藏，
+       * 代码与动作表逻辑保留，设计好后把这里改回 true 即可恢复。 */
+      menuOpen: '',
+      aiEnabled: false,
     }
   },
   computed: {
@@ -259,7 +279,7 @@ const MdEditor = {
      * 与服务端 `ctx.cap.can(u, 'ai.write')` 同一判据 —— 界面藏了、服务端也拦。 */
     aiCan() {
       const P = window.PrivHub
-      return !!(P && typeof P.capCan === 'function' && P.capCan('ai.write'))
+      return this.aiEnabled && !!(P && typeof P.capCan === 'function' && P.capCan('ai.write'))
     },
     /* 动作表按 group 分栏（保持服务端给的顺序，不重排）。 */
     aiGroups() {
@@ -663,6 +683,44 @@ const MdEditor = {
         if (ta) { ta.scrollTop = keepTop; this.syncScroll() }
       })
     },
+    /* ---- 2026-11-13 工具条合并：三个下拉（编辑 / 下载 / 分屏） ----
+     * 同一时刻只开一个；点菜单项后收起。分屏菜单里「纯编辑/纯预览/分屏」直接 setView，
+     * 保存/版本/备份/只读 收进「编辑」，原格式下载 + HTML/PDF/Word 转换收进「下载」。 */
+    toggleMenu(which) { this.menuOpen = this.menuOpen === which ? '' : which },
+    closeMenus() { this.menuOpen = '' },
+    menuSave() { this.menuOpen = ''; void this.save() },
+    menuVersions() { this.menuOpen = ''; void this.loadVersions() },
+    menuBackup() { this.menuOpen = ''; void this.gitBackup() },
+    menuReadonly() { this.menuOpen = ''; void this.exitInline() },
+    menuView(mode) { this.menuOpen = ''; this.setView(mode) },
+    menuExport(fmt) { this.menuOpen = ''; void this.exportDoc(fmt) },
+    /* 原格式下载：走 /api/download（带文件名 + 服务端解密），与列表「⬇ 下载」同一条路。 */
+    async downloadOriginal() {
+      this.menuOpen = ''
+      const token = window.PrivHub.AUTH.token || ''
+      try {
+        const r = await fetch('/privhub/api/download?project=' + encodeURIComponent(this.project) + '&path=' + encodeURIComponent(this.path), { headers: { authorization: 'Bearer ' + token } })
+        if (!r.ok) { window.PrivHub.toast('下载失败（HTTP ' + r.status + '）', 'error'); return }
+        const blob = await r.blob()
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = this.name
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+      } catch { window.PrivHub.toast('下载失败（网络错误）', 'error') }
+    },
+    /* 状态文案的着色口径（工具条合并后状态挪进标签行，仍要能一眼看出未保存/出错）。 */
+    statusClass() {
+      if (/失败|错误|取消/.test(this.status)) return 'ed-status err'
+      if (this.dirty) return 'ed-status warn'
+      return 'ed-status'
+    },
+    /* 分屏下拉按钮上的当前态文案。 */
+    viewLabel() {
+      return this.viewMode === 'split' ? '◫ 分屏' : (this.viewMode === 'preview' ? '👁 预览' : '✎ 编辑')
+    },
     /* EasyMDE / CodeMirror 量不到 display:none 容器里的行高：从隐藏态回到可见态要 refresh 一次，
      * 否则工具栏与光标会错位。**存在性判断在先**：没初始化过 EasyMDE（内嵌模式没有它）时什么都不做。 */
     refreshMde() {
@@ -768,7 +826,7 @@ const MdEditor = {
     /** 写权限判定（拿项目名判，供快照保存复用：快照里的项目可能与当前 this.project 不同）。 */
     canEditProject(project) {
       const u = AUTH.user
-      return !!(u && (u.role === 'admin' || (u.projects || []).includes(project)))
+      return !!(u && ((window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) || (u.projects || []).includes(project)))
     },
     /* 手动 Git 备份（privhub-git-backup 插件） */
     async gitBackup() {
@@ -981,40 +1039,10 @@ const MdEditor = {
          两者不是一回事：编辑态不是某个 viewer 的能力）。能不能内嵌由宿主经 bus 作答。 -->
     <teleport v-if="open && mode === 'inline'" to=".v3-editor-host">
       <div class="md-inline-root" style="flex:1;display:flex;flex-direction:column;min-height:0;background:var(--bg)">
-        <!-- 编辑器工具条：状态 + 操作（文件名/路径在外层头部，路径见右侧详情） -->
-        <div style="display:flex;align-items:center;gap:8px;padding:5px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;font-size:12.5px">
-          <span :style="{ color: dirty ? 'var(--warn)' : 'var(--accent)', fontSize: '12px' }">{{ dirty ? '● 未保存修改' : (saving ? '保存中…' : '') }}</span>
-          <span :style="{ color: /失败|错误|取消/.test(status) ? 'var(--danger)' : 'var(--muted)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '45%' }">{{ status }}</span>
-          <!-- Y 批：他人持锁 → 明确只读提示（status 里也有同一句，这里常驻不随其它提示被覆盖） -->
-          <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
-          <span style="flex:1"></span>
-          <!-- §1.8 AI 写作助手：先选中一段文字，再点动作 → 原位替换（Ctrl+Z 可撤销）。
-               动作清单来自服务端动作表，前端不内联；开关（ai.write）关掉则整块不出现。 -->
-          <div v-if="aiCan" class="ai-dd">
-            <button class="icon-btn" :disabled="aiBusy" :title="aiBusy ? 'AI 处理中…' : 'AI 写作助手（先选中一段文字）'" @click="toggleAi()">{{ aiBusy ? '✨ …' : '✨ AI ▾' }}</button>
-            <div v-if="aiMenuOpen" class="ai-menu" @mouseleave="aiMenuOpen = false">
-              <template v-for="g in aiGroups" :key="g">
-                <div class="ai-menu-g">{{ g }}</div>
-                <button v-for="a in aiActionsByGroup(g)" :key="a.id" class="ai-menu-i" @click="pickAi(a)">{{ a.title }}</button>
-              </template>
-            </div>
-          </div>
-          <!-- 三态按钮排：保存 ｜ 预览 ｜ 分屏 ｜ 只读。选中样式复用骨架既有的 .icon-btn.on
-               （index.html 里就有：color/border=var(--accent)、底色 var(--accent-soft)）——
-               不新增 CSS、不引入新主题。再点一次选中态即回「纯编辑」。 -->
-          <button class="icon-btn" :disabled="saving || !!lockedBy" @click="save()">{{ saving ? '…' : '💾 保存' }}</button>
-          <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
-          <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
-          <button class="icon-btn" title="退出编辑（只读预览）" @click="exitInline()">✕ 只读</button>
-          <button v-if="isMd" class="icon-btn" @click="loadVersions()">🕘 版本</button>
-          <button class="icon-btn" title="Git 备份（立即提交当前版本）" @click="gitBackup()">⏺ 备份</button>
-          <template v-if="isMd">
-            <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
-            <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
-            <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
-          </template>
-        </div>
-        <!-- 版本抽屉 -->
+        <!-- 2026-11-13 工具条合并：原来这里独立一条工具条（保存/预览/分屏/只读/版本/备份/HTML/PDF/Word/AI），
+             与宿主标签行叠成两层。现在操作收进三个下拉（编辑/下载/分屏），teleport 进宿主标签行的
+             .v3-editor-ops 舱位，与标签同一行；本组件只留正文与底部状态。AI 未设计完，aiEnabled=false 隐藏。 -->
+        <!-- 版本抽屉（点「编辑 ▾ → 版本历史」展开） -->
         <div v-if="showVersions" style="padding:6px 14px;border-bottom:1px solid var(--line);max-height:160px;overflow:auto;background:var(--bg);flex-shrink:0">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             <span style="font-weight:600;font-size:12.5px">版本历史（最多 20 版）</span>
@@ -1034,10 +1062,6 @@ const MdEditor = {
                快捷键已改走组件级文档监听（bindDocKeys），不依赖这一栏在不在。 -->
         <div style="flex:1;display:flex;min-height:0">
           <div v-if="showSrc" style="flex:1;display:flex;flex-direction:column;min-width:0">
-            <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0;display:flex;align-items:center;gap:8px">
-              <span>{{ isMd ? 'Markdown 源码' : '文本源码' }}</span><span style="color:var(--warn)" v-if="dirty">●</span>
-              <span style="flex:1"></span><span>Ctrl+S 保存</span>
-            </div>
             <textarea
               ref="src"
               class="md-src"
@@ -1050,10 +1074,6 @@ const MdEditor = {
             ></textarea>
           </div>
           <div v-if="showPre" style="flex:1;display:flex;flex-direction:column;min-width:0" :style="viewMode === 'split' ? 'border-left:1px solid var(--line)' : ''">
-            <div style="padding:4px 14px;font-size:11.5px;color:var(--muted);background:var(--panel2);flex-shrink:0;display:flex;align-items:center;gap:8px">
-              <span>实时预览（双链 [[文件名]] 可点击）</span>
-              <span style="flex:1"></span><span>Ctrl+S 保存</span>
-            </div>
             <div class="md-inline-preview md-preview" ref="pre" v-html="previewHtml" @click="onPreviewClick" style="flex:1;overflow:auto;padding:14px 18px;background:var(--panel2);color:var(--text);font-size:14px;line-height:1.7"></div>
           </div>
         </div>
@@ -1063,6 +1083,44 @@ const MdEditor = {
           <span style="flex:1"></span>
           <span>{{ wordCount }} 词</span>
           <span v-if="!canEdit" style="color:var(--danger)">无写权限（只读）</span>
+        </div>
+      </div>
+    </teleport>
+
+    <!-- 内嵌编辑的操作下拉：teleport 进宿主标签行的 .v3-editor-ops（与标签同一行，合并两层）。
+         三个下拉：编辑（保存/版本/备份/只读）｜ 下载（原格式/HTML/PDF/Word）｜ 分屏（纯编辑/纯预览/分屏）。
+         状态与锁提示也放这一行。AI 未设计完先隐藏（aiEnabled=false）。 -->
+    <teleport v-if="open && mode === 'inline'" to=".v3-editor-ops">
+      <span :class="statusClass()" :title="status">{{ dirty ? '● 未保存' : (saving ? '保存中…' : status) }}</span>
+      <span v-if="lockedBy" class="ed-status warn" :title="lockedBy + ' 正在修改'">🔒 {{ lockedBy }}</span>
+      <div class="ed-dd">
+        <button class="ed-btn" :class="{ on: menuOpen === 'edit' }" @click.stop="toggleMenu('edit')">✎ 编辑 ▾</button>
+        <div v-if="menuOpen === 'edit'" class="ed-menu" @click.stop>
+          <button class="ed-menu-i" :disabled="saving || !!lockedBy" @click="menuSave()">💾 保存<span style="margin-left:auto;color:var(--muted);font-size:11px">Ctrl+S</span></button>
+          <button v-if="isMd" class="ed-menu-i" @click="menuVersions()">🕘 版本历史</button>
+          <button class="ed-menu-i" @click="menuBackup()">⏺ Git 备份</button>
+          <div class="ed-menu-sep"></div>
+          <button class="ed-menu-i" @click="menuReadonly()">✕ 退出编辑（只读）</button>
+        </div>
+      </div>
+      <div class="ed-dd">
+        <button class="ed-btn" :class="{ on: menuOpen === 'download' }" @click.stop="toggleMenu('download')">⬇ 下载 ▾</button>
+        <div v-if="menuOpen === 'download'" class="ed-menu" @click.stop>
+          <button class="ed-menu-i" @click="downloadOriginal()">📄 原格式（{{ name }}）</button>
+          <template v-if="isMd">
+            <div class="ed-menu-sep"></div>
+            <button class="ed-menu-i" @click="menuExport('html')">🌐 转为 HTML</button>
+            <button class="ed-menu-i" @click="menuExport('pdf')">📕 转为 PDF</button>
+            <button class="ed-menu-i" @click="menuExport('doc')">📘 转为 Word</button>
+          </template>
+        </div>
+      </div>
+      <div class="ed-dd">
+        <button class="ed-btn" :class="{ on: menuOpen === 'view' }" @click.stop="toggleMenu('view')">{{ viewLabel() }} ▾</button>
+        <div v-if="menuOpen === 'view'" class="ed-menu" @click.stop>
+          <button class="ed-menu-i" :class="{ on: viewMode === 'edit' }" @click="menuView('edit')">✎ 纯编辑</button>
+          <button class="ed-menu-i" :class="{ on: viewMode === 'preview' }" @click="menuView('preview')">👁 纯预览</button>
+          <button class="ed-menu-i" :class="{ on: viewMode === 'split' }" @click="menuView('split')">◫ 分屏（编辑+预览）</button>
         </div>
       </div>
     </teleport>
@@ -1077,26 +1135,35 @@ const MdEditor = {
           <span style="color:var(--muted);font-size:12px">{{ project }}/{{ path }}</span>
           <span v-if="lockedBy" style="color:var(--warn);font-size:12px">🔒 {{ lockedBy }} 正在修改，请稍后重试</span>
           <span style="flex:1"></span>
-          <!-- §1.8 AI 写作助手（浮层形态同一套动作；选区走 EasyMDE 的 CodeMirror）。 -->
-          <div v-if="aiCan" class="ai-dd">
-            <button class="icon-btn" :disabled="aiBusy" :title="aiBusy ? 'AI 处理中…' : 'AI 写作助手（先选中一段文字）'" @click="toggleAi()">{{ aiBusy ? '✨ …' : '✨ AI ▾' }}</button>
-            <div v-if="aiMenuOpen" class="ai-menu" @mouseleave="aiMenuOpen = false">
-              <template v-for="g in aiGroups" :key="g">
-                <div class="ai-menu-g">{{ g }}</div>
-                <button v-for="a in aiActionsByGroup(g)" :key="a.id" class="ai-menu-i" @click="pickAi(a)">{{ a.title }}</button>
-              </template>
+          <span :class="statusClass()" :title="status">{{ dirty ? '● 未保存' : (saving ? '保存中…' : status) }}</span>
+          <!-- 浮层与内嵌同一套三个下拉（编辑/下载/分屏）；AI 未设计完先隐藏（aiEnabled=false）。 -->
+          <div class="ed-dd">
+            <button class="ed-btn" :class="{ on: menuOpen === 'edit' }" @click.stop="toggleMenu('edit')">✎ 编辑 ▾</button>
+            <div v-if="menuOpen === 'edit'" class="ed-menu" @click.stop>
+              <button class="ed-menu-i" :disabled="saving || !!lockedBy" @click="menuSave()">💾 保存<span style="margin-left:auto;color:var(--muted);font-size:11px">Ctrl+S</span></button>
+              <button class="ed-menu-i" @click="menuVersions()">🕘 版本历史</button>
+              <button class="ed-menu-i" @click="menuBackup()">⏺ Git 备份</button>
             </div>
           </div>
-          <!-- 浮层与内嵌同一套三态按钮排（同一批语义、同一个 viewMode）。 -->
-          <button class="icon-btn" :disabled="saving || !!lockedBy" @click="save()">{{ saving ? '保存中…' : '💾 保存' }}</button>
-          <button class="icon-btn" :class="{ on: viewMode === 'preview' }" :aria-pressed="viewMode === 'preview' ? 'true' : 'false'" :title="viewMode === 'preview' ? '回纯编辑（未保存的正文与编辑会话都还在）' : '纯预览：编辑栏收起，只留渲染结果'" @click="setView('preview')">👁 预览</button>
-          <button class="icon-btn" :class="{ on: viewMode === 'split' }" :aria-pressed="viewMode === 'split' ? 'true' : 'false'" :title="viewMode === 'split' ? '回纯编辑' : '分屏：编辑 + 预览两栏并排'" @click="setView('split')">◫ 分屏</button>
-          <button class="icon-btn" @click="loadVersions()">🕘 版本</button>
-          <button class="icon-btn" title="Git 备份（立即提交当前版本）" @click="gitBackup()">⏺ 备份</button>
-          <button class="icon-btn" @click="exportDoc('html')">⬇ HTML</button>
-          <button class="icon-btn" @click="exportDoc('pdf')">⬇ PDF</button>
-          <button class="icon-btn" @click="exportDoc('doc')">⬇ Word</button>
-          <button class="icon-btn" @click="tryClose()">✖ 关闭</button>
+          <div class="ed-dd">
+            <button class="ed-btn" :class="{ on: menuOpen === 'download' }" @click.stop="toggleMenu('download')">⬇ 下载 ▾</button>
+            <div v-if="menuOpen === 'download'" class="ed-menu" @click.stop>
+              <button class="ed-menu-i" @click="downloadOriginal()">📄 原格式（{{ name }}）</button>
+              <div class="ed-menu-sep"></div>
+              <button class="ed-menu-i" @click="menuExport('html')">🌐 转为 HTML</button>
+              <button class="ed-menu-i" @click="menuExport('pdf')">📕 转为 PDF</button>
+              <button class="ed-menu-i" @click="menuExport('doc')">📘 转为 Word</button>
+            </div>
+          </div>
+          <div class="ed-dd">
+            <button class="ed-btn" :class="{ on: menuOpen === 'view' }" @click.stop="toggleMenu('view')">{{ viewLabel() }} ▾</button>
+            <div v-if="menuOpen === 'view'" class="ed-menu" @click.stop>
+              <button class="ed-menu-i" :class="{ on: viewMode === 'edit' }" @click="menuView('edit')">✎ 纯编辑</button>
+              <button class="ed-menu-i" :class="{ on: viewMode === 'preview' }" @click="menuView('preview')">👁 纯预览</button>
+              <button class="ed-menu-i" :class="{ on: viewMode === 'split' }" @click="menuView('split')">◫ 分屏（编辑+预览）</button>
+            </div>
+          </div>
+          <button class="ed-btn" @click="tryClose()">✖ 关闭</button>
         </div>
         <!-- 版本抽屉 -->
         <div v-if="showVersions" style="padding:8px 16px;border-bottom:1px solid var(--line);max-height:180px;overflow:auto;background:var(--bg)">

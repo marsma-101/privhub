@@ -27,6 +27,7 @@ import { build as buildPersonalRename } from './personal-rename.mjs'
 import { build as buildAgentSandbox } from './agent-sandbox.mjs'
 import { build as buildTaskboard } from './taskboard.mjs'
 import { build as buildSelfService } from './selfservice.mjs'
+import { build as buildMeRules } from './me-rules.mjs'
 import { build as buildAclFileFilter } from './acl-file-filter.mjs'
 import { build as buildDupVerdict } from './dup-verdict.mjs'
 import { build as buildDupUploadHttp } from './dup-upload-http.mjs'
@@ -107,6 +108,9 @@ async function main() {
     buildFirstScreen(), buildSmoke(), buildProductionSmoke(), buildSecurity(), buildHardening(),
     buildPersonalSpace(), buildPersonalRename(), buildAgentSandbox(), buildTaskboard(),
     buildSelfService(),
+    // 我的规则（owner-only 自由文本）：未登录401 / 默认空 / 保存往返 / 超长400 /
+    // 非法JSON400 / B 与 admin 读不到他人。建临时账号并在收尾清掉，不影响别的套件。
+    buildMeRules(),
     // W-A 新增：文件级 ACL 在 图谱/全文/查重 三处的过滤 + near 近似去重（放最后，避免
     // 它建的用例文件影响前面套件的目录/查重类断言）
     buildAclFileFilter(),
@@ -154,7 +158,7 @@ async function main() {
 
   // 静态检查（不需要服务）：前端模板编译与已知显示 bug 回归
   console.log('\n[run-all] 运行静态与冷启动检查：前端模板 / 管理控制台 / 审计可靠性 / 交付完整性 / 首次部署 / 存储根与密钥安全 / A 批修复断言 / 预览上限断言 / 明文迁移 / JSON 损坏防护 / 并发写串行化 / 音视频 Range / 图谱布局 / 左栏导航 / 新层级导航 / 项目总览聚合 / 标题碰撞 / 思维导图 / 蓝绿运行时契约 / HTTP 更新源')
-  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'nginx-direct.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'layer-nav.mjs', 'overview-aggregate.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
+  for (const script of ['frontend-templates.mjs', 'admin-console.mjs', 'personal-ui.mjs', 'audit-reliability.mjs', 'integrity.mjs', 'first-run.mjs', 'store-config.mjs', 'rag-resilience.mjs', 'model-parsing.mjs', 'link-parsing.mjs', 'dup-upload.mjs', 'storage-migration.mjs', 'json-corruption.mjs', 'write-serialization.mjs', 'preview-limits.mjs', 'file-exts.mjs', 'nginx-direct.mjs', 'media-preview.mjs', 'office-doc.mjs', 'kg-layout.mjs', 'iconbar.mjs', 'layer-nav.mjs', 'roles.mjs', 'overview-aggregate.mjs', 'title-collision.mjs', 'mcp-protocol.mjs', 'mindmap.mjs', 'runtime-contract.mjs', 'update-source.mjs']) {
     const okStatic = await runChild(join(HERE, script))
     if (!okStatic) pass = false
   }
@@ -189,7 +193,9 @@ function runChild(script) {
      *   · overview-aggregate.mjs —— 进程内 `import()` 真身 `privhub-project-dashboard/src/overview.ts`
      *                            （L1 总览的桶归类 / 卡点口径 / 均值分母 / null≠0），必须走 tsx。
      * 其余静态脚本不需要，保持原样调用。 */
-    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|link-parsing|dup-upload|storage-migration|json-corruption|media-preview|overview-aggregate)\.mjs$/.test(script)
+    /*   · roles.mjs —— 进程内 `import()` 真身 `plugins/privhub-svc-cap/src/core.ts`
+     *                  （三层角色的分级判定是纯函数，直接对真身断言最可信），必须走 tsx。 */
+    const needsTsx = /(rag-resilience|file-exts|office-doc|model-parsing|link-parsing|dup-upload|storage-migration|json-corruption|media-preview|overview-aggregate|roles)\.mjs$/.test(script)
     const args = needsTsx ? ['--import', 'tsx/esm', script] : [script]
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
     p.on('exit', (code) => resolve(code === 0))

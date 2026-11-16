@@ -89,6 +89,22 @@ const dataFilesDir = process.env.PRIVHUB_DATA_FILES?.trim() || join(dataRootDir,
 /** 池子目录名（与 fileindex 的 POOL_DIRNAME 保持一致）。 */
 const POOL = '.pool'
 
+/**
+ * 系统库根卷的固定 id（主人 2026-11-16：库根必须由系统自动登记，不靠人工添加）。
+ * 定成一个「不是随机 hex」的稳定值，一眼能看出它不是用户手动挂的卷；
+ * 同时不撞 `VOLUME_ID_RE`，任何「解析卷 id」的逻辑都不会把它误当普通卷。
+ */
+const SYSTEM_VOLUME_ID = 'V0000000000000000000000000000000'
+
+/** 两个路径是否指向同一位置（Windows 大小写不敏感；容忍尾部分隔符差异）。 */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string): string => {
+    const s = String(p || '').replace(/[\\/]+$/, '')
+    return process.platform === 'win32' ? s.toLowerCase() : s
+  }
+  return norm(a) === norm(b)
+}
+
 export class VolumeService extends Service {
   /** 卷列表落盘文件。 */
   readonly file: string
@@ -131,6 +147,86 @@ export class VolumeService extends Service {
       console.error('[volumes] 卷列表读取失败，回退单卷模式：' + msgOf(e))
       this.store = emptyVolumeStore()
     }
+    /* 关键：库根**自动登记为一个卷**（主人 2026-11-16 定的原则）。
+     *
+     * 改造前库根只是个 `defaultRoot` 字段，不在这张卷列表里 —— 于是界面
+     * 只显示「手动挂的卷」，而**系统真正在用的那块盘**（占着绝大多数文件）
+     * 反而不出现。这不是配置问题，是设计缺陷：库根是**系统自己解析出来的
+     * 环境事实**（env > config/store.json > 默认），不需要任何人手工添加。
+     *
+     * 做法：启动/重载时确认库里有一个「库根卷」；没有就补一条。
+     *   · id 固定为 SYSTEM_VOLUME_ID，所以重启不会重复添加（幂等）；
+     *   · role = 'any'（它与历史单卷行为完全等价：所有写入都落它，不做搬移）；
+     *   · label 可被用户改名，但 root 恒等于 `this.dataFiles`（它是环境事实，不许改）。
+     * 补登记**不改变任何既有行为**：`volumeId=null` 的老条目仍然解析到库根。 */
+    await this.ensureSystemVolume()
+    /* 默认写入卷指向不成立的卷时自动修正（否则上传永远失败且看不出原因）。 */
+    await this.repairDefaultVolume()
+  }
+
+  /**
+   * 确保「库根卷」在列表里（幂等）。
+   *
+   * 返回是否发生了补登记（调用方据此决定要不要落盘）。
+   */
+  private async ensureSystemVolume(): Promise<boolean> {
+    const root = this.dataFiles
+    const exists = this.store.volumes.find((v) => v.id === SYSTEM_VOLUME_ID)
+    if (exists) {
+      /* 库根是环境事实：万一配置文件里被改歪了，以实际解析值为准纠正回来。 */
+      if (exists.root !== root) {
+        console.warn('[volumes] 库根卷的 root 与系统实际解析值不一致，已纠正：'
+          + exists.root + ' → ' + root)
+        exists.root = root
+        await this.save()
+      }
+      return false
+    }
+    /* 兼容：如果有人手工把库根加成过普通卷，认它（不重复登记），
+     * 但把它标记为系统卷以便界面区分。 */
+    const sameRoot = this.store.volumes.find((v) => samePath(v.root, root))
+    if (sameRoot) {
+      sameRoot.note = (sameRoot.note ? sameRoot.note + '；' : '') + '系统库根（自动识别）'
+      await this.save()
+      return false
+    }
+    this.store.volumes.push({
+      id: SYSTEM_VOLUME_ID,
+      label: '主库（系统）',
+      root,
+      role: 'any',
+      highWatermark: 5,
+      enabled: true,
+      createdAt: Date.now(),
+      note: '系统自动识别：本实例的文件库根（数据即在这里）',
+    })
+    await this.save()
+    console.log('[volumes] 已自动登记库根卷：' + root + '（id=' + SYSTEM_VOLUME_ID + '）')
+    return true
+  }
+
+  /**
+   * 修正「默认写入卷」指向不成立的目标（系统自检的一部分）。
+   *
+   * 为什么需要：`defaultVolumeId` 是配置，可能指向一个**已被卸载**的卷
+   * （手工改坏、或删卷时漏清）。那种状态下所有上传都会失败，而界面只显示
+   * 「默认写入」指向一个不存在的卷 —— 用户看不出原因。
+   *
+   * 规则：指向不存在的卷 → 清空（回到「按角色自动选」，等价历史行为）；
+   *       指向一个已停用的卷 → 也清空（否则上传永远失败）。
+   * 返回是否做了修正。
+   */
+  private async repairDefaultVolume(): Promise<boolean> {
+    const id = this.store.defaultVolumeId
+    if (id === null) return false
+    const hit = this.store.volumes.find((v) => v.id === id)
+    if (!hit || !hit.enabled) {
+      console.warn('[volumes] 默认写入卷指向不存在的卷或已停用（' + id + '），已清空改为自动选择。')
+      this.store.defaultVolumeId = null
+      await this.save()
+      return true
+    }
+    return false
   }
 
   private async save(): Promise<void> {
@@ -180,6 +276,21 @@ export class VolumeService extends Service {
 
   get tieringEnabled(): boolean { return this.store.tieringEnabled }
   get defaultVolumeId(): string | null { return this.store.defaultVolumeId }
+
+  /**
+   * 全部物理根目录（默认库根 + 各卷根）。
+   *
+   * 用途：让存储层判断「某个绝对路径是不是用户文件」时，把**扩展卷**也算进来。
+   * 只认默认库根的话，同一逻辑库会出现「默认卷明文、扩展卷密文」的分裂。
+   * 只读、去重，不含容量探测（不碰磁盘，可随读路径频繁调用）。
+   */
+  roots(): string[] {
+    const out: string[] = [this.dataFiles]
+    for (const v of this.store.volumes) {
+      if (typeof v.root === 'string' && v.root !== '' && !out.includes(v.root)) out.push(v.root)
+    }
+    return out
+  }
 
   /** 默认卷根（`volumeId=null` 的条目落在这里）。 */
   get defaultRoot(): string { return this.dataFiles }
@@ -294,8 +405,11 @@ export class VolumeService extends Service {
     const stats = this.stats()
     return this.store.volumes.map((v) => {
       const stat = stats.get(v.id) ?? this.statOf(v)
-      const c = counters(v.id)
-      return { ...v, stat, files: c.files, bytes: c.bytes, writable: isWritable(v, stat) }
+      /* 系统库根卷：文件计数按 `volumeId=null` 算（老条目都落在库根）。
+       * 它不是用户挂的卷，界面要标出来、且不许改它的 root。 */
+      const isSystem = v.id === SYSTEM_VOLUME_ID || samePath(v.root, this.dataFiles)
+      const c = isSystem ? counters(null) : counters(v.id)
+      return { ...v, stat, files: c.files, bytes: c.bytes, writable: isWritable(v, stat), isSystemRoot: isSystem }
     })
   }
 
@@ -313,8 +427,12 @@ export class VolumeService extends Service {
    */
   async pickForWrite(needBytes = 0): Promise<{ volume: VolumeRecord | null; dir: string } | null> {
     await this.ready
-    /* 一个卷都没配 = 单卷模式，落默认库根（原有行为）。 */
-    if (this.store.volumes.length === 0) {
+    /* 只有「系统库根卷」一个 = 等价于原来的单卷模式：落库根（原有行为）。
+     *
+     * 必须单独判这一步：库根卷是系统自动登记的，它不该被当成「用户配了一块盘」，
+     * 否则 pickWriteVolume 会把它当普通卷参与排序，行为就悄悄变了。 */
+    const userVolumes = this.store.volumes.filter((v) => !this.isSystemVolume(v))
+    if (userVolumes.length === 0) {
       const dir = join(this.dataFiles, POOL)
       await fsp.mkdir(dir, { recursive: true })
       return { volume: null, dir }
@@ -322,6 +440,13 @@ export class VolumeService extends Service {
     const stats = this.stats(0)   // 写入前必须拿最新容量，不能用缓存
     const v = pickWriteVolume(this.store, stats, needBytes)
     if (!v) return null
+    /* 万一策略把库根卷选中了（比如用户显式设为默认），也要走库根路径，
+     * 且 volume 回 null —— 保持「库根 = volumeId:null」这条既有对应关系。 */
+    if (this.isSystemVolume(v)) {
+      const dir = join(this.dataFiles, POOL)
+      await fsp.mkdir(dir, { recursive: true })
+      return { volume: null, dir }
+    }
     const dir = join(v.root, POOL)
     try {
       await fsp.mkdir(dir, { recursive: true })
@@ -333,6 +458,12 @@ export class VolumeService extends Service {
       return null
     }
     return { volume: v, dir }
+  }
+
+  /** 该卷是不是「系统库根卷」（库根由系统解析，不是用户挂的盘）。 */
+  isSystemVolume(v: VolumeRecord | null | undefined): boolean {
+    if (!v) return false
+    return v.id === SYSTEM_VOLUME_ID || samePath(v.root, this.dataFiles)
   }
 
   /* ================= 卷的增删改 ================= */
@@ -430,6 +561,12 @@ export class VolumeService extends Service {
     await this.ready
     const idx = this.store.volumes.findIndex((x) => x.id === id)
     if (idx < 0) return { ok: false, error: '卷不存在' }
+    /* 系统库根不可卸载：它是本实例的数据所在地，由系统自动识别（不是用户挂的盘）。
+     * 真需要换位置，应该改 PRIVHUB_DATA_FILES / config/store.json 后重启 ——
+     * 那是一次完整迁移，不是「卸载一个卷」。 */
+    if (this.isSystemVolume(this.store.volumes[idx])) {
+      return { ok: false, error: '系统库根不可卸载：它是本实例的文件库（数据就在这里）。要换位置请改存储配置后重启。' }
+    }
     if (fileCount > 0 && !force) {
       return {
         ok: false,

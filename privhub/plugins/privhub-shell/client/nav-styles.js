@@ -1,10 +1,10 @@
 /**
  * nav-styles — L2 项目层导航 + L1 层级条 + 个人层的样式（import 即注入）
  *
- * 全部走骨架的设计令牌（--accent / --panel / --line / --sp-* / --r-* / --fs-*），
- * 深浅两套主题自动跟随 [data-theme]，本文件不自造第二套配色。
- * 唯一的例外是层级条的三条语义色带（L1 总览 / L2 项目 / L3 管理），
- * 它们表达「你在哪一层」，用 accent / warn / muted 三档区分，不新增色相。
+ * 视觉走骨架的**原型令牌**（--p-*，issue #3 样机的 indigo→cyan 主色族），
+ * 深浅两套主题自动跟随 [data-theme]。层级条 / 项目 tab 换成原型样式：
+ * 渐变实底 tab、色脊层级条。个人层「我的」的原型样式在 ./proto-styles.js
+ * （.ph-me-*），本文件保留旧 .me-* 以兼容（me.js 切换前的过渡）。
  *
  * @module privhub-shell/client/nav-styles
  */
@@ -18,91 +18,93 @@ if (typeof document !== 'undefined' && !document.getElementById(ID)) {
 .lbar {
   display: flex; align-items: center; gap: var(--sp-2);
   padding: 0 var(--sp-3); height: 34px; flex: 0 0 auto;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(90deg, var(--accent-soft) 0%, transparent 42%);
-  font-size: var(--fs-xs); color: var(--muted);
+  border-bottom: 1px solid var(--p-border);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--p-indigo) 8%, transparent) 0%, transparent 42%);
+  font-size: var(--fs-xs); color: var(--p-muted);
 }
 .lbar-step {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 9px; border-radius: var(--r-pill);
   border: 1px solid transparent; background: transparent;
-  color: var(--muted); font-size: var(--fs-xs); cursor: pointer;
+  color: var(--p-muted); font-size: var(--fs-xs); cursor: pointer;
   transition: color .16s, background .16s, border-color .16s;
 }
-.lbar-step:hover { color: var(--text); background: var(--accent-soft-2); }
+.lbar-step:hover { color: var(--p-text); background: color-mix(in srgb, var(--p-indigo) 8%, transparent); }
 .lbar-step.on {
-  color: var(--accent); background: var(--panel);
-  border-color: var(--line); box-shadow: var(--sh-1); cursor: default;
+  color: var(--p-indigo); background: var(--p-surface);
+  border-color: var(--p-border); box-shadow: var(--p-shadow-sm); cursor: default;
 }
-.lbar-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lbar-step:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
 .lbar-step[disabled] { opacity: .55; cursor: not-allowed; }
-.lbar-sep { color: var(--line); user-select: none; }
-.lbar-cur { color: var(--text); font-weight: 600; }
+.lbar-sep { color: var(--p-border); user-select: none; }
+.lbar-cur { color: var(--p-text); font-weight: 600; }
 .lbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); }
-.lbar-hint { color: var(--muted); font-size: var(--fs-nano); }
+.lbar-hint { color: var(--p-faint); font-size: var(--fs-nano); }
 /* 管理层用暖色带区分：它是「配置系统」不是「干活」，误入的代价更高 */
-.lbar.admin { background: linear-gradient(90deg, var(--warn-soft) 0%, transparent 42%); }
-.lbar.admin .lbar-step.on { color: var(--warn); }
+.lbar.admin { background: linear-gradient(90deg, color-mix(in srgb, var(--p-amber) 12%, transparent) 0%, transparent 42%); }
+.lbar.admin .lbar-step.on { color: var(--p-amber); }
 
-/* ══════════ L2 项目层：固定主 tab + 「更多」抽屉 ══════════ */
+/* ══════════ L2 项目层：固定主 tab（原型渐变实底）+ 「更多」抽屉 ══════════ */
 .pnav {
-  flex: 0 0 auto; border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  flex: 0 0 auto; border-bottom: 1px solid var(--p-border);
+  background: var(--p-surface);
 }
 .pnav-row {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3); flex-wrap: wrap;
 }
-.pnav-tabs { display: flex; align-items: center; gap: var(--sp-1); }
+.pnav-tabs { display: flex; align-items: center; gap: 6px; }
 .pnav-tab {
   position: relative; display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 14px; border-radius: var(--r-2);
-  border: 1px solid transparent; background: transparent;
-  color: var(--muted); font-size: var(--fs-sm); cursor: pointer;
-  transition: color .16s, background .16s, border-color .16s, box-shadow .16s;
+  padding: 7px 14px; border-radius: 9px;
+  border: 1px solid var(--p-border); background: var(--p-surface);
+  color: var(--p-muted); font-size: 13px; cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s, box-shadow .15s;
 }
-.pnav-tab:hover { color: var(--text); background: var(--accent-soft-2); }
+.pnav-tab:hover { color: var(--p-indigo); border-color: var(--p-indigo); }
 .pnav-tab.on {
-  color: var(--accent); background: var(--accent-soft);
-  border-color: var(--accent-select); box-shadow: var(--sh-1);
+  color: #fff; background: linear-gradient(135deg, var(--p-indigo), var(--p-blue));
+  border-color: transparent; box-shadow: 0 4px 12px color-mix(in srgb, var(--p-indigo) 30%, transparent);
 }
-/* 选中态除了颜色还有**底部实条**：去掉颜色也认得出当前 tab */
+/* 选中态除了渐变实底还有**底部实条**：去掉颜色也认得出当前 tab */
 .pnav-tab.on::after {
   content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
-  border-radius: var(--r-full); background: var(--accent);
+  border-radius: var(--r-full); background: rgba(255,255,255,.7);
 }
-.pnav-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pnav-tab:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
 .pnav-ico { font-size: var(--fs-base); line-height: 1; }
 .pnav-label { font-weight: 600; }
 .pnav-badge {
   min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-full);
-  background: var(--danger); color: #fff; font-size: var(--fs-nano); line-height: 16px; text-align: center;
+  background: var(--p-red); color: #fff; font-size: var(--fs-nano); line-height: 16px; text-align: center;
 }
+.pnav-tab.on .pnav-badge { background: rgba(255,255,255,.28); }
 .pnav-badge.sm { min-width: 14px; height: 14px; line-height: 14px; }
 .pnav-caret { font-size: 10px; transition: transform .18s; }
 .pnav-caret.open { transform: rotate(180deg); }
 .pnav-dot {
   position: absolute; top: 5px; right: 6px; width: 5px; height: 5px;
-  border-radius: var(--r-full); background: var(--accent);
+  border-radius: var(--r-full); background: var(--p-indigo);
 }
+.pnav-tab.on .pnav-dot { background: #fff; }
 /* 文件族子入口：只在文件 tab 下出现 */
 .pnav-subs { display: flex; align-items: center; gap: var(--sp-1); margin-left: auto; flex-wrap: wrap; }
 .pnav-sub {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 10px; border-radius: var(--r-1);
-  border: 1px solid var(--line); background: var(--bg);
-  color: var(--muted); font-size: var(--fs-xs); cursor: pointer;
+  padding: 5px 10px; border-radius: 99px;
+  border: 1px solid var(--p-border); background: var(--p-surface);
+  color: var(--p-muted); font-size: var(--fs-xs); cursor: pointer;
   transition: color .16s, background .16s, border-color .16s;
 }
-.pnav-sub:hover { color: var(--text); border-color: var(--accent-select); }
-.pnav-sub.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-select); }
-.pnav-sub:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pnav-sub:hover { color: var(--p-indigo); border-color: var(--p-indigo); }
+.pnav-sub.on { color: var(--p-indigo); background: color-mix(in srgb, var(--p-indigo) 12%, transparent); border-color: var(--p-indigo); }
+.pnav-sub:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
 
 /* 「更多」抽屉：低频功能的新家，一条不删 */
 .pnav-drawer {
-  border-top: 1px dashed var(--line);
+  border-top: 1px dashed var(--p-border);
   padding: var(--sp-3);
-  background: linear-gradient(180deg, var(--accent-soft) 0%, transparent 60%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--p-indigo) 6%, transparent) 0%, transparent 60%);
   animation: pnav-in .18s cubic-bezier(.4, 0, .2, 1);
 }
 @keyframes pnav-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
@@ -110,42 +112,42 @@ if (typeof document !== 'undefined' && !document.getElementById(ID)) {
 .pnav-grp:last-of-type { margin-bottom: var(--sp-2); }
 .pnav-grp-h {
   display: flex; align-items: center; gap: 6px; margin-bottom: var(--sp-2);
-  font-size: var(--fs-xs); color: var(--muted); font-weight: 600;
+  font-size: var(--fs-xs); color: var(--p-muted); font-weight: 600;
 }
 .pnav-grp-n {
   padding: 0 6px; border-radius: var(--r-full);
-  background: var(--panel2); color: var(--muted); font-size: var(--fs-nano);
+  background: var(--p-surface2); color: var(--p-muted); font-size: var(--fs-nano);
 }
 .pnav-grp-b { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: var(--sp-2); }
 .pnav-item {
   display: grid; grid-template-columns: 24px 1fr; grid-template-rows: auto auto;
   gap: 2px var(--sp-2); align-items: center; text-align: left;
-  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-2);
-  border: 1px solid var(--line); background: var(--panel);
-  color: var(--text); cursor: pointer;
+  padding: var(--sp-2) var(--sp-3); border-radius: 10px;
+  border: 1px solid var(--p-border); background: var(--p-surface);
+  color: var(--p-text); cursor: pointer;
   transition: border-color .16s, box-shadow .16s, transform .16s;
 }
-.pnav-item:hover { border-color: var(--accent-select); box-shadow: var(--sh-2); transform: translateY(-1px); }
-.pnav-item.on { border-color: var(--accent); background: var(--accent-soft); }
-.pnav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pnav-item:hover { border-color: var(--p-indigo); box-shadow: var(--p-shadow-sm); transform: translateY(-1px); }
+.pnav-item.on { border-color: var(--p-indigo); background: color-mix(in srgb, var(--p-indigo) 8%, transparent); }
+.pnav-item:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 1px; }
 .pnav-item-ico { grid-row: 1 / span 2; font-size: var(--fs-md); text-align: center; }
 .pnav-item-t { font-size: var(--fs-sm); font-weight: 600; }
 .pnav-item-d {
-  font-size: var(--fs-nano); color: var(--muted); line-height: 1.5;
+  font-size: var(--fs-nano); color: var(--p-muted); line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .pnav-drawer-foot {
   display: flex; align-items: center; gap: var(--sp-2);
-  padding-top: var(--sp-2); border-top: 1px solid var(--line);
-  font-size: var(--fs-nano); color: var(--muted);
+  padding-top: var(--sp-2); border-top: 1px solid var(--p-border);
+  font-size: var(--fs-nano); color: var(--p-muted);
 }
 .pnav-link {
   margin-left: auto; border: none; background: none; padding: 0;
-  color: var(--accent); font-size: var(--fs-xs); cursor: pointer; text-decoration: underline;
+  color: var(--p-indigo); font-size: var(--fs-xs); cursor: pointer; text-decoration: underline;
 }
-.pnav-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-1); }
+.pnav-link:focus-visible { outline: 2px solid var(--p-indigo); outline-offset: 2px; border-radius: var(--r-1); }
 
-/* ══════════ 个人层：我的（任务 / 日程 / 文件 / 偏好） ══════════ */
+/* ══════════ 个人层「我的」旧样式（过渡兼容；新原型样式见 proto-styles.js .ph-me-*）══════════ */
 .me-root { flex: 1 1 auto; min-height: 0; width: 100%; overflow: auto; padding: var(--sp-4); }
 .me-head { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-3); flex-wrap: wrap; }
 .me-head .big { font-size: var(--fs-lg); font-weight: 700; color: var(--text); }

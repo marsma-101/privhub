@@ -33,7 +33,45 @@ import { readJsonStore } from './json-store'
 export const name = 'privhub-core'
 export const inject = ['webServer', 'storage']
 
-export type Role = 'admin' | 'user'
+/**
+ * 角色（三层，2026-11-15 主人定）。
+ *
+ *   system_admin  系统管理员：最高权限。账号、角色、系统本体（存储/更新/迁移/自检/
+ *                 集成/审计/权限开关表）都归它。
+ *   admin         管理员：**只管业务与用户**——数据文件、用户与项目权限、内容治理
+ *                 （标签/模板/发布/回收站）。碰不到「系统相关设置」。
+ *   user          用户：只能动文件（读写自己有权访问的项目文件、协作元数据）。
+ *
+ * 历史数据兼容：老数据只有 'admin' / 'user'。`'admin'` 语义**不迁移**为 system_admin，
+ * 而是保留为「管理员」——这正是主人要的降权：原先的 admin 现在拿不到系统设置。
+ * 需要系统级权限的账号必须显式提升为 system_admin（见 migrateLegacyRoles）。
+ */
+export type Role = 'system_admin' | 'admin' | 'user'
+
+/** 角色强弱排序（数字越大权限越高）。判定一律用它，别写 `=== 'admin'`。 */
+export const ROLE_RANK: Record<Role, number> = { user: 0, admin: 1, system_admin: 2 }
+
+export function isRole(x: unknown): x is Role {
+  return x === 'system_admin' || x === 'admin' || x === 'user'
+}
+
+/** 角色中文名（界面与文档共用一处，避免两处漂移）。 */
+export const ROLE_LABEL: Record<Role, string> = {
+  system_admin: '系统管理员',
+  admin: '管理员',
+  user: '用户',
+}
+
+/** a 是否至少和 b 同级（用于「够不够格」判定）。 */
+export function roleAtLeast(a: Role | string | null | undefined, b: Role): boolean {
+  const r = (x: unknown): number => (isRole(x) ? ROLE_RANK[x] : -1)
+  return r(a) >= ROLE_RANK[b]
+}
+
+/** 是否算「管理层」（管理员或系统管理员）。 */
+export function isManagerRole(role: Role | string | null | undefined): boolean {
+  return roleAtLeast(role, 'admin')
+}
 
 /* D4：系统 JSON 数据文件的统一读取入口（损坏 → 隔离 + 抛错，绝不静默当空数据）。
  * 从这里转出，方便各插件沿用「一处 import core」的既有写法。 */
@@ -848,7 +886,7 @@ export class PrivHubStore extends Service {
     if (!existsSync(this.usersFile)) {
       const initial = {
         users: [
-          { username: 'admin', password: hashPassword('admin123'), displayName: '系统管理员', role: 'admin', projects: [] },
+          { username: 'admin', password: hashPassword('admin123'), displayName: '系统管理员', role: 'system_admin', projects: [] },
           { username: 'user1', password: hashPassword('user123'), displayName: '普通员工', role: 'user', projects: ['公共', 'A项目'] },
         ],
       }
@@ -871,6 +909,42 @@ export class PrivHubStore extends Service {
     this.users = new Map()
     for (const u of parsed.users) {
       if (u && typeof u.username === 'string') this.users.set(u.username, { ...u, projects: u.projects ?? [] })
+    }
+    /* 三层角色迁移（2026-11-15，幂等）。
+     *
+     * 老库只有 'admin' / 'user' 两种值。直接按新语义解释会让**所有人**都没有
+     * 系统级权限（连升级、存储、审计都点不动），等于把系统锁死。
+     *
+     * 迁移规则（主人口径：**admin 默认就是系统管理员**）：
+     *   · 若库里还没有任何 system_admin：
+     *       ① 优先把用户名为 `admin` 的账号提升为 system_admin（这是本仓的初始账号，
+     *          「admin = 默认系统管理员」就是它）；
+     *       ② 没有 `admin` 这个账号时，退而把最早的那个 admin 提升（保证系统有人管得住）。
+     *   · 其余 'admin' 保持 'admin'（= 主人要的降权：只管业务与用户，
+     *     后续由系统管理员在管理界面里按需设置）；
+     *   · 已经存在 system_admin 的库完全不动（幂等，重启不会反复提权）。
+     * 非法/未知角色值一律按 'user' 处理（最小权限），并记一条告警便于排查。 */
+    if (this.users.size > 0) {
+      const hasSys = [...this.users.values()].some((u) => u.role === 'system_admin')
+      if (!hasSys) {
+        const elevated = this.users.get('admin') ?? [...this.users.values()].find((u) => (u.role as string) === 'admin')
+        if (elevated) {
+          elevated.role = 'system_admin'
+          this.users.set(elevated.username, elevated)
+          console.warn('[core] 三层角色迁移：账号 ' + elevated.username + ' 已提升为系统管理员'
+            + (elevated.username === 'admin'
+              ? '（admin 默认即系统管理员）。'
+              : '（库中没有 admin 账号，改提升最早的管理员；其余管理员仍为「管理员」）。'))
+          void this.saveUsers().catch(() => { /* 落盘失败不阻塞启动，下次启动会再迁一次 */ })
+        }
+      }
+      for (const u of this.users.values()) {
+        const r = u.role as string
+        if (r !== 'system_admin' && r !== 'admin' && r !== 'user') {
+          console.warn('[core] 账号 ' + u.username + ' 的角色值非法（' + r + '），按「用户」处理。')
+          u.role = 'user'
+        }
+      }
     }
     // 旧文件没有 retiredPersonalDirs 字段：视为空（不影响既有账号）
     this.retiredDirs = new Map()
@@ -1195,7 +1269,9 @@ export class PrivHubStore extends Service {
   async visibleProjects(user: UserRecord): Promise<string[]> {
     const own = this.personalDirOf(user)
     const personal = this.personalDirSet()
-    const base = user.role === 'admin'
+    /* 三层角色：管理员与系统管理员都看得到全部项目（业务面一致）；
+     * 差别在「能做什么」，不在「能看见什么」——见 svc-cap/levelFor。 */
+    const base = isManagerRole(user.role)
       ? await this.allProjects()
       : user.projects.filter((p) => this.isValidProjectName(p) && !personal.has(p))
     return own === null ? base : [own, ...base.filter((p) => p !== own)]
@@ -1224,7 +1300,9 @@ export class PrivHubStore extends Service {
     if (!this.isValidProjectName(project)) return false
     const owner = this.ownerOfPersonalDir(project)
     if (owner !== null) return user.username === owner
-    if (user.role === 'admin') return true
+    /* 管理层（管理员 / 系统管理员）都能访问全部**项目**；
+     * 个人空间已在上面按归属者拦掉，管理员一样进不去（既有安全契约）。 */
+    if (isManagerRole(user.role)) return true
     return (user.projects ?? []).includes(project)
   }
 
@@ -1389,12 +1467,28 @@ export class PrivHubStore extends Service {
       if (fi && typeof fi.getByPath === 'function') {
         try {
           const e = fi.getByPath(project, rel) as
-            { source?: unknown; physicalId?: unknown; isDir?: unknown } | undefined
+            { source?: unknown; physicalId?: unknown; isDir?: unknown; volumeId?: unknown } | undefined
           if (e && e.isDir !== true && e.source === 'pool' && typeof e.physicalId === 'string'
             && PHYSICAL_ID_RE.test(e.physicalId)) {
             const ext = extOfName(rel)
-            const poolFile = join(this.fileIndexPoolDir(fi), e.physicalId + (ext ? '.' + ext : ''))
-            if (existsSync(poolFile)) return poolFile
+            const name = e.physicalId + (ext ? '.' + ext : '')
+            /* 多卷：字节可能落在**任意一块盘**上。索引条目里记着 volumeId，
+             * 必须按它去找 —— 只用默认池会让「写到非默认卷的文件」全部读不到
+             * （上传返回 200、列表有、预览/下载一律 404 的根因就是这里）。
+             *
+             * 顺序有意：先按条目的卷；再试默认池（兼容 volumeId 缺失的老条目、
+             * 以及卷被手工删掉后字节其实还在默认池的情形）。 */
+            const vols = this.volumesOrNull()
+            const candidates: string[] = []
+            const vid = typeof e.volumeId === 'string' && e.volumeId !== '' ? e.volumeId : null
+            if (vols && typeof vols.poolDirOf === 'function') {
+              if (vid) candidates.push(join(vols.poolDirOf(vid), name))
+              candidates.push(join(vols.poolDirOf(null), name))
+            }
+            candidates.push(join(this.fileIndexPoolDir(fi), name))
+            for (const c of candidates) {
+              if (existsSync(c)) return c
+            }
           }
         } catch { /* 索引异常 → 回落物理布局 */ }
       }

@@ -143,7 +143,8 @@ export function apply(ctx: Context): void {
     const memberCount = new Map<string, number>()
     try {
       for (const usr of svc.users.values()) {
-        if (!usr || usr.role === 'admin' || !Array.isArray(usr.projects)) continue
+        /* 同上：成员数只数普通用户（管理层对全部项目可见，不该计入各项目成员）。 */
+        if (!usr || usr.role !== 'user' || !Array.isArray(usr.projects)) continue
         for (const p of usr.projects) memberCount.set(p, (memberCount.get(p) || 0) + 1)
       }
     } catch { /* 用户表不可读：成员数留空，不编造 */ }

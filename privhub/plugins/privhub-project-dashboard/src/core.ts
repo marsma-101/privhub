@@ -362,7 +362,9 @@ export async function computeFacts(ctx: { privhub: any }, project: string): Prom
   let members = 0
   try {
     for (const u of ctx.privhub.users.values()) {
-      if (u && u.role !== 'admin' && Array.isArray(u.projects) && u.projects.includes(project)) members++
+      /* 「成员数」数的是**普通用户**成员：管理层（管理员/系统管理员）对全部项目天然可见，
+       * 把他们算进来会让每个项目都凭空多出几个成员（三层角色后 admin 有两个值）。 */
+      if (u && u.role === 'user' && Array.isArray(u.projects) && u.projects.includes(project)) members++
     }
   } catch { members = 0 }
   return { files, dirs, bytes, bytesText: humanBytes(bytes), byExt: byExtArr, members, lastUpdated, recent7d, truncated, scannedAt: Date.now() }

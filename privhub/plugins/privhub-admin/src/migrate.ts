@@ -94,12 +94,21 @@ interface RunState {
   cancelRequested: boolean
   lastPath: string
   lastError: string
+  /**
+   * 本轮搬运的**目标卷**（2026-11-16）。
+   *
+   * `null` = 默认池（库根）。指定了就落到那块卷上（并在索引里写 volumeId）。
+   * 这是「把老库加密文件搬到新加卷」的关键参数 —— 以前没有它，
+   * 字节只能落回默认池，用户在新卷里自然看不到文件。
+   */
+  targetVolumeId: string | null
 }
 
 function emptyRun(): RunState {
   return {
     running: false, kind: null, startedAt: 0, finishedAt: 0,
     target: 0, done: 0, cancelRequested: false, lastPath: '', lastError: '',
+    targetVolumeId: null,
   }
 }
 
@@ -302,6 +311,13 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
     }
     const abs = resolve(given)
 
+    /* 就地迁移：用户填了当前库根自己。
+     * 合法（改造前这是唯一用法），但**必须提示**：它扫描的是当前库本身，
+     * 不是"外部的老库"；已完成过的条目不会重搬，所以再点一次不会看到数字变化。
+     * 2026-11-16 实测：用户以为在搬外部老库，实际填的是当前根，
+     * 而该库在 11/13 就已搬完 → 点了"看起来什么都没发生"。 */
+    const inPlace = abs === resolve(svc.dataRoot)
+
     let st
     try {
       st = await stat(abs)
@@ -343,6 +359,17 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
         root: abs,
         warning: '该目录顶层没有任何子目录（老库通常每个顶层目录是一个项目）。'
           + '扫描会照常进行；若这不是你要的老库，请核对路径。',
+      }
+    }
+    /* 就地迁移的提示（2026-11-16）：这是最常见的误解来源。 */
+    if (inPlace) {
+      return {
+        ok: true,
+        root: abs,
+        warning: '注意：这个路径就是**当前文件库根本身**（就地迁移）。'
+          + '它扫描的是本实例现有的目录，不是外部老库。'
+          + '已经搬过的条目不会重搬，所以「待搬」可能一开始就是 0 —— 那不表示没执行，'
+          + '而是之前已经完成（进度卡片会显示上次完成时间）。',
       }
     }
     return { ok: true, root: abs }
@@ -451,8 +478,25 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
     if (!fi) return
     if (busy) return json(res, 409, { ok: false, error: '已有扫描或迁移在进行中，请稍后重试' })
 
-    const body = await readJsonBody<{ limit?: number; concurrency?: number; gapMs?: number }>(req, res)
+    const body = await readJsonBody<{ limit?: number; concurrency?: number; gapMs?: number; targetVolumeId?: string | null }>(req, res)
     if (body === null) return
+
+    /* 目标卷（2026-11-16）：不传/空 = 默认池（库根），与改造前一致。
+     * 传了就把字节落到那块卷上，并在索引里写 volumeId —— 这才是
+     * 「把老库加密文件搬到新加的卷」真正生效的地方。 */
+    const targetVolumeId = typeof body.targetVolumeId === 'string' && body.targetVolumeId.trim() !== ''
+      ? body.targetVolumeId.trim()
+      : null
+    /* 目标卷必须真实存在且启用，否则搬完也没人找得到。 */
+    if (targetVolumeId !== null) {
+      const vols = (ctx as unknown as { reflect?: { get?: (k: string, s?: boolean) => unknown } })
+        .reflect?.get?.('volumes', false) as
+        { list?: () => Array<{ id?: unknown; enabled?: unknown }> } | null | undefined
+      const list = vols && typeof vols.list === 'function' ? vols.list() : []
+      const hit = Array.isArray(list) ? list.find((v) => v && v.id === targetVolumeId) : undefined
+      if (!hit) return json(res, 400, { ok: false, error: '目标卷不存在：' + targetVolumeId })
+      if (hit.enabled === false) return json(res, 400, { ok: false, error: '目标卷已停用，不能作为搬运目标' })
+    }
 
     const pending = pendingOf(fi)
     if (pending.length === 0) {
@@ -466,7 +510,7 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
       : 0
     const queue = limit > 0 ? pending.slice(0, limit) : pending
 
-    run = { ...emptyRun(), running: true, kind: 'migrate', startedAt: Date.now(), target: queue.length }
+    run = { ...emptyRun(), running: true, kind: 'migrate', startedAt: Date.now(), target: queue.length, targetVolumeId }
     busy = (async () => { await runMigration(fi, queue, { concurrency, gapMs }) })()
       .catch((e) => { run.lastError = '迁移异常中止：' + msgOf(e) })
       .finally(() => {
@@ -511,6 +555,8 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
       cancelRequested: run.cancelRequested,
       lastPath: run.lastPath,
       lastError: run.lastError || null,
+      /* 本轮搬运的目标卷（null = 默认库根）。界面据此显示"搬到哪块盘"。 */
+      targetVolumeId: run.targetVolumeId,
       startedAt: run.startedAt || null,
       finishedAt: run.finishedAt || null,
       scannedAt: progress.scannedAt ?? null,
@@ -590,7 +636,7 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
           if (abs !== null) {
             try { plainLen = await ctx.storage.plainSize(abs) } catch { plainLen = undefined }
           }
-          const ok = await fi.migrateEntry(e.id, (p) => ctx.storage.createReadStream(p), plainLen)
+          const ok = await fi.migrateEntry(e.id, (p) => ctx.storage.createReadStream(p), plainLen, run.targetVolumeId)
           if (ok) {
             progress.migrated++
             /* 成功即消掉历史失败记录：同一文件重试成功后，还留一条"失败"

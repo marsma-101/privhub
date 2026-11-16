@@ -26,12 +26,19 @@ export const inject = ['privhub', 'cap', 'audit']
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
 
-  /* 管理门槛：读的是同一张表里的 `admin.console`（管理员恒通过）。 */
+  /* 管理门槛（三层角色，2026-11-15）：**开关表属于系统本体，只有系统管理员能改**。
+   *
+   * 为什么不用 `admin.console`：那个功能的 minRole 是 admin，管理员天然通过 ——
+   * 等于让「管理员」能改自己头上那张表（可以给自己/给普通用户放权），
+   * 与「系统本体归系统管理员」的口径冲突。这里用 `admin.settings`
+   * （minRole=system_admin）当门槛，与系统设置同一档。
+   *
+   * 读 /cap/me（看自己有什么）仍然对任意登录用户开放，不受此限。 */
   const manager = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
     const u = svc.requireUser(req, res)
     if (!u) return null
-    if (!ctx.cap.can(u, 'admin.console', 'write')) {
-      json(res, 403, { ok: false, error: '仅管理员可管理功能开关' })
+    if (!ctx.cap.can(u, 'admin.settings', 'write')) {
+      json(res, 403, { ok: false, error: '仅系统管理员可管理功能开关' })
       return null
     }
     return u

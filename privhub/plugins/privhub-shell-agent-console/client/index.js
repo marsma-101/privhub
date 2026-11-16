@@ -36,7 +36,7 @@ const AgentConsole = {
     }
   },
   computed: {
-    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     projects() { return (window.PrivHub.nav && window.PrivHub.nav.projectsList) || [] },
     canCreate() { return this.form.name.trim() !== '' && this.form.scopeProject !== '' },
     myKeys() { return (this.info && this.info.myKeys) || [] },

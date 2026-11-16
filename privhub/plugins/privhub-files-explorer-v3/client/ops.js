@@ -20,6 +20,7 @@ document.addEventListener('keydown', (e) => {
     if (store.renameState) { cancelRename(); e.stopPropagation() }
     if (store.newMenu) store.newMenu = false
     if (store.menu) store.menu = false
+    if (store.headMenu) store.headMenu = false
   }
 })
 
@@ -39,20 +40,22 @@ function ctxRelPath() {
   const m = store.ctxMenu
   return m ? relPath(m.project, m.dirPath, m.entry.name) : ''
 }
-/* ⋯ 菜单「详情」：取消弹窗，改为在右侧详情面板显示 */
+/* ⋯ 菜单「详情」：打开右侧边栏的「详情」标签（2026-11-13 二次重排） */
 function openDetail() {
   const m = store.ctxMenu
   closeMenu()
   if (!m) return
   nav.selected = { ...m.entry }
-  nav.rightOpen = true
+  store.sideOpen = true
+  store.sideTab = 'detail'
+  try { localStorage.setItem('privhub_side_open', '1') } catch { /* 忽略 */ }
 }
 /* 权限弹窗（按参数，菜单/右侧详情面板共用） */
 async function openPermFor(entry, project, dirPath) {
   if (!entry) return
   const rel = relPath(project, dirPath, entry.name)
   store.permTarget = { entry, project, path: rel, loading: true, rules: null, error: '' }
-  const isAdmin = AUTH.user && AUTH.user.role === 'admin'
+  const isAdmin = !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager())
   if (!isAdmin) { store.permTarget.loading = false; return }
   try {
     const r = await api('/privhub/api/acl/rules')

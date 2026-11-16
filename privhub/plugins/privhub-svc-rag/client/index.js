@@ -1539,7 +1539,7 @@ const RagView = {
   data() { return { S, isAdmin: false, tab: 'gov' } },
   mounted() {
     const u = window.PrivHub && window.PrivHub.AUTH && window.PrivHub.AUTH.user
-    this.isAdmin = !!(u && u.role === 'admin')
+    this.isAdmin = !!(u && window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager())
     const it = window.PrivHub && window.PrivHub.ragIntent
     if (it && it.tab === 'dup') this.tab = 'dup'
     window.PrivHub.ragIntent = null

@@ -114,9 +114,9 @@ console.log('\n── 单一真源 ──')
 {
   ok(IA.SECTION_DEFS.map((d) => d.id).join(',') === 'files,knowledge,collab,ai',
     '四个类别与既有竖栏一致（新旧导航同源，不会归属漂移）')
-  ok(IA.PROJECT_TABS.map((t) => t.id).join(',') === 'board,tasks,schedule,files',
-    '项目层恰好四个主 tab，顺序为 看板/任务/日程/文件')
-  ok(IA.PROJECT_TABS.map((t) => t.label).join(',') === '看板,任务,日程,文件', '四个 tab 的中文名正确')
+  ok(IA.PROJECT_TABS.map((t) => t.id).join(',') === 'files,board,tasks,schedule',
+    '项目层恰好四个主 tab，顺序为 文件/看板/任务/日程（2026-11-13：进项目先看见文件）')
+  ok(IA.PROJECT_TABS.map((t) => t.label).join(',') === '文件,看板,任务,日程', '四个 tab 的中文名正确')
   ok(IA.tabOfView('search').id === 'files', '搜索归「文件」tab（同族视图不掉高亮）')
   ok(IA.tabOfView('trash').id === 'files', '回收站归「文件」tab')
   ok(IA.tabOfView('favorites').id === 'files', '收藏归「文件」tab')
@@ -131,9 +131,10 @@ console.log('\n── 项目层四 tab ──')
   nav.project = 'AI小说研究'
   nav.activeView = 'dashboard'
   const o = mount(ProjectNav)
-  ok(o.tabs.map((t) => t.id).join(',') === 'board,tasks,schedule,files', '四个 tab 都装得上时全部渲染')
-  ok(o.tabs[0].landing === 'dashboard', '「看板」落到项目看板')
-  ok(o.isTabOn(o.tabs[0]) === true, '当前视图 = 项目看板 → 看板 tab 高亮')
+  ok(o.tabs.map((t) => t.id).join(',') === 'files,board,tasks,schedule', '四个 tab 都装得上时全部渲染（文件在首）')
+  ok(o.tabs[0].landing === 'files', '「文件」落到文件视图（首 tab）')
+  ok(o.tabs.find((t) => t.id === 'board').landing === 'dashboard', '「看板」落到项目看板')
+  ok(o.isTabOn(o.tabs.find((t) => t.id === 'board')) === true, '当前视图 = 项目看板 → 看板 tab 高亮')
   ok(o.currentTab === 'board', 'currentTab 由 activeView 反查（不另存 tab 状态）')
 
   /* 同族视图：高亮不能掉 */
@@ -150,7 +151,7 @@ console.log('\n── 项目层四 tab ──')
   nav.activeView = 'dashboard'
   const y = mount(ProjectNav)
   dispatched = []
-  y.openTab(y.tabs[0])
+  y.openTab(y.tabs.find((t) => t.id === 'board'))
   ok(dispatched.length === 1 && dispatched[0] === 'dashboard',
     '点当前 tab 停在它的落地页（不 toggle 回文件视图）')
 }
@@ -275,8 +276,8 @@ console.log('\n── 个人层「我的」──')
 {
   nav.activeView = 'me'
   const o = mount(MeView)
-  ok(o.tabs.map((t) => t.id).join(',') === 'tasks,schedule,files,prefs',
-    '个人层四个 tab：任务/日程/文件/偏好')
+  ok(o.tabs.map((t) => t.id).join(',') === 'tasks,schedule,files,rules,prefs',
+    '个人层五个 tab：任务/日程/文件/规则/偏好（issue #3 原型个人层含「我的规则」）')
 
   const t0 = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() })()
   const DAY = 86400000
@@ -343,6 +344,75 @@ console.log('\n── 骨架接线 ──')
   }
   ok((mf.barItems || []).some((b) => b.view === 'me' && b.group === 'global'),
     '「我的」有 barItem 入口（进 cap 过滤链，可被管理员统一关掉）')
+}
+
+/* ══════════ 8. L0 原型框架：左 rail + 顶栏 + 内容区（issue #3 样机本体）══════════ */
+console.log('\n── L0 原型框架（左 rail）──')
+{
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const skel = readFileSync(join(ROOT, 'frontend', 'index.html'), 'utf8')
+
+  /* 骨架真的换成了原型的三段框架，而不是只在旧骨架上贴皮 */
+  ok(/class="ph-top"/.test(skel), '骨架顶栏用原型 .ph-top（品牌+身份+偏好）')
+  ok(/class="ph-shell"/.test(skel), '骨架有原型 .ph-shell（左 rail + 内容区）框架')
+  ok(/slotComps\['app-rail'\]/.test(skel), '骨架挂载 app-rail（原型左导航栏）')
+  ok(/class="ph-content"/.test(skel), '内容收进原型 .ph-content 唯一渲染出口')
+  ok(/slotComps\['project-head'\]/.test(skel), '骨架挂载 project-head（项目层头部：返回总览+项目名）')
+
+  /* rail 组件：驾驶舱组（项目总览/我的）+ 管理组（仅 admin）+ 设计哲学注脚 */
+  const railSrc = readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'rail.js'), 'utf8')
+  ok(/from '\.\/ia\.js'/.test(railSrc), 'rail 从 ia.js 引入归组数据（与竖栏/项目导航同源，不另造名单）')
+  ok(/项目总览/.test(railSrc) && /我的/.test(railSrc), 'rail 驾驶舱组含 项目总览 / 我的')
+  ok(/管理控制台/.test(railSrc) && /hasAdmin/.test(railSrc), 'rail 管理组只在 hasAdmin 时渲染（非 admin 不显示，安全契约）')
+  ok(/ph-railnote/.test(railSrc), 'rail 底部有设计哲学注脚（以项目为中心）')
+
+  /* rail 的运行期判定：非 admin 看不到管理入口；驾驶舱组按可用性过滤。
+   * computed 是惰性 getter，必须在 rail 仍是目标名单时读取，读完再还原。 */
+  const Rail = (await import(new URL('../plugins/privhub-shell/client/rail.js', import.meta.url).href)).default
+  const mountRail = (items, role, read) => {
+    const savedRail = rail.slice()
+    const savedUser = AUTH.user
+    rail.splice(0, rail.length, ...items)
+    AUTH.user = { username: 'u', displayName: 'u', role }
+    const o = Rail.data()
+    for (const [k, fn] of Object.entries(Rail.computed || {})) Object.defineProperty(o, k, { get: fn.bind(o), configurable: true })
+    for (const [k, fn] of Object.entries(Rail.methods || {})) o[k] = fn.bind(o)
+    const out = read(o)
+    rail.splice(0, rail.length, ...savedRail)
+    AUTH.user = savedUser
+    return out
+  }
+  const adminRail = mountRail(rail, 'admin', (o) => ({
+    hasAdmin: o.hasAdmin,
+    cockpit: o.cockpit,
+    globalItems: o.globalItems,
+    systemItems: o.systemItems,
+    extraItems: o.extraItems,
+  }))
+  ok(adminRail.hasAdmin === true, 'admin 的 rail 有管理入口')
+  ok(adminRail.cockpit.map((c) => c.view).join(',') === 'home,me', '驾驶舱组 = 项目总览 + 我的（场景入口，不按技术模块）')
+  const userHasAdmin = mountRail(rail.filter((b) => (b.view || b.slot) !== 'admin'), 'user', (o) => o.hasAdmin)
+  ok(userHasAdmin === false, '非 admin 的 rail 不渲染管理入口（不是禁用可见，安全契约）')
+  /* 全局工具组收纳跨项目入口（智能体接入/全局思维导图/设置），一条不删 */
+  const allRailViews = new Set([
+    ...adminRail.cockpit.map((c) => c.view),
+    ...adminRail.globalItems.map((b) => b.view || b.slot),
+    ...adminRail.systemItems.map((b) => b.view || b.slot),
+    ...adminRail.extraItems.map((b) => b.view || b.slot),
+    ...(adminRail.hasAdmin ? ['admin'] : []),
+  ])
+  const globalSystem = rail.filter((b) => ['global', 'system'].includes(b.group) && b.slot !== 'admin-nav')
+  const homeless = globalSystem.filter((b) => !allRailViews.has(b.view || b.slot))
+  ok(homeless.length === 0, `rail 覆盖全部全局/系统入口，无家可归 ${homeless.length} 个${homeless.length ? '：' + homeless.map((b) => b.view || b.slot).join(', ') : ''}`)
+
+  /* manifest 声明了新槽 */
+  const mf = JSON.parse(readFileSync(join(ROOT, 'plugins', 'privhub-shell', 'client', 'manifest.json'), 'utf8'))
+  for (const s of ['app-rail', 'project-head']) {
+    ok((mf.slots || []).includes(s), `manifest 声明了原型新槽 ${s}`)
+  }
 }
 
 console.log('\n========================================================')

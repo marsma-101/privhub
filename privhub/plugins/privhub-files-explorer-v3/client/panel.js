@@ -17,6 +17,7 @@ import { openMenuFor, closeMenu, openDetail, openPerm, doRename, cancelRename, s
 import { loadContent, esc, renderMarkdown } from './content.js'
 import { createViewerSession, HOST_SELECTOR } from './viewers.js'
 import { TreeNodeV3 } from './tree.js'
+import { SidePanel } from './side.js'
 
 /* ================= 内容区布局状态：谁上场谁给（第二步 b） =================
  *
@@ -144,23 +145,30 @@ const PanelV3 = {
   name: 'files-panel-v3',
   data() { return { nav, store, AUTH, pressTimer: null, batchBusy: false, viewerLayout: '', editorLayout: '', fillLayout: '', previewFont: parseFloat(localStorage.getItem('privhub_preview_font') || '13.5') || 13.5 } },
   computed: {
-    /* 中间栏只显示文件（文件夹在左侧目录树管理） */
+    /* 中间栏：文件夹与文件一起呈现（2026-11-13 布局重排，左侧目录树取消）。
+     * 文件夹恒排在文件前（资源管理器惯例），组内按当前排序键排；
+     * 「只看文件夹」开关打开时只留目录。 */
     entries() {
-      const arr = [...nav.entries].filter(e => !e.isDir)
+      let arr = [...nav.entries]
+      if (nav.dirOnly) arr = arr.filter(e => e.isDir)
       const key = nav.sortKey
       const asc = nav.sortAsc ? 1 : -1
       arr.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
         let va, vb
         if (key === 'name') { va = a.name; vb = b.name }
         else if (key === 'size') { va = a.size; vb = b.size }
         else if (key === 'mtime') { va = a.mtime; vb = b.mtime }
+        else if (key === 'type') { va = a.type || ''; vb = b.type || '' }
         else { va = a.name; vb = b.name }
         if (va < vb) return -1 * asc
         if (va > vb) return 1 * asc
-        return 0
+        return a.name.localeCompare(b.name, 'zh-Hans-CN')
       })
       return arr
     },
+    dirCount() { return nav.entries.filter(e => e.isDir).length },
+    fileCount() { return nav.entries.filter(e => !e.isDir).length },
     crumbs() {
       const parts = this.nav.path ? this.nav.path.split('/').filter(Boolean) : []
       const arr = [{ label: this.nav.project, path: '' }]
@@ -198,11 +206,17 @@ const PanelV3 = {
       return t ? t.kind === 'text' && isEditableText(t.name) : false
     },
     isEditFile() { return this.isOfficeFile || this.isMdFile || this.isTextEditFile },
-    /* 详情开关状态：右侧面板打开且正显示当前激活文件 */
+    /* 详情开关状态：右侧边栏开着（按钮高亮 = 边栏在场） */
     detailOpen() {
-      return !!(nav.rightOpen && nav.selected && !nav.selected.isDir && this.activeTab && nav.selected.name === this.activeTab.name)
+      return !!store.sideOpen
     },
-    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    /* 头部「⋯ 整理」菜单里显示的当前排序/视图/筛选文案 */
+    sortLabel() {
+      const m = { name: '名称', size: '大小', type: '类型', mtime: '修改时间' }
+      return (m[nav.sortKey] || '名称') + (nav.sortAsc ? ' ↑' : ' ↓')
+    },
+    viewLabel() { return nav.viewMode === 'list' ? '列表' : '网格' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     /* 内容区布局状态类：**由「谁上场」给出**（第二步 b，见文件头 layoutForAction）。
      * 迁移前的写法硬编码 ['docx','xlsx']（宿主自带插件能力清单）；现在 `viewerLayout`
      * 由 `syncViewer()` 按 viewer 会话的返回值写，宿主不再知道是谁的能力。
@@ -476,18 +490,52 @@ const PanelV3 = {
     detailActive() {
       const t = this.activeTab
       if (!t) return
-      // 内容区「ℹ️ 详情」：右侧详情面板显示该文件
+      // 内容区「ℹ️ 详情」：右侧边栏切到详情标签显示该文件
       nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id || '' }
-      nav.rightOpen = true
+      store.sideOpen = true; store.sideTab = 'detail'
     },
-    /* 内容区头部详情开关：开/关右侧详细信息面板 */
+    /* 详情开关：开/关右侧边栏。打开时智能选标签——有选中项看详情，否则看操作。 */
     detailToggle() {
+      if (store.sideOpen) { store.sideOpen = false; try { localStorage.setItem('privhub_side_open', '0') } catch { /* 忽略 */ }; return }
       const t = this.activeTab
-      if (!t) return
-      if (this.detailOpen) { nav.rightOpen = false; return }
-      nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id || '' }
-      nav.rightOpen = true
+      if (t) nav.selected = { name: t.name, isDir: false, sizeText: t.sizeText, type: t.type, id: t.id || '' }
+      store.sideTab = nav.selected ? 'detail' : 'actions'
+      store.sideOpen = true
+      try { localStorage.setItem('privhub_side_open', '1') } catch { /* 忽略 */ }
     },
+    /* 浏览态：打开当前选中条目（或当前目录）的详情标签 */
+    detailBrowse() {
+      if (!nav.selected) {
+        nav.selected = nav.path
+          ? { name: nav.path.split('/').pop(), isDir: true }
+          : { name: nav.project, isDir: true }
+      }
+      store.sideOpen = true; store.sideTab = 'detail'
+      try { localStorage.setItem('privhub_side_open', '1') } catch { /* 忽略 */ }
+    },
+    /* 边栏收起时的右缘把手：一键唤回（操作/详情） */
+    openSide() {
+      store.sideTab = nav.selected ? 'detail' : 'actions'
+      store.sideOpen = true
+      try { localStorage.setItem('privhub_side_open', '1') } catch { /* 忽略 */ }
+    },
+    /* ---- 头部「⋯ 整理」菜单：排序 / 视图 / 筛选 / 刷新合并于此 ---- */
+    toggleHeadMenu() { store.headMenu = !store.headMenu },
+    setSort(key) { nav.toggleSort(key) },
+    sortArrow(key) { return nav.sortKey === key ? (nav.sortAsc ? '↑' : '↓') : '' },
+    setViewMode(m) { nav.setViewMode(m) },
+    toggleDirOnly() {
+      nav.dirOnly = !nav.dirOnly
+      nav.checked = {}
+      try { localStorage.setItem('privhub_dir_only', nav.dirOnly ? '1' : '0') } catch { /* 忽略 */ }
+    },
+    refreshDir() { store.headMenu = false; if (nav.project !== null) void nav.openDir(nav.project, nav.path) },
+    goUp() {
+      const p = nav.path || ''
+      const parent = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : ''
+      void nav.openDir(nav.project, parent)
+    },
+    gotoCrumb(path) { void nav.gotoCrumb(path) },
     /* ---- 预览字体大小（独立于页面字体） ---- */
     applyPreviewFont() {
       document.documentElement.style.setProperty('--v3-preview-font', this.previewFont + 'px')
@@ -749,11 +797,10 @@ const PanelV3 = {
       const t = store.tabs.find(x => x.key === store.activeKey)
       if (t && (t.kind === 'md' || (t.kind === 'text' && isEditableText(t.name)))) void loadContent(t.key)
       if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() }
-      // openDir 会清零选中/右侧详情；标签仍激活 → 重新选中当前文件，详情面板保持打开
+      // openDir 会清零选中；标签仍激活 → 重新选中当前文件（详情下拉不自动弹开，由用户点 ℹ️ 打开）
       const tab = store.tabs.find(x => x.key === store.activeKey)
       if (tab && nav.project === tab.project) {
         nav.selected = { name: tab.name, isDir: false, sizeText: tab.sizeText, type: tab.type, id: tab.id || '' }
-        nav.rightOpen = true
       }
     })
     this._offTrash = bus.on('trash:changed', () => { if (nav.project !== null) { void nav.openDir(nav.project, nav.path); void refreshTree() } })
@@ -810,7 +857,10 @@ const PanelV3 = {
           <div style="flex:1"></div>
         </div>
         <div v-if="activeTab" class="v3-tabops">
-          <button class="v3-op-btn" :title="detailOpen ? '关闭右侧详细信息' : '打开右侧详细信息'" @click="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
+          <!-- 编辑器操作舱位：edit-md 把「编辑/下载/分屏」三个下拉 teleport 到这里，
+               与标签同一行（2026-11-13 合并两层工具条）。非编辑态时为空、不占位。 -->
+          <div class="v3-editor-ops"></div>
+          <button class="v3-op-btn" :class="{ on: detailOpen }" :title="detailOpen ? '关闭详情菜单' : '打开文件详情菜单（信息 / 标签 / 引用链 / 操作）'" @click="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
           <button class="v3-op-btn" title="更多（字号 / 关闭标签 / 文件位置）" @click.stop="toggleMenu">⋯</button>
           <div v-if="store.menu" class="ctx-mask" @click="store.menu = false"></div>
           <div v-if="store.menu" class="v3-menu" @click.stop>
@@ -830,7 +880,9 @@ const PanelV3 = {
         </div>
       </div>
 
-      <!-- 主区：有激活标签 → 内容区；否则 → 目录浏览 -->
+      <!-- 主区：有激活标签 → 内容区；否则 → 目录浏览。
+           右侧可伸缩边栏（操作/详情）与主区并排，两种形态共用（2026-11-13 二次重排）。 -->
+      <div class="v3-main">
       <template v-if="activeTab && content && content.key === activeTab.key">
         <div :class="contentClass">
           <!-- 内容区不再有任何顶栏/悬浮条：文件名在标签行，操作也在标签行 -->
@@ -908,92 +960,152 @@ const PanelV3 = {
       </template>
 
       <template v-else>
-        <div class="main-head">
-          <span class="breadcrumb">
-            <span v-for="(c, i) in crumbs" :key="i">
-              <a v-if="i < crumbs.length - 1" @click="nav.gotoCrumb(c.path)" style="cursor:pointer">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</a>
-              <span v-else style="color:var(--text)">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</span>
-              <span v-if="i < crumbs.length - 1" class="crumb"> / </span>
-            </span>
-          </span>
-          <span class="crumb" style="margin-left:8px">共 {{ entries.length }} 个文件</span>
-          <span v-if="checkedCount() > 0" class="crumb" style="margin-left:8px;color:var(--accent)">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
-          <span class="spacer"></span>
-          <button v-if="nav.project" class="icon-btn" style="margin-left:4px" title="查重整个项目：同名同大小 + 内容一字不差（合并查重）" @click="openDup">🔁 查重</button>
-          <template v-if="checkedCount() > 0">
-            <button class="icon-btn" @click="selectAll">☑ 全选/取消</button>
-            <button class="icon-btn" @click="clearChecked">取消选择</button>
-            <button class="icon-btn" :disabled="batchBusy" @click="batchDownload">{{ batchBusy ? '处理中…' : '⬇ 下载所选' }}</button>
-            <button class="icon-btn" :disabled="batchBusy" @click="batchMove">{{ batchBusy ? '处理中…' : '📦 移动所选' }}</button>
-            <button class="icon-btn" style="color:var(--danger)" :disabled="batchBusy" @click="batchDelete">{{ batchBusy ? '处理中…' : '🗑 删除所选 (' + checkedCount() + ')' }}</button>
-          </template>
-          <span v-if="nav.uploading" class="crumb">上传中 {{ nav.uploadDone }}/{{ nav.uploadTotal }}…</span>
-        </div>
-        <div class="main-body">
-          <div v-if="nav.listLoading" class="empty">加载中…</div>
-          <div v-else-if="entries.length === 0" class="empty">
-            <div style="font-size:32px;margin-bottom:10px">📂</div>
-            <div style="font-size:13.5px;color:var(--text)">此文件夹下没有文件</div>
-            <div style="font-size:12px;color:var(--muted);margin:6px 0 14px">上传文件，或从左侧目录树管理文件夹</div>
-            <button class="btn btn-primary" style="width:auto" @click="doAddFile">⬆ 上传文件</button>
-            <button class="icon-btn" style="margin-left:8px" @click="doSubmitMkdir">📁 新建文件夹</button>
-          </div>
-          <div v-else class="file-table-wrap">
-            <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
-              <span><input type="checkbox" @click="selectAll" /></span>
-              <span class="col-name" style="cursor:pointer" @click="nav.toggleSort('name')" title="按名称排序">名称{{ nav.sortKey==='name' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
-              <span class="col-size" style="cursor:pointer" @click="nav.toggleSort('size')" title="按大小排序">大小{{ nav.sortKey==='size' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
-              <span class="col-type">类型</span>
-              <span class="col-time" style="cursor:pointer" @click="nav.toggleSort('mtime')" title="按修改时间排序">修改时间{{ nav.sortKey==='mtime' ? (nav.sortAsc?' ↑':' ↓') : '' }}</span>
-              <span></span>
-            </div>
-            <div
-              v-for="e in entries" :key="e.name"
-              class="file-table-row" :class="{ sel: nav.selected && nav.selected.name === e.name }"
-              style="grid-template-columns:28px 1fr 90px 120px 110px 26px"
-              @click="onEntryClick(e)"
-              @dblclick="onEntryDbl(e)"
-              @mousedown="startPress(e, $event.currentTarget)"
-              @mouseup="cancelPress"
-              @mouseleave="cancelPress"
-              @contextmenu.prevent="openCtxMenu(e, $event)"
-            >
-              <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
-              <span class="col-name">
-                <template v-if="store.renameState && store.renameState.entry.name === e.name && !e.isDir">
-                  <span style="flex:1;min-width:0;display:flex;flex-direction:column">
-                    <input
-                      v-model="store.renameState.value"
-                      @keyup.enter="submitRename"
-                      @keyup.esc="cancelRename"
-                      @click.stop
-                      @dblclick.stop
-                      @mousedown.stop
-                      style="width:100%;padding:3px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
-                    />
-                    <!-- 撞名提示（W-§3.4）：只提示不拦提交（同名仍由 rename 接口拒绝） -->
-                    <span
-                      v-if="renameCollision && renameCollision.level === 'exact'"
-                      style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-                      :title="'同目录已有「' + renameCollision.conflict + '」'"
-                    >⚠ 同目录已有「{{ renameCollision.conflict }}」</span>
-                    <span
-                      v-else-if="renameCollision && renameCollision.level === 'prefix'"
-                      style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-                      :title="'与「' + renameCollision.conflict + '」前 ' + renameCollision.n + ' 字相同，可能撞名'"
-                    >⚠ 与「{{ renameCollision.conflict }}」前 {{ renameCollision.n }} 字相同，可能撞名</span>
-                  </span>
-                </template>
-                <template v-else><span class="tico">{{ fileIcon(e.type) }}</span>{{ e.name }}</template>
+        <!-- 浏览态（2026-11-13 二次重排）：中间＝文件夹+文件列表。
+             头部只留：面包屑 / 计数 / 上级 / 批量条（选中才出现）/ ⋯整理 / ️详情。
+             上传·新建·查重等动作收进右侧可伸缩边栏「操作」标签；查重不再单独占头部按钮。 -->
+        <div class="v3-files">
+          <div class="v3-files-main">
+            <div class="main-head v3-files-head">
+              <span class="breadcrumb">
+                <span v-for="(c, i) in crumbs" :key="i">
+                  <a v-if="i < crumbs.length - 1" @click="gotoCrumb(c.path)" style="cursor:pointer">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</a>
+                  <span v-else style="color:var(--text)">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</span>
+                  <span v-if="i < crumbs.length - 1" class="crumb"> / </span>
+                </span>
               </span>
-              <span class="col-size">{{ e.sizeText }}</span>
-              <span class="col-type">{{ e.type }}</span>
-              <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
-              <span class="v3-row-dots" title="操作" @click="onDots(e, $event)">⋯</span>
+              <span class="crumb v3-files-count" v-if="!nav.listLoading">{{ dirCount }} 文件夹 · {{ fileCount }} 文件</span>
+              <span class="spacer"></span>
+              <button v-if="nav.path" class="v3-op-btn" title="返回上级目录" @click="goUp">↑ 上级</button>
+              <div class="v3-headops">
+                <button class="v3-op-btn" :class="{ on: store.headMenu }" title="整理：排序 / 视图 / 筛选 / 刷新" @click.stop="toggleHeadMenu">⋯ 整理</button>
+                <div v-if="store.headMenu" class="ctx-mask" @click="store.headMenu = false"></div>
+                <div v-if="store.headMenu" class="v3-menu v3-head-menu" @click.stop>
+                  <div class="v3-menu-row"><span>排序</span>
+                    <span class="v3-fs" :class="{ on: nav.sortKey === 'name' }" @click="setSort('name')">名称</span>
+                    <span class="v3-fs" :class="{ on: nav.sortKey === 'size' }" @click="setSort('size')">大小</span>
+                    <span class="v3-fs" :class="{ on: nav.sortKey === 'type' }" @click="setSort('type')">类型</span>
+                    <span class="v3-fs" :class="{ on: nav.sortKey === 'mtime' }" @click="setSort('mtime')">时间</span>
+                  </div>
+                  <div class="v3-menu-item" @click="setSort(nav.sortKey)">{{ nav.sortAsc ? '↓ 改为降序' : '↑ 改为升序' }}<span class="v3-menu-k">{{ sortLabel }}</span></div>
+                  <div class="v3-menu-sep"></div>
+                  <div class="v3-menu-row"><span>视图</span>
+                    <span class="v3-fs" :class="{ on: nav.viewMode === 'grid' }" @click="setViewMode('grid')">▦ 网格</span>
+                    <span class="v3-fs" :class="{ on: nav.viewMode === 'list' }" @click="setViewMode('list')">☰ 列表</span>
+                  </div>
+                  <div class="v3-menu-sep"></div>
+                  <div class="v3-menu-item" @click="toggleDirOnly">{{ nav.dirOnly ? '✓ ' : '' }}只看文件夹</div>
+                  <div class="v3-menu-item" @click="refreshDir">🔄 刷新目录</div>
+                </div>
+              </div>
+              <button class="v3-op-btn" :class="{ on: detailOpen }" title="打开 / 收起右侧边栏（操作 / 详情）" @click.stop="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
+            </div>
+
+            <!-- 批量操作条：仅选中时出现（下载 / 移动 / 删除 / 全选 / 取消） -->
+            <div v-if="checkedCount() > 0" class="v3-batchbar">
+              <span class="v3-batchbar-n">已选 {{ checkedCount() }} 项{{ checkedSizeText() ? ' · ' + checkedSizeText() : '' }}</span>
+              <button class="v3-op-btn" @click="selectAll">☑ 全选/取消</button>
+              <button class="v3-op-btn" :disabled="batchBusy" @click="batchDownload">{{ batchBusy ? '处理中…' : '⬇ 下载' }}</button>
+              <button class="v3-op-btn" :disabled="batchBusy" @click="batchMove">{{ batchBusy ? '处理中…' : '📦 移动' }}</button>
+              <button class="v3-op-btn danger" :disabled="batchBusy" @click="batchDelete">{{ batchBusy ? '处理中…' : '🗑 删除' }}</button>
+              <span class="spacer"></span>
+              <button class="v3-op-btn" @click="clearChecked">✕ 取消选择</button>
+            </div>
+            <div v-if="nav.uploading" class="v3-batchbar"><span class="v3-batchbar-n">⬆ 上传中 {{ nav.uploadDone }}/{{ nav.uploadTotal }}…</span></div>
+
+            <div class="main-body v3-files-body">
+              <div v-if="nav.listLoading" class="empty">加载中…</div>
+              <div v-else-if="entries.length === 0" class="empty">
+                <div style="font-size:32px;margin-bottom:10px">📂</div>
+                <div style="font-size:13.5px;color:var(--text)">{{ nav.dirOnly ? '此目录下没有文件夹' : '此文件夹为空' }}</div>
+                <div style="font-size:12px;color:var(--muted);margin:6px 0 14px">用右侧「上传文件 / 上传文件夹 / 新建文件夹」添加内容，或直接拖拽文件到页面</div>
+                <button class="btn btn-primary" style="width:auto" @click="doAddFile">⬆ 上传文件</button>
+                <button class="icon-btn" style="margin-left:8px" @click="doSubmitMkdir">📁 新建文件夹</button>
+              </div>
+
+              <!-- 网格视图：文件夹与文件一起呈现 -->
+              <div v-else-if="nav.viewMode === 'grid'" class="file-list">
+                <div
+                  v-for="e in entries" :key="e.name"
+                  class="file-card" :class="{ sel: isChecked(e.name) || (nav.selected && nav.selected.name === e.name), dir: e.isDir }"
+                  @click="onEntryClick(e)"
+                  @dblclick="onEntryDbl(e)"
+                  @contextmenu.prevent="openCtxMenu(e, $event)"
+                  @mousedown="startPress(e, $event.currentTarget)"
+                  @mouseup="cancelPress"
+                  @mouseleave="cancelPress"
+                >
+                  <span class="v3-card-check" @click.stop><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" /></span>
+                  <div class="file-ico">{{ fileIcon(e.type, e.isDir) }}</div>
+                  <div class="file-name">{{ e.name }}</div>
+                  <div class="file-meta">{{ e.isDir ? '文件夹' : e.sizeText }} · {{ e.mtime ? e.mtime.replace('T', ' ').slice(5, 16) : '—' }}</div>
+                  <span class="v3-row-dots" title="操作" @click.stop="onDots(e, $event)">⋯</span>
+                </div>
+              </div>
+
+              <!-- 列表视图 -->
+              <div v-else class="file-table-wrap">
+                <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
+                  <span><input type="checkbox" :checked="checkedCount() > 0 && checkedCount() === entries.length" @click="selectAll" /></span>
+                  <span class="col-name" style="cursor:pointer" @click="setSort('name')" title="按名称排序">名称{{ sortArrow('name') }}</span>
+                  <span class="col-size" style="cursor:pointer" @click="setSort('size')" title="按大小排序">大小{{ sortArrow('size') }}</span>
+                  <span class="col-type" style="cursor:pointer" @click="setSort('type')" title="按类型排序">类型{{ sortArrow('type') }}</span>
+                  <span class="col-time" style="cursor:pointer" @click="setSort('mtime')" title="按修改时间排序">修改时间{{ sortArrow('mtime') }}</span>
+                  <span></span>
+                </div>
+                <div
+                  v-for="e in entries" :key="e.name"
+                  class="file-table-row" :class="{ sel: isChecked(e.name) || (nav.selected && nav.selected.name === e.name), dir: e.isDir }"
+                  style="grid-template-columns:28px 1fr 90px 120px 110px 26px"
+                  @click="onEntryClick(e)"
+                  @dblclick="onEntryDbl(e)"
+                  @mousedown="startPress(e, $event.currentTarget)"
+                  @mouseup="cancelPress"
+                  @mouseleave="cancelPress"
+                  @contextmenu.prevent="openCtxMenu(e, $event)"
+                >
+                  <span><input type="checkbox" :checked="isChecked(e.name)" @click="toggleCheck(e, $event)" style="cursor:pointer" /></span>
+                  <span class="col-name">
+                    <template v-if="store.renameState && store.renameState.entry.name === e.name">
+                      <span style="flex:1;min-width:0;display:flex;flex-direction:column">
+                        <input
+                          v-model="store.renameState.value"
+                          @keyup.enter="submitRename"
+                          @keyup.esc="cancelRename"
+                          @click.stop
+                          @dblclick.stop
+                          @mousedown.stop
+                          style="width:100%;padding:3px 6px;border-radius:4px;border:1px solid var(--accent);background:var(--bg);color:var(--text);font-size:12.5px;outline:none"
+                        />
+                        <!-- 撞名提示（W-§3.4）：只提示不拦提交（同名仍由 rename 接口拒绝） -->
+                        <span
+                          v-if="renameCollision && renameCollision.level === 'exact'"
+                          style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                          :title="'同目录已有「' + renameCollision.conflict + '」'"
+                        >⚠ 同目录已有「{{ renameCollision.conflict }}」</span>
+                        <span
+                          v-else-if="renameCollision && renameCollision.level === 'prefix'"
+                          style="margin-top:2px;font-size:11px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                          :title="'与「' + renameCollision.conflict + '」前 ' + renameCollision.n + ' 字相同，可能撞名'"
+                        >⚠ 与「{{ renameCollision.conflict }}」前 {{ renameCollision.n }} 字相同，可能撞名</span>
+                      </span>
+                    </template>
+                    <template v-else><span class="tico">{{ fileIcon(e.type, e.isDir) }}</span>{{ e.name }}</template>
+                  </span>
+                  <span class="col-size">{{ e.isDir ? '—' : e.sizeText }}</span>
+                  <span class="col-type">{{ e.isDir ? '文件夹' : e.type }}</span>
+                  <span class="col-time">{{ e.mtime ? e.mtime.replace('T', ' ').slice(0, 16) : '—' }}</span>
+                  <span class="v3-row-dots" title="操作" @click.stop="onDots(e, $event)">⋯</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </template>
+
+      <!-- 右侧可伸缩边栏：操作 / 详情 两个标签（side.js），与主区并排，两种形态共用 -->
+      <v3-side></v3-side>
+      <button v-if="!store.sideOpen" class="v3-side-reopen" title="打开边栏（操作 / 详情）" @click="openSide">⚡</button>
+      </div>
 
       <!-- ⋯ / 右键 / 长按 共用菜单 -->
       <div v-if="store.ctxMenu" class="ctx-mask" @click="closeMenu"></div>
@@ -1026,10 +1138,10 @@ const PanelV3 = {
           <div class="modal-body">
             <div v-if="store.permTarget.loading" style="color:var(--muted);font-size:12.5px;padding:10px 0">加载中…</div>
             <template v-else>
-              <div class="kv"><span class="k">当前用户</span><span>{{ AUTH.user.username }}（{{ AUTH.user.role === 'admin' ? '管理员' : '普通用户' }}）</span></div>
+              <div class="kv"><span class="k">当前用户</span><span>{{ AUTH.user.username }}（{{ (window.PrivHub && window.PrivHub.roleLabel) ? window.PrivHub.roleLabel(AUTH.user.role) : AUTH.user.role }}）</span></div>
               <div class="kv"><span class="k">项目可见</span><span>{{ (nav.projectsList || []).includes(store.permTarget.project) ? '✅ 可访问' : '⛔ 不可访问' }}</span></div>
               <div style="margin-top:12px;font-size:12.5px;color:var(--muted)">
-                <template v-if="AUTH.user.role === 'admin'">
+                <template v-if="window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()">
                   以下为该项目/路径生效的 ACL 规则：
                   <div v-if="store.permTarget.rules && store.permTarget.rules.length" style="margin-top:8px">
                     <div v-for="(r, i) in store.permTarget.rules" :key="i" class="kv">
@@ -1114,6 +1226,6 @@ PanelV3.computed.isTextMenu = function () {
   return isEditableText(m.entry.name)
 }
 
-PanelV3.components = { 'v3-tree-node': TreeNodeV3 }
+PanelV3.components = { 'v3-tree-node': TreeNodeV3, 'v3-side': SidePanel }
 
 export { PanelV3, layoutForAction }

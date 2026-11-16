@@ -9,7 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { basename } from 'node:path'
-import { json, readBody, hashPassword } from '../../privhub-core/src/index'
+import { json, readBody, hashPassword, isRole, roleAtLeast } from '../../privhub-core/src/index'
 import { registerLegacyMigration } from './migrate'
 
 export const name = 'privhub-admin'
@@ -86,7 +86,34 @@ export function apply(ctx: Context): void {
       renamed = r
     }
 
-    if (body.role === 'admin' || body.role === 'user') rec.role = body.role
+    /* 角色变更（三层，2026-11-15）。
+     *
+     * 两条防呆，都是为了不让人把自己锁在门外：
+     *   ① 只有**系统管理员**能把别人设成 system_admin 或改动 system_admin 账号
+     *      —— 否则一个管理员就能给自己提权到系统级，三层形同虚设；
+     *   ② 不能改自己的角色 —— 手滑把自己降成用户后，当前会话立刻失去管理入口，
+     *      还得去改文件才能恢复。
+     * 「管理员」与「用户」之间的互转只需要 admin.users（管理员即可）。 */
+    if (typeof body.role === 'string') {
+      if (!isRole(body.role)) return json(res, 400, { ok: false, error: '角色只能是 system_admin / admin / user' })
+      const actorIsSystem = roleAtLeast(u.role, 'system_admin')
+      const targetIsSystem = rec.role === 'system_admin'
+      const wantSystem = body.role === 'system_admin'
+      if ((wantSystem || targetIsSystem) && !actorIsSystem) {
+        return json(res, 403, { ok: false, error: '只有系统管理员可以设置或修改「系统管理员」角色' })
+      }
+      if (username === u.username && body.role !== rec.role) {
+        return json(res, 400, { ok: false, error: '不能修改自己的角色（会立刻失去管理入口）；请让另一位系统管理员操作' })
+      }
+      /* 库中至少保留一位系统管理员：不允许把最后一位降级/改走。 */
+      if (targetIsSystem && body.role !== 'system_admin') {
+        const sysCount = [...svc.users.values()].filter((x) => x.role === 'system_admin').length
+        if (sysCount <= 1) {
+          return json(res, 409, { ok: false, error: '至少要保留一位系统管理员，不能降级最后一位' })
+        }
+      }
+      rec.role = body.role
+    }
     if (Array.isArray(body.projects)) {
       const names = (body.projects as unknown[]).filter((p): p is string => typeof p === 'string')
       rec.projects = [...new Set(names)]

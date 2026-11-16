@@ -113,7 +113,7 @@ const TreeV3 = {
   name: 'files-tree-v3',
   data() { return { nav, store } },
   computed: {
-    isAdmin() { return AUTH.user && AUTH.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
     rootChildren() {
       const n = treeOf(nav.project, '')
       return n ? n.children : []

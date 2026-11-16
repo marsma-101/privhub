@@ -62,11 +62,19 @@ const ROUTES = [
    * 为什么单独一页而不是塞进「存储迁移」：两者解决的问题不同 ——
    * 迁移是「把老库搬进新布局」（一次性），卷管理是「决定字节落在哪块盘」
    * （长期运维）。混在一起会让用户以为挂卷也在搬老数据。
-   * 接口由 privhub-svc-volumes 提供，本页自渲染（builtin）。 */
-  { key: 'ops/storage', label: '存储卷', short: '存储卷', section: 'ops', icon: '🗄️', view: '', builtin: 'storage', adminOnly: true },
-  /* 存储迁移（v6 改造）：老库只读扫描 → 建索引 → 空闲慢搬到新扁平池。
-   * 本页由本插件自渲染（builtin），不依赖 slot；接口由 privhub-admin 提供。 */
-  { key: 'ops/migrate', label: '存储迁移', short: '存储迁移', section: 'ops', icon: '📦', view: '', builtin: 'migrate', adminOnly: true },
+   * 接口由 privhub-svc-volumes 提供，本页自渲染（builtin）。
+   *
+   * 2026-11-16（主人）：两块**合并成一页**。原判断「混在一起会误解」已用另一种
+   * 方式解决 —— 合并后的页分成三段，各自标题写明它是干什么的（不是一锅炖）：
+   *   ① 数据在哪：卷列表（含系统库根）
+   *   ② 数据什么形态：明文 / 加密（这是两块原本都会暗含、却都没说清的事）
+   *   ③ 数据怎么搬：老库迁移 + 冷热搬移
+   * 这样用户在一页里就能回答「我的数据在哪、是不是加密的、要不要搬」，
+   * 而不是在两个页面之间来回对照（原先正是最容易配错的地方）。 */
+  { key: 'ops/storage', label: '存储', short: '存储', section: 'ops', icon: '🗄️', view: '', builtin: 'storage', adminOnly: true },
+  /* 存储迁移已并入 ops/storage（第 ③ 段）。保留这个 key 作为跳转别名，
+   * 避免旧书签/旧链接 404；它指向同一页。 */
+  { key: 'ops/migrate', label: '存储迁移', short: '存储迁移', section: 'ops', icon: '📦', view: '', builtin: 'storage', adminOnly: true, hidden: true },
   /* 系统自检（v6 改造）：扁平存储把「文件在哪」搬进了主索引，索引与磁盘
    * 可能不一致而两边单独看都正常。这一页主动扫出这类不一致并能一键修复，
    * 让问题在程序内被发现，而不是等用户点到那个具体文件才报错。 */
@@ -148,7 +156,9 @@ function isValidKey(key) { return !!ROUTE_MAP[key] }
 function navModel() {
   return SECTIONS.map((s) => ({
     ...s,
-    items: ROUTES.filter((r) => r.section === s.id).map((r) => ({
+    /* `hidden:true` 的条目不进侧栏，但仍可通过 hash 直达 ——
+     * 用于「已合并进别处的旧入口」保留旧书签不 404（如 ops/migrate → 存储页）。 */
+    items: ROUTES.filter((r) => r.section === s.id && r.hidden !== true).map((r) => ({
       ...r,
       available: isAvailable(r),
       pending: isPending(r),

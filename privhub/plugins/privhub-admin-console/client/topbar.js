@@ -25,7 +25,12 @@ const AdminTopbar = {
     user() { return this.auth.user || {} },
     displayName() { return this.user.displayName || this.user.username || '管理员' },
     initial() { return this.displayName ? this.displayName.slice(0, 1) : '管' },
-    isAdmin() { return this.user.role === 'admin' },
+    isAdmin() { return !!(window.PrivHub && window.PrivHub.isManager && window.PrivHub.isManager()) },
+    /** 三层角色的徽标文案（此处只有管理层会看到管理控制台，故只有两种）。 */
+    roleBadgeText() {
+      if (window.PrivHub && window.PrivHub.isSystemAdmin && window.PrivHub.isSystemAdmin()) return '🛡 系统管理员'
+      return this.isAdmin ? '👑 管理员' : '👤 用户'
+    },
   },
   methods: {
     setCollapsed,
@@ -66,7 +71,7 @@ const AdminTopbar = {
       </form>
 
       <div class="ad-topbar-right">
-        <span class="ad-role-badge" :class="{ admin: isAdmin }">{{ isAdmin ? '👑 管理员' : '👤 普通用户' }}</span>
+        <span class="ad-role-badge" :class="{ admin: isAdmin }">{{ roleBadgeText }}</span>
         <button class="ad-btn ad-btn-sm" title="重新加载当前管理页数据" @click="refresh">↻ 刷新</button>
         <button class="ad-btn ad-btn-sm" title="返回文件浏览（下次进入管理控制台会回到当前位置）" @click="backToFiles">← 返回文件</button>
         <div class="ad-me" :title="displayName">

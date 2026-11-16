@@ -1,16 +1,20 @@
 /**
- * me — L2 个人层「我的」（任务 / 日程 / 文件 / 偏好）
+ * me — L2 个人层「我的」（任务 / 日程 / 文件 / 规则 / 偏好）
  *
  * ## 定位
  * 个人层是**项目层的派生镜像**，不是第二个数据中心：
  * 任务与日程的唯一来源仍是各项目的任务看板，这里只是把「指派给我的」横切出来。
- * 所以本组件**不写任何数据**，也不另存一份任务副本。
+ * 所以本组件**不写任务/日程数据**，也不另存一份任务副本。
  *
- * ## 四个 tab（与 issue #3 的个人层一致，按本项目实际落地）
- *   我的任务  未完成优先 + 按截止排序，点一行直接进那个项目的任务看板
+ * ## 五个 tab（issue #3 原型个人层 + 本项目实际）
+ *   我的任务  未完成优先 + 按截止排序，点一行直接进那个项目的任务看板（只读镜像，带来源回链）
  *   我的日程  同一份任务按日期分组（逾期 / 今天 / 未来 / 无日期），不另建日历数据
  *   我的文件  本人目录（真实姓名，按普通文件夹对待）顶层条目，点开进文件视图
- *   我的偏好  主题等个人设置，即时生效、无保存按钮
+ *   我的规则  自由文本规则 + 保存（原型个人层第 4 tab；仅本人可读写，后端 owner-only）
+ *   我的偏好  主题 / 导航形态等个人设置，即时生效、无保存按钮
+ *
+ * ## 视觉
+ * 按交互原型走（.ph-me-* 样式见 ./proto-styles.js）：渐变实底 tab、卡片面板。
  *
  * ## 两条口径
  * · 数据缺失显示「—」，不显示 0（没统计 ≠ 没有）。
@@ -19,7 +23,7 @@
  * @module privhub-shell/client/me
  */
 
-import './nav-styles.js'
+import './proto-styles.js'
 
 const { api, nav, AUTH, THEME, applyTheme, toast } = window.PrivHub
 
@@ -28,6 +32,7 @@ const TABS = [
   { id: 'tasks', label: '我的任务', icon: '📋' },
   { id: 'schedule', label: '我的日程', icon: '📅' },
   { id: 'files', label: '我的文件', icon: '🗂️' },
+  { id: 'rules', label: '我的规则', icon: '📝' },
   { id: 'prefs', label: '我的偏好', icon: '🎛️' },
 ]
 
@@ -49,6 +54,12 @@ const MeView = {
       filesErr: '',
       filesLoading: false,
       now: Date.now(),
+      /* 我的规则：自由文本，仅本人可读写（后端 /privhub/api/me/rules owner-only） */
+      rules: '',
+      rulesLoading: false,
+      rulesSaving: false,
+      rulesErr: '',
+      rulesLoaded: false,
     }
   },
   computed: {
@@ -90,7 +101,10 @@ const MeView = {
   },
   watch: {
     /* 切到「我的文件」才去列目录：首屏不必为一个可能不看的 tab 付一次 IO。 */
-    tab(v) { if (v === 'files' && this.personal && !this.files.length && !this.filesLoading) this.loadFiles() },
+    tab(v) {
+      if (v === 'files' && this.personal && !this.files.length && !this.filesLoading) this.loadFiles()
+      if (v === 'rules' && !this.rulesLoaded && !this.rulesLoading) this.loadRules()
+    },
   },
   async mounted() {
     await this.load()
@@ -125,6 +139,33 @@ const MeView = {
         this.filesErr = (e && e.message) || '目录读取失败'
       } finally {
         this.filesLoading = false
+      }
+    },
+    /* ---- 我的规则：读 / 存（owner-only，后端只认当前登录者）---- */
+    async loadRules() {
+      this.rulesLoading = true
+      this.rulesErr = ''
+      try {
+        const r = await api('/privhub/api/me/rules')
+        if (r && r.ok) { this.rules = r.rules || ''; this.rulesLoaded = true }
+        else this.rulesErr = (r && r.error) || '规则读取失败'
+      } catch (e) {
+        this.rulesErr = (e && e.message) || '规则读取失败'
+      } finally {
+        this.rulesLoading = false
+      }
+    },
+    async saveRules() {
+      this.rulesSaving = true
+      this.rulesErr = ''
+      try {
+        const r = await api('/privhub/api/me/rules', { method: 'POST', body: JSON.stringify({ rules: this.rules }) })
+        if (r && r.ok) { this.rulesLoaded = true; if (typeof toast === 'function') toast('规则已保存') }
+        else this.rulesErr = (r && r.error) || '规则保存失败'
+      } catch (e) {
+        this.rulesErr = (e && e.message) || '规则保存失败'
+      } finally {
+        this.rulesSaving = false
       }
     },
     setTab(id) { this.tab = id },
@@ -183,73 +224,73 @@ const MeView = {
     },
   },
   template: `
-    <div class="me-root ph-scroll">
-      <div class="me-head">
-        <span class="big">我的</span>
-        <span class="sub" v-if="userName">{{ userName }} · 任务与日程来自各项目，这里只把指派给你的横切出来</span>
+    <div class="ph-me ph-scroll">
+      <div class="ph-vhead">
+        <h2>🗂 我的<template v-if="userName"> · {{ userName }}</template></h2>
+        <span class="sub">任务与日程来自各项目，这里只把指派给你的横切出来；规则与偏好仅本人可见</span>
       </div>
 
-      <div class="me-tabs" role="tablist">
+      <div class="ph-me-tabs" role="tablist">
         <button
           v-for="t in tabs" :key="t.id"
-          class="me-tab" :class="{ on: tab === t.id }" type="button"
+          class="ph-me-tab" :class="{ on: tab === t.id }" type="button"
           role="tab" :aria-selected="tab === t.id ? 'true' : 'false'"
           :title="t.label" :aria-label="t.label"
           @click="setTab(t.id)"
         ><span>{{ t.icon }}</span><span>{{ t.label }}</span></button>
       </div>
 
-      <div v-if="err" class="me-panel">
-        <div class="me-state bad">{{ err }}<div><button class="btn btn-primary" @click="load">重试</button></div></div>
+      <div v-if="err" class="ph-me-panel">
+        <div class="ph-me-state bad">{{ err }}<div><button class="ph-tbtn primary" @click="load">重试</button></div></div>
       </div>
-      <div v-else-if="loading && !ov" class="me-panel"><div class="me-state">正在汇总你的任务…</div></div>
+      <div v-else-if="loading && !ov" class="ph-me-panel"><div class="ph-me-state">正在汇总你的任务…</div></div>
 
       <template v-else-if="ov">
         <!-- 我的任务 -->
-        <div v-if="tab === 'tasks'" class="me-panel">
-          <div class="me-panel-h">
+        <div v-if="tab === 'tasks'" class="ph-me-panel">
+          <div class="ph-me-panel-h">
             <span class="t">📋 我的任务</span>
             <span class="n" v-if="!tasksDisabled">{{ mine.open }} 项未完成 · 共指派 {{ mine.total }} 项</span>
             <span class="n" v-if="mine.partial">（卡片明细已截断，这里是部分统计）</span>
           </div>
-          <div v-if="tasksDisabled" class="me-state">
+          <div v-if="tasksDisabled" class="ph-me-state">
             任务功能已被管理员关闭，暂时看不到指派信息。
             <div>需要的话请联系管理员开启「任务看板」功能。</div>
           </div>
-          <div v-else-if="openTasks.length === 0" class="me-state">
+          <div v-else-if="openTasks.length === 0" class="ph-me-state">
             当前没有指派给你的未完成任务。
             <div>{{ doneTasks.length ? '已完成的 ' + doneTasks.length + ' 项不再催你。' : '进项目的任务看板可以给自己建卡。' }}</div>
           </div>
-          <div v-else class="me-rows me-scroll ph-scroll">
-            <button v-for="t in openTasks" :key="t.project + '/' + t.id" class="me-row" type="button" :title="'进「' + t.project + '」的任务看板处理这件事'" @click="openTask(t)">
+          <div v-else class="ph-me-rows ph-me-scroll ph-scroll">
+            <button v-for="t in openTasks" :key="t.project + '/' + t.id" class="ph-me-row" type="button" :title="'进「' + t.project + '」的任务看板处理这件事'" @click="openTask(t)">
               <span class="t">{{ priorityText(t) ? '· ' + priorityText(t) + ' · ' : '' }}{{ t.title }}</span>
               <span class="p">{{ t.project }} · {{ t.columnTitle }}</span>
               <span class="d" :class="dueClass(t)">{{ dueLabel(t) }}</span>
             </button>
           </div>
-          <div class="me-note">任务只读：改状态、指派人、写备注都在项目的任务看板里做，避免两处编辑打架。</div>
+          <div class="ph-me-note">任务只读：改状态、指派人、写备注都在项目的任务看板里做，避免两处编辑打架。</div>
         </div>
 
         <!-- 我的日程 -->
-        <div v-else-if="tab === 'schedule'" class="me-panel">
-          <div class="me-panel-h">
+        <div v-else-if="tab === 'schedule'" class="ph-me-panel">
+          <div class="ph-me-panel-h">
             <span class="t">📅 我的日程</span>
             <span class="n">按截止分组，只看未完成</span>
-            <button v-if="mine.project" class="btn" style="width:auto;margin-left:auto" @click="openCalendar">在项目日历里看</button>
+            <button v-if="mine.project" class="ph-tbtn" style="margin-left:auto" @click="openCalendar">在项目日历里看</button>
           </div>
-          <div v-if="tasksDisabled" class="me-state">任务功能已关闭，没有日程可排。</div>
-          <div v-else-if="schedule.length === 0" class="me-state">
+          <div v-if="tasksDisabled" class="ph-me-state">任务功能已关闭，没有日程可排。</div>
+          <div v-else-if="schedule.length === 0" class="ph-me-state">
             没有带日期的待办。
             <div>给任务设一个截止日期，它才会出现在日程里。</div>
           </div>
-          <div v-else class="me-scroll ph-scroll">
+          <div v-else class="ph-me-scroll ph-scroll">
             <div v-for="g in schedule" :key="g.id" style="margin-bottom:14px">
-              <div class="me-panel-h" style="margin-bottom:6px">
+              <div class="ph-me-panel-h" style="margin-bottom:6px">
                 <span class="t" style="font-size:13px">{{ g.label }}</span>
                 <span class="n">{{ g.items.length }} 项</span>
               </div>
-              <div class="me-rows">
-                <button v-for="t in g.items" :key="g.id + t.project + '/' + t.id" class="me-row" type="button" :title="'进「' + t.project + '」处理'" @click="openTask(t)">
+              <div class="ph-me-rows">
+                <button v-for="t in g.items" :key="g.id + t.project + '/' + t.id" class="ph-me-row" type="button" :title="'进「' + t.project + '」处理'" @click="openTask(t)">
                   <span class="t">{{ t.title }}</span>
                   <span class="p">{{ t.project }}</span>
                   <span class="d" :class="dueClass(t)">{{ dueLabel(t) }}</span>
@@ -257,55 +298,76 @@ const MeView = {
               </div>
             </div>
           </div>
-          <div class="me-note">日程与任务看板同源：这里不另存日期，改日期请回到任务卡。</div>
+          <div class="ph-me-note">日程与任务看板同源：这里不另存日期，改日期请回到任务卡。</div>
         </div>
 
         <!-- 我的文件 -->
-        <div v-else-if="tab === 'files'" class="me-panel">
-          <div class="me-panel-h">
+        <div v-else-if="tab === 'files'" class="ph-me-panel">
+          <div class="ph-me-panel-h">
             <span class="t">🗂️ 我的文件</span>
             <span class="n" v-if="personal">{{ personal.dir }} · {{ numText(fileCount) }} 个顶层条目</span>
-            <button v-if="personal" class="btn" style="width:auto;margin-left:auto" @click="openMyDir">打开目录</button>
+            <button v-if="personal" class="ph-tbtn" style="margin-left:auto" @click="openMyDir">打开目录</button>
           </div>
-          <div v-if="noPersonal" class="me-state">
+          <div v-if="noPersonal" class="ph-me-state">
             你还没有个人目录。
             <div>个人目录在注册时按真实姓名创建；历史账号可由管理员补开。</div>
           </div>
-          <div v-else-if="filesErr" class="me-state bad">{{ filesErr }}<div><button class="btn" @click="loadFiles">重试</button></div></div>
-          <div v-else-if="filesLoading" class="me-state">正在读取目录…</div>
-          <div v-else-if="files.length === 0" class="me-state">
+          <div v-else-if="filesErr" class="ph-me-state bad">{{ filesErr }}<div><button class="ph-tbtn" @click="loadFiles">重试</button></div></div>
+          <div v-else-if="filesLoading" class="ph-me-state">正在读取目录…</div>
+          <div v-else-if="files.length === 0" class="ph-me-state">
             目录是空的。
-            <div><button class="btn btn-primary" @click="openMyDir">去上传文件</button></div>
+            <div><button class="ph-tbtn primary" @click="openMyDir">去上传文件</button></div>
           </div>
-          <div v-else class="me-grid">
-            <button v-for="e in files" :key="e.name" class="me-card" type="button" :title="e.isDir ? '打开文件夹' : '在文件视图里打开'" @click="openEntry(e)">
+          <div v-else class="ph-me-grid">
+            <button v-for="e in files" :key="e.name" class="ph-me-card" type="button" :title="e.isDir ? '打开文件夹' : '在文件视图里打开'" @click="openEntry(e)">
               <span class="k">{{ e.isDir ? '文件夹' : '文件' }}</span>
               <span class="v">{{ e.isDir ? '📂' : '📄' }} {{ e.name }}</span>
               <span class="h">{{ e.isDir ? '点击进去浏览' : '点击在文件视图打开' }}</span>
             </button>
           </div>
-          <div class="me-note">这是你自己的目录，别人（包括管理员）看不到。</div>
+          <div class="ph-me-note">这是你自己的目录，别人（包括管理员）看不到。</div>
+        </div>
+
+        <!-- 我的规则（原型个人层：自由文本 + 保存，仅本人可读写） -->
+        <div v-else-if="tab === 'rules'" class="ph-me-panel">
+          <div class="ph-me-panel-h">
+            <span class="t">📝 我的规则</span>
+            <span class="n">给自己定的工作约定 · 仅本人可见可改</span>
+          </div>
+          <div v-if="rulesLoading" class="ph-me-state">正在读取你的规则…</div>
+          <template v-else>
+            <div v-if="rulesErr" class="ph-me-state bad" style="padding:10px 0">{{ rulesErr }}</div>
+            <textarea
+              class="ph-rules-area" v-model="rules"
+              placeholder="例如：&#10;· 每周五更新个人任务状态&#10;· 文件命名遵循 YYYYMMDD_主题&#10;· 修改文件前先说明改动内容"
+              aria-label="我的规则（自由文本）"
+            ></textarea>
+            <div class="ph-rules-foot">
+              <button class="ph-tbtn primary" :disabled="rulesSaving" @click="saveRules">{{ rulesSaving ? '保存中…' : '保存规则' }}</button>
+              <span class="hint">显式保存后生效；这段文字只有你自己看得到。</span>
+            </div>
+          </template>
         </div>
 
         <!-- 我的偏好 -->
-        <div v-else class="me-panel">
-          <div class="me-panel-h"><span class="t">🎛️ 我的偏好</span><span class="n">只影响你自己，立即生效，不用保存</span></div>
-          <div class="me-pref">
+        <div v-else class="ph-me-panel">
+          <div class="ph-me-panel-h"><span class="t">🎛️ 我的偏好</span><span class="n">只影响你自己，立即生效，不用保存</span></div>
+          <div class="ph-me-pref">
             <span class="k">界面主题</span>
-            <button class="btn" style="width:auto" :title="isDark ? '当前深色，点击切浅色' : '当前浅色，点击切深色'" @click="toggleTheme">{{ isDark ? '☀️ 切到浅色' : '🌙 切到深色' }}</button>
+            <button class="ph-tbtn" :title="isDark ? '当前深色，点击切浅色' : '当前浅色，点击切深色'" @click="toggleTheme">{{ isDark ? '☀️ 切到浅色' : '🌙 切到深色' }}</button>
             <span class="v">{{ isDark ? '深色' : '浅色' }} · 记在本机，下次进来保持不变</span>
           </div>
-          <div class="me-pref">
+          <div class="ph-me-pref">
             <span class="k">导航形态</span>
-            <button class="btn" style="width:auto" :title="compactRail ? '当前紧凑竖栏，点击切回层级导航' : '当前层级导航，点击切到紧凑竖栏'" @click="toggleRail">{{ compactRail ? '🧭 切到层级导航' : '📐 切到紧凑竖栏' }}</button>
-            <span class="v">{{ compactRail ? '紧凑竖栏（图标 + 分类抽屉）' : '层级导航（层级条 + 项目四 tab）' }} · 功能一样多，只是摆法不同</span>
+            <button class="ph-tbtn" :title="compactRail ? '当前紧凑竖栏，点击切回层级导航' : '当前层级导航，点击切到紧凑竖栏'" @click="toggleRail">{{ compactRail ? '🧭 切到层级导航' : '📐 切到紧凑竖栏' }}</button>
+            <span class="v">{{ compactRail ? '紧凑竖栏（图标 + 分类抽屉）' : '层级导航（左 rail + 项目四 tab）' }} · 功能一样多，只是摆法不同</span>
           </div>
-          <div class="me-pref">
+          <div class="ph-me-pref">
             <span class="k">更多设置</span>
-            <button v-if="nav.hasBarView('settings')" class="btn" style="width:auto" @click="openSettings">打开设置</button>
+            <button v-if="nav.hasBarView('settings')" class="ph-tbtn" @click="openSettings">打开设置</button>
             <span class="v">账号、密码、通知等</span>
           </div>
-          <div class="me-note">系统级配置（存储、权限、审计）在管理控制台，不在个人偏好里 —— 那些改动会影响所有人。</div>
+          <div class="ph-me-note">系统级配置（存储、权限、审计）在管理控制台，不在个人偏好里 —— 那些改动会影响所有人。</div>
         </div>
       </template>
     </div>

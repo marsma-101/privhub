@@ -19,7 +19,7 @@
 
 import { join, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { json, readBody } from '../../privhub-core/src/index'
+import { json, readBody, isManagerRole } from '../../privhub-core/src/index'
 import HTMLtoDOCX from 'html-to-docx'
 
 export const name = 'privhub-files-office2'
@@ -52,8 +52,8 @@ export function apply(ctx: Context): void {
       }
       const st = ctx.lock.status(project, path)
       if (!st.locked) return json(res, 200, { ok: true, released: false })
-      if (st.by !== u.username && u.role !== 'admin') return json(res, 403, { ok: false, error: '仅锁持有者或管理员可释放' })
-      const released = ctx.lock.release(u.username, project, path, { force: u.role === 'admin' })
+      if (st.by !== u.username && !isManagerRole(u.role)) return json(res, 403, { ok: false, error: '仅锁持有者或管理员可释放' })
+      const released = ctx.lock.release(u.username, project, path, { force: isManagerRole(u.role) })
       json(res, 200, { ok: true, released })
       return
     }

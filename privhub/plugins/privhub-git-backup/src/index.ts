@@ -37,7 +37,10 @@ const MIRROR = join(REPO, 'mirror')
 const POLL_MS = 60 * 1000
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const r = await execFileP('git', args, { cwd, timeout: 20000 })
+  /* Windows 上 git.exe 是控制台子系统程序：不加 windowsHide 时每个 git 命令
+   * 都会分配一个 conhost 黑框闪一下。自动备份每 60s 连跑 6 条 git 命令，
+   * 表现就是「三四个黑框一起闪」。功能不变，只隐藏子进程控制台窗口。 */
+  const r = await execFileP('git', args, { cwd, timeout: 20000, windowsHide: true })
   return r.stdout
 }
 
@@ -50,7 +53,7 @@ let gitAvailable: boolean | null = null
 async function probeGit(): Promise<boolean> {
   if (gitAvailable !== null) return gitAvailable
   try {
-    await execFileP('git', ['--version'], { timeout: 5000 })
+    await execFileP('git', ['--version'], { timeout: 5000, windowsHide: true })
     gitAvailable = true
   } catch {
     gitAvailable = false

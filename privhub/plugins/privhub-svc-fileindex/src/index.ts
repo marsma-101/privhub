@@ -1001,10 +1001,21 @@ export class FileIndexService extends Service {
    *   不传则退回按 `e.size` 校验（适用于本来就是明文的条目）。
    * @returns 是否搬成功
    */
+  /**
+   * 把一条 legacy 条目的字节搬进扁平池。
+   *
+   * @param targetVolumeId 目标卷（2026-11-16 新增）。`undefined`/`null` = 默认池（老行为）。
+   *
+   * 为什么要这个参数：主人要的效果是「老库（库根）上加密的文件**搬到新加的卷**」。
+   * 改造前这里写死 `this.poolDir`（默认池），于是不管界面怎么配，字节永远只能落
+   * 回默认卷 —— 目标卷里永远看不到文件，而界面又报"搬移完成"。
+   * 现在按 `targetVolumeId` 选池目录，并在改索引时写回 `volumeId`。
+   */
   async migrateEntry(
     id: string,
     decrypt?: (absPath: string) => Promise<Buffer | NodeJS.ReadableStream>,
     expectSize?: number,
+    targetVolumeId?: string | null,
   ): Promise<boolean> {
     const e = this.byId.get(id)
     if (!e || e.isDir || e.source === 'pool') return false
@@ -1012,9 +1023,12 @@ export class FileIndexService extends Service {
     if (!src || !existsSync(src)) return false
     const physicalId = newPhysicalId()
     const ext = e.ext ? '.' + e.ext : ''
-    const dest = join(this.poolDir, physicalId + ext)
+    /* 目标池：给了卷就落那块盘，否则落默认池。 */
+    const tid = typeof targetVolumeId === 'string' && targetVolumeId !== '' ? targetVolumeId : null
+    const destPool = this.poolDirOf(tid)
+    const dest = join(destPool, physicalId + ext)
     const tmp = dest + '.' + process.pid + '.part'
-    await mkdir(this.poolDir, { recursive: true })
+    await mkdir(destPool, { recursive: true })
     try {
       if (decrypt) {
         const data = await decrypt(src)
@@ -1057,6 +1071,10 @@ export class FileIndexService extends Service {
         if (want > 0) e.size = want
         e.physicalId = physicalId
         e.source = 'pool'
+        /* 记下字节落在那块盘：不写就等于「又回到默认卷」，
+         * 下次读会去默认池找 → 404（目标卷里有文件但打不开）。 */
+        if (tid !== null) e.volumeId = tid
+        else delete e.volumeId
         delete e.legacyPath
         /* 搬完就不再需要知道它从哪个老库来了 —— 字节已经在池里。 */
         delete e.legacyRoot

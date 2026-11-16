@@ -25,7 +25,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { join, extname } from 'node:path'
 import { stat, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { tokenOf, readJsonStore } from '../../privhub-core/src/index'
+import { tokenOf, readJsonStore, roleAtLeast } from '../../privhub-core/src/index'
 /* 【扩展名一处定义】本插件的文本清单改为从 `privhub-core/src/file-exts` **显式派生**：
  * 派生式 = `TEXT_EXTS − SENSITIVE_EXTS`（能力与预览同等，但**敏感文件豁免**）。
  * 为什么是"减"而不是另写一份：迁前这份是手写数组，且比 core 预览清单少了 `.java/.c/.cpp/.toml/.htm`，
@@ -1126,7 +1126,7 @@ export function apply(ctx: Context, config?: M2Config): void {
     let scope: AgentKeyScope
     let ipWhitelist: string[]
     if (type === 'butler') {
-      if (user.role !== 'admin') return { ok: false, status: 400, code: 'AGENT-4035', hint: '管家钥匙只能绑定管理员账号（' + username + ' 不是管理员）' }
+      if (!roleAtLeast(user.role, 'system_admin')) return { ok: false, status: 400, code: 'AGENT-4035', hint: '管家钥匙只能绑定系统管理员账号（' + username + ' 不是系统管理员）' }
       scope = { kind: 'all', project: '', path: '' }
       ipWhitelist = [...BUTLER_LOCAL_CIDRS]
     } else {

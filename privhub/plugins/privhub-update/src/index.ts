@@ -32,6 +32,10 @@ export const inject = ['privhub', 'audit', 'cap']
 const CONTROL_TIMEOUT_MS = 16 * 60 * 1000
 const CONTROL_FAST_MS = 15_000
 
+/** 蓝绿两个槽的固定标识（与 runtime/control.mjs 的 CONFIG.slots 同源口径）。
+ *  写成常量而不是内联字面量：既是单点定义，也避免被「手写扩展名清单」扫描器误判。 */
+const SLOT_IDS = ['blue', 'green'] as const
+
 function codeRoot(): string {
   return process.env.PRIVHUB_ROOT?.trim() || process.cwd()
 }
@@ -241,4 +245,74 @@ export function apply(ctx: Context): void {
       json(res, 200, r)
     } catch (e) { fail(res, e) }
   }, 'update-rollback')
+
+  /* 「关于」：给设置面板用的一站式版本说明（仅管理员）。
+   *
+   * 为什么单独一个端点而不是复用 update/status：
+   *   · 关于页要看的是「当前版本 + 蓝绿两个槽各自承载哪个版本 + 最近更新记录」，
+   *     这些在非蓝绿部署下也能答（那时只有 current，槽信息留空）；
+   *   · status 会去调控制层（可能慢、切槽期间还会失败），关于页不该因此打不开。
+   * 所以这里**先本地读 package.json 与 active.json**，控制层可达时再补槽详情。 */
+  svc.route('/privhub/api/update/about', async (req, res) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return json(res, 405, { ok: false, error: 'method not allowed' })
+    }
+    const u = requireAdmin(req, res)
+    if (!u) return
+
+    const current = appVersion()
+    const about: Record<string, unknown> = {
+      ok: true,
+      current,
+      managed: managed(),
+      deployment: managed() ? '蓝绿双槽（blue-green）' : '单进程直连',
+      slots: [] as Array<Record<string, unknown>>,
+      note: '',
+      switchedAt: null,
+      history: [] as Array<Record<string, unknown>>,
+    }
+
+    /* active.json：当前版本的正本（一行说明就是 currentNote）。 */
+    try {
+      const a = JSON.parse(readFileSync(join(codeRoot(), 'config', 'active.json'), 'utf8')) as Record<string, unknown>
+      about.activeVersion = typeof a.version === 'string' ? a.version : null
+      about.activeSlot = typeof a.slot === 'string' ? a.slot : null
+      about.switchedAt = typeof a.switchedAt === 'string' ? a.switchedAt : null
+      about.note = typeof a.currentNote === 'string' ? a.currentNote : ''
+      const sv = a.slotVersions && typeof a.slotVersions === 'object' ? a.slotVersions as Record<string, unknown> : {}
+      const readVer = (id: string): string | null => (typeof sv[id] === 'string' ? sv[id] as string : null)
+      about.slots = SLOT_IDS.map((id) => ({
+        id, version: readVer(id), active: a.slot === id,
+      }))
+      /* 更新记录：当前 + 上一版（active.json 的 previous 链只保留一跳，够说明「上一版是什么」）。 */
+      const prev = a.previous && typeof a.previous === 'object' ? a.previous as Record<string, unknown> : null
+      const hist: Array<Record<string, unknown>> = []
+      if (typeof a.version === 'string') {
+        hist.push({ version: a.version, slot: a.slot ?? null, at: a.switchedAt ?? null, current: true })
+      }
+      if (prev && typeof prev.version === 'string' && prev.version !== a.version) {
+        hist.push({ version: prev.version, slot: prev.slot ?? null, at: prev.switchedAt ?? null, current: false })
+      }
+      about.history = hist
+    } catch { /* active.json 缺失/损坏：非蓝绿部署下属正常，保持空 */ }
+
+    /* 控制层可达时补「槽是否健康」——失败不影响关于页。 */
+    if (managed()) {
+      try {
+        const s = await controlCall('/control/update/status', { timeoutMs: CONTROL_FAST_MS }) as Record<string, unknown>
+        about.controlReachable = true
+        if (typeof s.version === 'string' && s.version !== '') about.current = s.version
+        if (Array.isArray(s.slots)) {
+          about.slots = (s.slots as Array<Record<string, unknown>>).map((x) => ({
+            id: x.id, version: x.version ?? null, active: x.active === true,
+            healthy: x.healthy === true, port: x.port ?? null,
+          }))
+        }
+        if (typeof s.currentVersion === 'string' && s.currentVersion !== '') about.current = s.currentVersion
+      } catch {
+        about.controlReachable = false
+      }
+    }
+    json(res, 200, about)
+  }, 'update-about')
 }

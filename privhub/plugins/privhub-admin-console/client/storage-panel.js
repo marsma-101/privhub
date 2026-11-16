@@ -27,6 +27,10 @@ import { api } from './deps.js'
 import { adminToast } from './toast.js'
 import { confirmAction } from './confirm.js'
 import { AdminSkeleton, AdminErrorState, AdminEmptyState } from './ui.js'
+/* 迁移面板（老库 → 扁平池）。2026-11-16 主人要求把「存储迁移」与「存储卷」合并成一页：
+ * 两块本来强相关（搬完的数据要落到卷上），分成两页反而让人看不出因果关系。
+ * 这里直接复用既有实现，不复制一份 —— 迁移的进度轮询/取消/失败明细都留在原组件里。 */
+import { MigratePanel as StorageMigrate } from './panels.js'
 
 /** 统一取数：失败不抛，返回 { ok, data, error }。 */
 async function vget(path) {
@@ -63,7 +67,7 @@ export function fmtBytes(n) {
 
 export const StoragePanel = {
   name: 'admin-storage-panel',
-  components: { AdminSkeleton, AdminErrorState, AdminEmptyState },
+  components: { AdminSkeleton, AdminErrorState, AdminEmptyState, StorageMigrate },
   data() {
     return {
       loading: true,
@@ -78,6 +82,11 @@ export const StoragePanel = {
       /* 编辑中的卷（内联编辑角色/水位） */
       editing: '',
       editBuf: {},
+      /* 数据形态（2026-11-16 合并新增）：plainLib = 用户文件是否明文落盘。
+       * null = 还没取到（别猜，猜错就是误导）。 */
+      plainLib: null,
+      plainBusy: false,
+      plainSaving: false,
     }
   },
   computed: {
@@ -102,6 +111,41 @@ export const StoragePanel = {
     noWritable() {
       if (this.volumes.length === 0) return false
       return !this.volumes.some((v) => v.writable)
+    },
+    /**
+     * 当前被选为「默认写入」的卷。
+     * 它是**显式配置**（defaultVolumeId），会优先于按角色自动选。
+     */
+    defaultVol() {
+      const id = this.data && this.data.defaultVolumeId
+      if (!id) return null
+      return this.volumes.find((v) => v.id === id) || null
+    },
+    /**
+     * 「默认写入」指向一个可疑目标时的提醒（2026-11-16 实测踩到）。
+     *
+     * 真实场景：把一块**空的冷卷**设成了默认写入，于是所有新上传都往那块空盘写，
+     * 而承载着历史数据的主库反而收不到新文件 —— 界面上两块盘都"正常"，
+     * 只有用户发现「我上传的文件不在原来那堆里」。这不是故障，是配置歧义，
+     * 但**必须提示**，否则很难自己发现。
+     *
+     * 判定：默认卷是冷的、且它上面没有文件、而系统库根上有文件 → 提示。
+     */
+    defaultLooksWrong() {
+      /* 注意：`defaultVol` 是 **computed**，访问它不能带括号（写成 this.defaultVol() 会
+       * 抛 "this.defaultVol is not a function"，整个面板渲染失败变空白 —— 实测踩过）。 */
+      const d = this.defaultVol
+      if (!d) return null
+      if (d.isSystemRoot) return null
+      const sys = this.volumes.find((v) => v.isSystemRoot)
+      if (!sys || !sys.files) return null
+      if (d.files > 0) return null
+      if (d.role === 'cold') {
+        return '「' + d.label + '」是冷卷且还是空的，却被设为默认写入 —— 新上传会全部落到它上面，'
+          + '而主库「' + sys.label + '」上的 ' + sys.files + ' 个已有文件不会被追加。'
+          + '如果这不是你的本意，请点「设为默认」把主库设回默认写入。'
+      }
+      return null
     },
   },
   mounted() { void this.load() },
@@ -128,7 +172,31 @@ export const StoragePanel = {
       const r = await vget('/privhub/api/volumes/list')
       if (!r.ok) { this.error = r.error; this.data = null }
       else this.data = r.data
+      /* 数据形态：取真实生效值。取不到就保持 null（界面显示「未知」），
+       * 绝不默认成「明文」或「加密」—— 猜错比不显示更糟。 */
+      const s = await vget('/privhub/api/settings')
+      if (s.ok && s.data && s.data.settings && typeof s.data.settings.plainStorage === 'boolean') {
+        this.plainLib = s.data.settings.plainStorage
+      } else {
+        this.plainLib = null
+      }
       this.loading = false
+    },
+    /** 切换「用户文件明文落盘」。如实提交、如实回读，失败就还原勾选。 */
+    async togglePlain(ev) {
+      const want = !!(ev && ev.target && ev.target.checked)
+      this.plainBusy = true
+      const r = await vsend('/privhub/api/settings', { plainStorage: want })
+      this.plainBusy = false
+      if (!r.ok) {
+        adminToast(r.error || '保存失败', 'error')
+        if (ev && ev.target) ev.target.checked = !want
+        return
+      }
+      const applied = r.data && r.data.settings ? r.data.settings.plainStorage : want
+      this.plainLib = typeof applied === 'boolean' ? applied : want
+      this.plainSaving = true
+      adminToast('已保存：用户文件将' + (this.plainLib ? '明文' : '加密') + '落盘（重启后生效）', 'ok')
     },
     /** 探测候选路径：挂载前先看容量，避免挂一个错的盘。 */
     async doProbe() {
@@ -222,21 +290,72 @@ export const StoragePanel = {
           </div>
         </div>
 
-        <!-- 默认库根：没有挂任何卷时数据就在这里。 -->
+        <!-- 默认写入卷指错了地方 → 提示（不是错误，但很难自己发现） -->
+        <div v-if="defaultLooksWrong" class="ad-alert" style="margin-bottom:12px">
+          <strong>默认写入卷可能不是你想要的</strong>
+          <div class="ad-dim" style="margin-top:4px">{{ defaultLooksWrong }}</div>
+        </div>
+
+        <!-- ② 数据形态：明文 / 加密。
+             这一段是 2026-11-16 合并时**新增**的：原先「存储卷」和「存储迁移」两页
+             都没说清「我的文件到底加不加密」，而这一问题恰恰是运维最关心的。
+             三个概念必须分开讲，否则用户会以为「整个系统都加密了」：
+               a) 文件库（用户文件）—— 受 plainStorage 控制，默认明文
+               b) 系统 JSON（账号/审计/session）—— **始终加密**，不受开关影响
+               c) 老密文（迁移前遗留）—— 读取时自动解密，落盘时按 a) 的规则走 -->
         <div class="ad-section-card">
           <div class="ad-section-card-head">
-            <span class="ad-section-card-title">📦 默认库根</span>
+            <span class="ad-section-card-title">🔐 数据形态（加密 / 明文）</span>
+            <span class="ad-chip" :class="plainLib ? 'ad-chip-warn' : ''">
+              {{ plainLib === null ? '未知' : (plainLib ? '用户文件：明文落盘' : '用户文件：加密落盘') }}
+            </span>
+          </div>
+
+          <div v-if="plainLib === null" class="ad-dim">读取设置失败，无法判断当前形态。</div>
+          <template v-else>
+            <div style="margin-bottom:8px">
+              <strong>{{ plainLib ? '当前是「明文」模式' : '当前是「加密」模式' }}</strong>
+              <span class="ad-dim">
+                —— {{ plainLib
+                  ? '用户文件直接以原样存在磁盘上（nginx 可直读，性能最好）；系统数据仍然加密。'
+                  : '用户文件以 PHENC1 密文存在磁盘上（每个字节都要经服务端解密，无法直读）。' }}
+              </span>
+            </div>
+
+            <div class="ad-dim" style="margin-bottom:10px;line-height:1.7">
+              <div>· <strong>用户文件</strong>（你上传的文档/图片）：受此开关控制。</div>
+              <div>· <strong>系统数据</strong>（账号、审计、会话、密钥）：<strong>始终加密</strong>，不受此开关影响。</div>
+              <div>· <strong>历史密文</strong>（老库遗留）：读取时自动解密；<strong>迁移到新池后按当前模式落盘</strong>
+                （即：明文模式下会变成明文）。</div>
+            </div>
+
+            <!-- 切换开关：与现实一致才叫「配置」，因此这里直接反映真实生效值 -->
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" :checked="plainLib" :disabled="plainBusy" @change="togglePlain($event)" />
+              <span>用户文件以明文保存（关闭 = 加密）</span>
+            </label>
+            <div class="ad-dim" style="margin-top:6px">
+              ⚠ 改动<strong>需要重启服务</strong>才生效（加密形态在服务启动时就固定了）。
+              重启后<strong>只影响新写入</strong>的文件；已有文件的形态不变，仍可正常读取。
+            </div>
+            <div v-if="plainSaving" class="ad-dim" style="margin-top:6px;color:var(--ad-warn)">已保存，重启后生效</div>
+          </template>
+        </div>
+
+        <!-- 库根说明（**不重复列容量/文件数**：库根已作为「主库（系统）」在下面的卷列表里，
+             数据由系统自动识别并展示。这里只解释它是怎么定出来的，避免两处各显示一遍）。 -->
+        <div class="ad-section-card">
+          <div class="ad-section-card-head">
+            <span class="ad-section-card-title">📦 库根位置</span>
             <span class="ad-chip">{{ def && def.exists ? '在用' : '不存在' }}</span>
           </div>
           <div class="ad-dim" style="font-family:monospace;font-size:12px;word-break:break-all">
             {{ def && def.path }}
           </div>
-          <div v-if="def && def.stat" class="ad-dim" style="margin-top:6px">
-            总 {{ fmt(def.stat.total) }} · 已用 {{ fmt(def.stat.used) }} · 剩余 {{ fmt(def.stat.free) }}
-            <span v-if="def.files"> · {{ def.files }} 个文件（{{ fmt(def.bytes) }}）</span>
-          </div>
           <div class="ad-dim" style="margin-top:6px">
-            未挂载任何卷时，所有文件都落在这里。挂载卷之后，新文件按卷策略分布，
+            位置由系统自动解析（环境变量 <code>PRIVHUB_DATA_FILES</code> → <code>config/store.json</code> → 默认），
+            无需手工挂载 —— 它已作为「主库（系统）」出现在下面的卷列表里。
+            未挂载其他卷时所有文件都落这里；挂载卷之后新文件按卷策略分布，
             <strong>这里已有的文件不受影响</strong>。
           </div>
         </div>
@@ -311,14 +430,21 @@ export const StoragePanel = {
             <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
               <span>{{ roleIcon(v.role) }}</span>
               <strong style="flex:1">{{ v.label }}</strong>
+              <!-- 系统库根：由系统自动识别（env / store.json / 默认值），不是谁手工挂的 -->
+              <span class="ad-chip" v-if="v.isSystemRoot" title="系统自动识别的文件库根，数据就在这块盘上；路径由环境决定，不可改">主库（系统自动识别）</span>
               <span class="ad-chip" v-if="data && data.defaultVolumeId === v.id">默认写入</span>
               <span class="ad-chip" v-if="!v.enabled">已停用</span>
               <span class="ad-chip" v-if="!v.stat || !v.stat.online">离线</span>
               <span class="ad-chip" v-else-if="!v.writable">不可写</span>
-              <button class="ad-btn ad-btn-sm" @click="editing === v.id ? cancelEdit() : startEdit(v)">
+              <!-- 系统库根也要能「设为默认」：把默认写入从一块空冷卷改回主库，
+                   是最常见的纠错动作（配置错了却没有出口 = 用户干瞪眼）。 -->
+              <button v-if="v.isSystemRoot && data && data.defaultVolumeId !== v.id"
+                      class="ad-btn ad-btn-sm" @click="setDefault(v.id)">设为默认写入卷</button>
+              <button v-if="!v.isSystemRoot" class="ad-btn ad-btn-sm" @click="editing === v.id ? cancelEdit() : startEdit(v)">
                 {{ editing === v.id ? '收起' : '编辑' }}
               </button>
-              <button class="ad-btn ad-btn-sm" :disabled="busy === v.id" @click="remove(v)">卸载</button>
+              <button v-else class="ad-btn ad-btn-sm" disabled title="系统库根不可卸载（那是本实例的数据所在地）">不可卸载</button>
+              <button v-if="!v.isSystemRoot" class="ad-btn ad-btn-sm" :disabled="busy === v.id" @click="remove(v)">卸载</button>
             </div>
 
             <div class="ad-dim" style="font-family:monospace;font-size:12px;margin-top:4px;word-break:break-all">
@@ -414,6 +540,12 @@ export const StoragePanel = {
           想换一块盘：先挂载新盘设为冷卷 → 等文件搬过去 → 再卸载旧盘。
           卸载时字节不会被删，重新挂回同一路径即可恢复访问。
         </div>
+        <!-- ③ 数据怎么搬：老库迁移（传统目录 → 扁平池）。
+             2026-11-16 合并：原先这是独立一页「存储迁移」，与「存储卷」互相不知道
+             对方存在 —— 用户在 A 页挂卷、在 B 页搬数据，却看不到"搬完会落到哪块盘"。
+             合并后放在同一页，顺序也与真实心智一致：先看数据在哪（②段前）→ 是什么形态
+             （②段）→ 要不要搬（本段）。 -->
+        <storage-migrate @changed="load"></storage-migrate>
       </template>
     </div>
   `,

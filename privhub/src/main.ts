@@ -16,8 +16,11 @@
 import { storePaths, describeStorePaths } from './store-paths.mjs'
 import { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
+/* 解密 settings.json 需要（该文件是系统 JSON，始终 PHENC1 加密；
+ * 要在 storage 实例存在之前读到 plainStorage 只能自己解一次）。 */
+import { createDecipheriv, createHash } from 'node:crypto'
 import { readdir } from 'node:fs/promises'
-import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { WebServerService } from './web-server.js'
 
@@ -244,12 +247,72 @@ async function main(): Promise<void> {
    *    的目标就是文件库明文 + nginx 按 ID 直读；密文时每个字节都要过 Node 解密转发，
    *    读写分离就没有意义。`PRIVHUB_PLAIN_FILELIB=0` 可显式退回全加密。
    *    ⚠ 读取侧不受影响：decrypt/readBuffer 一直自动识别密文与明文，老密文仍可读。 */
+  /* 文件库是否明文落盘（v6 §4）。判定顺序：env > settings.json > **默认明文**。
+   *
+   * ⚠ 两次踩坑记录（改之前先读）：
+   *   ① 原标题是「设置面板的 plainStorage 从没被读过」—— 界面上写着
+   *      plainStorage:false（= 加密），实际却全是明文，是个**假开关**。现在接通了。
+   *   ② 接通时**不能顺手把默认值改成加密**：本项目的既定设计是
+   *      「文件库默认明文 + nginx 按 ID 直读」，密文模式下每个字节都要过 Node
+   *      解密转发，读写分离就失去意义。`production-smoke.mjs` 与
+   *      `media-preview.mjs` 都钉死了这条（"池内文件是明文（nginx 直读的前提）"、
+   *      "上传通道落盘是明文原文"）。所以默认必须是 true —— 只有用户显式关掉、
+   *      或 env 显式设 0 才加密。 */
+  const plainFromEnv = process.env.PRIVHUB_PLAIN_FILELIB
+  const plainFromSettings = (() => {
+    /* ⚠ 这里不能用 readFileSync + JSON.parse 直读：`settings.json` 是**系统 JSON，
+     * 始终加密**（PHENC1 头），直读必然解析失败 → 永远读不到用户的选择
+     * （实测：设了 plainStorage=true，重启后仍是"加密落盘"）。
+     * 所以要在 storage 存在之前，用同一套密钥与算法自行解一次。
+     * 密钥来源与 storage 完全一致：env PRIVHUB_SECRET → data/secret.key。 */
+    try {
+      const settingsFile = join(dataRootDir, 'data', 'settings.json')
+      if (!existsSync(settingsFile)) return undefined
+      const buf = readFileSync(settingsFile)
+      let json: string
+      /* 密文布局与 privhub-svc-storage 的 MAGIC 完全一致：
+       *   头 20 字节 = magic[8]（"PHENC1\0" + ver=1）+ iv[12]
+       *   末尾 16 字节 = GCM tag
+       *   （注意 magic 是 **8** 字节不是 6 —— 按 6 算会整体错位，解密报
+       *    "Unsupported state or unable to authenticate data"，实测踩过。） */
+      const MAGIC8 = Buffer.from([0x50, 0x48, 0x45, 0x4e, 0x43, 0x31, 0x00, 0x01])
+      if (buf.length >= 36 && buf.subarray(0, 8).equals(MAGIC8)) {
+        const key = (() => {
+          const envSec = (process.env.PRIVHUB_SECRET || '').trim()
+          if (envSec !== '') return createHash('sha256').update(envSec, 'utf8').digest()
+          return readFileSync(storePaths.secretKey)
+        })()
+        const iv = buf.subarray(8, 20)
+        const body = buf.subarray(20, buf.length - 16)
+        const tag = buf.subarray(buf.length - 16)
+        const d = createDecipheriv('aes-256-gcm', key, iv)
+        d.setAuthTag(tag)
+        json = Buffer.concat([d.update(body), d.final()]).toString('utf8')
+      } else {
+        json = buf.toString('utf8')   // 明文旧库：照读
+      }
+      const s = JSON.parse(json) as { plainStorage?: unknown }
+      return typeof s.plainStorage === 'boolean' ? s.plainStorage : undefined
+    } catch (e) {
+      /* 读不到/解不开就返回 undefined（走默认），**绝不**因为读失败就把库改成明文。 */
+      console.warn('[storage] 读取 settings.json 的 plainStorage 失败（按默认处理）：'
+        + (e instanceof Error ? e.message : String(e)))
+      return undefined
+    }
+  })()
+  const plainFileLib = plainFromEnv !== undefined && plainFromEnv !== ''
+    ? plainFromEnv !== '0'
+    /* 设置里显式为 false 才加密；未设置 / 读不到 → 走项目既定默认（明文）。 */
+    : (plainFromSettings === false ? false : true)
+
   await mount(svcStorage, {
     enabled: true,
     keyFile: storePaths.secretKey,
     auditMagic: 'PHAUD1\0',
-    plainFileLib: (process.env.PRIVHUB_PLAIN_FILELIB ?? '1') !== '0',
+    plainFileLib,
   })
+  console.log('[storage] 文件库加密形态：' + (plainFileLib ? '明文落盘' : '加密落盘')
+    + '（来源：' + (plainFromEnv ? '环境变量 PRIVHUB_PLAIN_FILELIB' : '设置 plainStorage') + '）')
   /* E1 事件注册表（早于各业务插件挂载，供声明） */
   await mount(svcEvents)
   await mount(svcAudit, { file: '', retentionDays: 60 })
