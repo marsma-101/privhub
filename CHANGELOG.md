@@ -1,7 +1,7 @@
 ﻿# 更新日志（CHANGELOG）
 
 本文件记录 PrivHub 的每一次改动，并与版本号一一绑定。
-**当前版本：3.6.1**
+**当前版本：3.6.2**
 
 > 主仓库已迁移至 GitHub（https://github.com/marsma-101/privhub），Gitee 暂停同步。后续版本改进在 GitHub 上进行，每个发布版本以 git tag 标注（如 `v3.1.0`）。
 
@@ -26,6 +26,33 @@
 > 引用检查+任务日历 / Webhook / 功能权限开关 / 多 Profile / 双链 ID 化 / 上传查重 / 管家①地基 / 长页面滚动条）
 > 与 4 段新增改动（任务看板待审核列 / 选项目落地项目看板 / V3 稳定化收尾批 / 项目看板↔任务看板联动）已一次性收成 **3.3.0**
 > （2026-10-15，见下方 `[3.3.0]` 段）。进度总览见 [`docs/PrivHub-开发状态与路线图.md`](docs/PrivHub-开发状态与路线图.md)。
+
+## [3.6.2] — 2026-11-16
+
+> 修复 3.6.1 上生产后才暴露的问题：设置→关于页的「蓝绿槽版本」恒为空。
+
+### 修复：关于页读不到 active.json（`privhub-update`）
+
+- **现象**：3181 生产切到 3.6.1 后，`GET /privhub/api/update/about` 返回
+  `slots: []`、`note: ""`、`history: []`，而控制层 `status` 明明有正确数据。
+- **根因**：该接口用 `join(codeRoot(),'config','active.json')` 定位文件，但蓝绿部署下
+  **槽进程的 codeRoot 是 release 目录**（`releases/3.6.1`），而 `active.json` 在
+  实例根的 `privhub/config/` —— release 按白名单打包，**从不含 config/**。
+  于是整段抛错被 `catch` 静默吞掉，界面永远是空槽列表。
+- **修复**：改为按「实例根」找 —— `PRIVHUB_DATA_ROOT` / `PRIVHUB_ROOT` 优先，
+  再兜底 release 的父目录与祖父目录；控制层可达时仍用其返回值覆盖（更权威）。
+- 实测（dev）：`slots:[{blue:3.6.0,active:false},{green:3.6.1,active:true}]`、
+  `note:"当前版本 3.6.1（槽 green）；另一槽 blue 承载 3.6.0"`、`history` 两条齐全。
+
+### 流程说明
+
+- 3.6.1 已推送 GitHub 并在生产切换过一次；发现上述问题后按蓝绿规程
+  **先切回 3.6.0**（生产全程可用），再以 3.6.2 重新构建发布 ——
+  不覆盖正在/曾经服务的 release 目录（构建器对此有硬保护）。
+
+回归：run-all --spawn 380/380，三层角色 94/94。
+
+---
 
 ## [3.6.1] — 2026-11-16
 

@@ -20,9 +20,9 @@
  * @module privhub-update
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { json, readJsonBody } from '../../privhub-core/src/index'
 
@@ -272,9 +272,30 @@ export function apply(ctx: Context): void {
       history: [] as Array<Record<string, unknown>>,
     }
 
-    /* active.json：当前版本的正本（一行说明就是 currentNote）。 */
+    /* active.json：当前版本的正本。
+     *
+     * ⚠ 2026-11-16 实测踩到：这段以前只读 `join(codeRoot(),'config','active.json')`，
+     * 但**蓝绿部署下槽进程的 codeRoot 是 release 目录**（releases/3.6.1），
+     * 而 active.json 在实例根的 `privhub/config/` —— release 里根本没有 config/，
+     * 于是 try 整个抛错、被 catch 静默吞掉，关于页的槽版本恒为空数组。
+     * 现在按「实例根」找：PRIVHUB_DATA_ROOT / PRIVHUB_ROOT 指向实例根，
+     * 再兜底 codeRoot 的上一级（release 的父目录）。控制层可达时下面的
+     * controlCall 还会覆盖成更权威的值。 */
     try {
-      const a = JSON.parse(readFileSync(join(codeRoot(), 'config', 'active.json'), 'utf8')) as Record<string, unknown>
+      const candidates = [
+        process.env.PRIVHUB_DATA_ROOT, process.env.PRIVHUB_ROOT,
+        resolve(codeRoot(), '..'), resolve(codeRoot(), '..', '..'), codeRoot(),
+      ].filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      let a: Record<string, unknown> | null = null
+      for (const root of candidates) {
+        const f = join(root, 'config', 'active.json')
+        try {
+          if (!existsSync(f)) continue
+          a = JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown>
+          break
+        } catch { /* 换个候选继续找 */ }
+      }
+      if (a === null) throw new Error('active.json 未找到')
       about.activeVersion = typeof a.version === 'string' ? a.version : null
       about.activeSlot = typeof a.slot === 'string' ? a.slot : null
       about.switchedAt = typeof a.switchedAt === 'string' ? a.switchedAt : null
