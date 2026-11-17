@@ -31,4 +31,7 @@ function emit(ev, payload) {
 /** 打开管理路由（唯一入口；侧栏/概览/详情都走这里）。 */
 function openAdminRoute(key) { emit('admin:open', { key }) }
 
-export { on, off, emit, openAdminRoute }
+/** 让顶栏搜索框填入某个词并聚焦（新手引导「试试搜索」用；2026-11-17）。 */
+function focusSearch(q) { emit('admin:search', { q: String(q || '') }) }
+
+export { on, off, emit, openAdminRoute, focusSearch }

@@ -67,16 +67,17 @@ const CSS = `
 }
 .ad-iconbtn:hover { color: var(--admin-primary); border-color: var(--admin-primary); }
 
-/* 面包屑 */
+/* 面包屑 = 位置 + 页标题（末级加粗放大，替代被删掉的页标题横带） */
 .ad-crumb { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
 .ad-crumb-item { color: var(--admin-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .ad-crumb-item.linkable { cursor: pointer; }
 .ad-crumb-item.linkable:hover { color: var(--admin-primary); text-decoration: underline; }
-.ad-crumb-item.on { color: var(--admin-text); font-weight: 600; }
+.ad-crumb-item.on { color: var(--admin-text); font-weight: 600; font-size: 15px; }
 .ad-crumb-sep { color: var(--admin-border); }
 
-/* 全局搜索（第一阶段只做 UI） */
+/* 全局搜索（2026-11-17 做成真的：页面直达 + 用户/项目实体，键盘可达） */
 .ad-search {
+  position: relative;
   flex: 1 1 auto; max-width: 420px; margin: 0 auto;
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px; height: 32px;
@@ -89,22 +90,44 @@ const CSS = `
   flex: 1; min-width: 0; border: none; outline: none; background: transparent;
   color: var(--admin-text); font-size: 13px;
 }
-.ad-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.ad-role-badge { font-size: 12px; padding: 3px 10px; border-radius: 20px; background: var(--admin-primary-soft); color: var(--admin-primary); white-space: nowrap; }
-.ad-role-badge.admin { background: rgba(192, 122, 43, .16); color: var(--admin-warn); }
-.ad-me { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ad-avatar {
-  width: 28px; height: 28px; border-radius: 50%;
-  background: var(--accent-solid, var(--admin-primary)); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600;
+/* 搜索下拉：绝对定位浮在内容之上，不占布局高度 */
+.ad-search-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--admin-card-bg);
+  border: 1px solid var(--admin-border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.18);
+  max-height: 380px; overflow-y: auto; z-index: 80;
+  padding: 6px;
 }
-.ad-me-name { font-size: 13px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-search-group-title {
+  font-size: 11px; color: var(--admin-text-muted);
+  padding: 6px 10px 3px; letter-spacing: .04em;
+}
+.ad-search-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; color: var(--admin-text);
+}
+.ad-search-item.on { background: var(--admin-primary-soft); color: var(--admin-primary); }
+.ad-search-item.pending { opacity: .6; }
+.ad-search-item-icon { flex: 0 0 18px; text-align: center; font-size: 13px; }
+.ad-search-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-search-item-sub { font-size: 11px; color: var(--admin-text-muted); white-space: nowrap; }
+.ad-search-hint {
+  font-size: 11px; color: var(--admin-text-muted);
+  padding: 6px 10px 2px; border-top: 1px solid var(--admin-border); margin-top: 4px;
+}
+.ad-search-empty { padding: 14px 10px; font-size: 12.5px; color: var(--admin-text-muted); text-align: center; }
+.ad-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* 帮助按钮：圆形 ?，低调但随时可点（新手引导的常驻入口） */
+.ad-help-btn { border-radius: 50%; font-weight: 700; font-size: 13px; }
+.ad-back-btn { white-space: nowrap; }
 
 /* ============ 主体：侧栏 + 内容 ============ */
 .ad-body { flex: 1; min-height: 0; display: flex; position: relative; }
 
 .ad-side {
+  position: relative;
   flex: 0 0 var(--admin-sidebar-w);
   width: var(--admin-sidebar-w);
   display: flex; flex-direction: column;
@@ -117,21 +140,9 @@ const CSS = `
   flex-basis: var(--admin-sidebar-collapsed-w);
   width: var(--admin-sidebar-collapsed-w);
 }
-.ad-side-head {
-  flex: 0 0 auto; height: 44px;
-  display: flex; align-items: center; gap: 8px;
-  padding: 0 12px; border-bottom: 1px solid var(--admin-border);
-}
-.ad-side-logo { font-size: 15px; }
-.ad-side-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
-.ad-side-close { display: none; margin-left: auto; }
-.ad-side-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
-.ad-side-foot {
-  flex: 0 0 auto; padding: 8px 12px;
-  border-top: 1px solid var(--admin-border);
-  color: var(--admin-text-muted); font-size: 11px;
-}
-.admin-root.side-collapsed .ad-side-foot { display: none; }
+/* 窄屏抽屉的关闭按钮：平时隐藏，<1024px 抽屉态显示在右上角 */
+.ad-side-close { display: none; position: absolute; top: 8px; right: 8px; z-index: 2; }
+.ad-side-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 8px 12px; }
 
 .ad-group { margin-bottom: 10px; }
 .ad-group-title {
@@ -164,6 +175,18 @@ const CSS = `
   font-size: 10px; padding: 1px 5px; border-radius: 8px;
   background: rgba(128, 128, 128, .14); color: var(--admin-text-muted);
 }
+/* 组内低频项（默认收起）：比主项略轻，展开后仍与主项同族的对齐方式。 */
+.ad-nav-more-item { opacity: .92; }
+/* 「+ 更多 N 项 / − 收起」：低调的文字按钮，不抢主项注意力 */
+.ad-nav-more {
+  display: block; width: 100%; text-align: left;
+  padding: 4px 14px 4px 34px; margin: 1px 0 2px;
+  font-size: 11.5px; color: var(--admin-text-muted);
+  background: none; border: none; cursor: pointer; border-radius: 6px;
+  transition: color .14s, background .14s;
+}
+.ad-nav-more:hover { color: var(--admin-primary); background: rgba(128,128,128,.06); }
+.admin-root.side-collapsed .ad-nav-more { display: none; }
 .admin-root.side-collapsed .ad-nav-text,
 .admin-root.side-collapsed .ad-nav-pending { display: none; }
 .admin-root.side-collapsed .ad-nav-item { justify-content: center; padding: 0; }
@@ -264,22 +287,75 @@ const CSS = `
 .ad-progress { height: 8px; border-radius: 4px; background: var(--admin-border); overflow: hidden; margin-top: 6px; }
 .ad-progress-bar { height: 100%; background: var(--admin-primary); transition: width .3s ease; }
 
-/* ============ 概览卡片 ============ */
-.ad-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-.ad-card {
+/* ============ 概览：入口卡片（2026-11-16 按原型 S23.1 重设计，11-17 补键盘可达） ============
+   卡片 = 职责域（去向 + 能干什么 + 真实计数）。搜索已统一收进顶栏，
+   概览页内不再有第二个搜索框（原 .ad-ov-search 已删）。 */
+.ad-ov-grid {
+  /* 5 张卡在宽屏上排成「3 + 2」会留一大块空洞（实测截图很显眼）。
+   * 改为固定 3 列 + 行高一致，最后一行两张各占半宽，视觉上不散。 */
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+}
+@media (max-width: 1200px) { .ad-ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .ad-ov-grid { grid-template-columns: 1fr; } }
+.ad-ov-card {
+  min-height: 168px;
   background: var(--admin-card-bg);
   border: 1px solid var(--admin-border);
   border-radius: var(--admin-radius);
-  padding: 12px 14px;
+  padding: 16px 18px 14px;
   box-shadow: var(--admin-shadow);
+  cursor: pointer; transition: border-color .16s, transform .16s, box-shadow .16s;
+  display: flex; flex-direction: column; gap: 8px;
 }
-.ad-card-clickable { cursor: pointer; }
-.ad-card-clickable:hover { border-color: var(--admin-primary); }
-.ad-card-top { display: flex; align-items: center; gap: 7px; }
-.ad-card-icon { font-size: 14px; }
-.ad-card-label { font-size: 12.5px; color: var(--admin-text-muted); }
-.ad-card-value { font-size: 24px; font-weight: 600; margin: 6px 0 4px; }
-.ad-card-hint { font-size: 11.5px; color: var(--admin-text-muted); line-height: 1.6; }
+.ad-ov-card:hover {
+  border-color: var(--admin-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.10);
+}
+/* 键盘焦点可见（卡片是 role=link + tabindex=0，必须给焦点轮廓） */
+.ad-ov-card:focus-visible, .ad-ov-link:focus-visible, .ad-nav-more:focus-visible {
+  outline: 2px solid var(--admin-primary); outline-offset: 2px;
+}
+.ad-ov-head { display: flex; align-items: center; gap: 9px; }
+.ad-ov-icon { font-size: 17px; line-height: 1; }
+.ad-ov-title { font-size: 14px; font-weight: 600; color: var(--admin-text); flex: 1; }
+.ad-ov-go { font-size: 13px; color: var(--admin-text-muted); transition: transform .16s, color .16s; }
+.ad-ov-card:hover .ad-ov-go { color: var(--admin-primary); transform: translateX(2px); }
+.ad-ov-desc { font-size: 12px; line-height: 1.7; color: var(--admin-text-muted); min-height: 2.6em; }
+.ad-ov-nums { display: flex; align-items: baseline; gap: 10px; }
+.ad-ov-num { font-size: 22px; font-weight: 600; color: var(--admin-text); }
+.ad-ov-num em { font-size: 11.5px; font-weight: 400; font-style: normal; color: var(--admin-text-muted); margin-left: 2px; }
+.ad-ov-num.ad-ov-na { color: var(--admin-text-muted); font-weight: 400; }
+.ad-ov-sub { font-size: 11.5px; color: var(--admin-text-muted); }
+.ad-ov-also { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.ad-ov-link {
+  font-size: 11.5px; padding: 3px 9px; border-radius: 99px; cursor: pointer;
+  background: transparent; color: var(--admin-text-muted);
+  border: 1px solid var(--admin-border); transition: .14s;
+}
+.ad-ov-link:hover { color: var(--admin-primary); border-color: var(--admin-primary); }
+
+/* ============ 概览：最近活动（2026-11-17） ============
+   管理员进来第一个问题往往是"刚才发生了什么"。数据 = /audit?limit=5。 */
+.ad-ov-recent {
+  margin-top: 16px;
+  background: var(--admin-card-bg);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  padding: 12px 16px;
+}
+.ad-ov-recent-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ad-ov-recent-title { font-size: 13px; font-weight: 600; color: var(--admin-text); }
+.ad-ov-recent-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 4px; border-radius: 6px; cursor: pointer;
+  font-size: 12.5px; color: var(--admin-text);
+}
+.ad-ov-recent-row:hover { background: var(--admin-bg); }
+.ad-ov-recent-time { flex: 0 0 76px; color: var(--admin-text-muted); font-size: 11.5px; }
+.ad-ov-recent-user { flex: 0 0 90px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-ov-recent-act { flex: 0 0 84px; color: var(--admin-primary); }
+.ad-ov-recent-target { flex: 1; min-width: 0; color: var(--admin-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-hint-block {
   margin-top: 4px; padding: 10px 12px;
   font-size: 12px; line-height: 1.8; color: var(--admin-text-muted);
@@ -481,11 +557,9 @@ const CSS = `
 /* 1024–1279：侧栏折叠为图标，列表与详情仍并排 */
 @media (max-width: 1279px) {
   .admin-root .ad-side { flex-basis: var(--admin-sidebar-collapsed-w); width: var(--admin-sidebar-collapsed-w); }
-  .admin-root .ad-side-title,
   .admin-root .ad-group-text,
   .admin-root .ad-nav-text,
-  .admin-root .ad-nav-pending,
-  .admin-root .ad-side-foot { display: none; }
+  .admin-root .ad-nav-pending { display: none; }
   .admin-root .ad-nav-item { justify-content: center; padding: 0; }
   .admin-root .ad-collapse-btn { display: none; }
 }
@@ -500,10 +574,8 @@ const CSS = `
     box-shadow: 0 0 30px rgba(0, 0, 0, .22);
   }
   .admin-root.side-drawer-open .ad-side { transform: none; }
-  .admin-root .ad-side-title,
   .admin-root .ad-group-text,
-  .admin-root .ad-nav-text,
-  .admin-root .ad-side-foot { display: revert; }
+  .admin-root .ad-nav-text { display: revert; }
   .admin-root .ad-nav-item { justify-content: flex-start; padding: 0 8px; }
   .admin-root .ad-side-close { display: inline-flex; }
   .admin-root.side-drawer-open .ad-drawer-mask {
@@ -511,16 +583,11 @@ const CSS = `
   }
   .admin-root .ad-crumb-item { max-width: 150px; }
 }
-/* <768：列表与详情二选一，进入详情后提供返回列表按钮
- * FE-03 P2-2：本断点原先 12 条全是【裸选择器】，而上面两个断点都带 .admin-root 前缀 ——
- * 也就是说「文件头声明的『作用域限定在 .admin-root 之内』」在最窄的那个断点上不成立。
- * 当前没出事的唯一原因是运气（ad- 前缀全仓只有本插件在用），但那不叫作用域。
- * 补上前缀后行为不变，变的是「名称与事实一致」。 */
+/* <768：列表与详情二选一。窄屏隐藏搜索框（顶栏空间让给位置与返回），
+ * 侧栏抽屉承担全部导航。ad- 前缀全仓只有本插件在用，统一带 .admin-root 作用域。 */
 @media (max-width: 767px) {
   .admin-root .ad-topbar { gap: 6px; padding: 0 8px; }
   .admin-root .ad-search { display: none; }
-  .admin-root .ad-role-badge,
-  .admin-root .ad-me-name { display: none; }
   .admin-root .ad-content-inner { padding: 10px; }
   .admin-root .ad-ld { position: relative; }
   .admin-root .ad-ld-list { flex-basis: 100% !important; width: 100% !important; border-right: none; }
@@ -528,7 +595,6 @@ const CSS = `
   .admin-root .ad-ld-detail { display: none; }
   .admin-root .ad-ld.show-detail .ad-ld-list { display: none; }
   .admin-root .ad-ld.show-detail .ad-ld-detail { display: flex; }
-  .admin-root .ad-detail-toggle { display: inline-flex; }
 }
 
 /* ---- 存储卷面板 ---- */
@@ -547,6 +613,81 @@ const CSS = `
 .st-bar-warn { background: #d9a441; }
 .st-bar-danger { background: #d9534f; }
 .st-bar-off { background: #999; width: 100% !important; opacity: .35; }
+
+/* ============ 新手引导弹层（2026-11-17） ============
+   按需出现，平时完全不存在；首次自动弹一次，顶栏 ? 可重看。 */
+.ad-guide-mask {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(15, 23, 42, .45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: ad-guide-fade .18s ease;
+}
+@keyframes ad-guide-fade { from { opacity: 0 } to { opacity: 1 } }
+.ad-guide {
+  width: 100%; max-width: 460px;
+  background: var(--admin-card-bg);
+  border: 1px solid var(--admin-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .28);
+  overflow: hidden;
+  animation: ad-guide-pop .22s cubic-bezier(.2, .9, .3, 1.2);
+}
+@keyframes ad-guide-pop { from { opacity: 0; transform: translateY(10px) scale(.97) } to { opacity: 1; transform: none } }
+.ad-guide-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px 0;
+}
+.ad-guide-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--admin-primary); background: var(--admin-primary-soft);
+  padding: 3px 10px; border-radius: 99px;
+}
+.ad-guide-x { border: none; }
+.ad-guide-body { padding: 14px 22px 6px; text-align: left; }
+.ad-guide-icon { font-size: 34px; line-height: 1; margin-bottom: 10px; }
+.ad-guide-title { font-size: 17px; font-weight: 700; margin: 0 0 8px; color: var(--admin-text); }
+.ad-guide-text { font-size: 13.5px; line-height: 1.75; color: var(--admin-text); margin: 0 0 10px; }
+.ad-guide-tip {
+  font-size: 12px; line-height: 1.7; color: var(--admin-text-muted);
+  background: var(--admin-bg); border-radius: 8px; padding: 9px 12px; margin: 0 0 12px;
+}
+.ad-guide-action { width: 100%; justify-content: center; }
+.ad-guide-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px 16px; gap: 12px;
+}
+.ad-guide-dots { display: flex; gap: 7px; }
+.ad-guide-dot {
+  width: 8px; height: 8px; border-radius: 50%; cursor: pointer;
+  background: var(--admin-border); transition: .16s;
+}
+.ad-guide-dot.on { background: var(--admin-primary); transform: scale(1.25); }
+.ad-guide-nav { display: flex; align-items: center; gap: 8px; }
+.ad-guide-skip { color: var(--admin-text-muted); border-color: transparent; background: transparent; }
+.ad-guide-skip:hover { color: var(--admin-text); }
+
+/* ============ 概览「新手第一步」提示条（可关闭，不再常驻） ============ */
+.ad-ov-start {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 16px; padding: 12px 16px;
+  background: var(--admin-primary-soft);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+}
+.ad-ov-start-ic { font-size: 20px; line-height: 1; }
+.ad-ov-start-tx { flex: 1; font-size: 13px; line-height: 1.6; color: var(--admin-text); }
+.ad-ov-start-tx b { color: var(--admin-primary); }
+.ad-ov-start-x {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px;
+  border: none; background: transparent; color: var(--admin-text-muted);
+  cursor: pointer; font-size: 12px;
+}
+.ad-ov-start-x:hover { color: var(--admin-text); background: rgba(128,128,128,.12); }
+@media (max-width: 767px) {
+  .admin-root .ad-ov-start { flex-wrap: wrap; }
+  .admin-root .ad-guide { max-width: 100%; }
+}
 `
 
 /* import 即注入：<style> 只插一次（同插件的模块可能被多次 import）。 */

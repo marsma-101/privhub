@@ -68,60 +68,210 @@ function relTime(ts) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
 }
 
-/** 取数组长度；接口失败返回 null（显示「—」而不是假装 0）。 */
-function countOf(res, pick) {
-  if (!res.ok) return null
-  const v = pick(res.data)
-  return Array.isArray(v) ? v.length : null
-}
+/* 取数纪律（2026-11-17）：总数一律来自"总数接口"（total / stats.entries），
+ * 不再用分页列表的 .length —— 旧版 countOf 正是把页大小当总数的错误来源，已删。 */
 
 /* ==================== 概览 ==================== */
+
+/**
+ * 管理控制台概览（2026-11-17 按《管理控制台改进计划》重构）。
+ *
+ * ## 信息架构（每层只回答一个问题）
+ *   顶栏 = 我要找什么（搜索，全管理台唯一搜索框）
+ *   侧栏 = 我在哪（位置）
+ *   概览 = 我该去哪（本页：5 张职责入口卡 + 最近活动）
+ *   功能页 = 怎么做
+ *
+ * ## 卡片四段式（每张卡必须齐全）
+ *   标题（职责名）→ 描述（≤22 字）→ 指标（1 个真实数字，取不到 = —）→ 直达按钮。
+ *
+ * ## 取数纪律（实测教训，两条都是真 bug 修出来的）
+ *   1. **总数必须来自"总数接口"，不能用分页列表的 .length**。
+ *      旧版拿 /audit 默认 200 条的页大小当"审计总数"，实际有 3712 条，少报 3512。
+ *      现在审计走 /audit/stats.entries（O(1) 读块数）；用户走 /admin/users?limit=1 的 total。
+ *   2. **为显示一个数字，不拉整个列表**。旧版一次进概览拉 28.4 KB（94% 是审计全量），
+ *      现在 ≤3 KB。
+ *   3. 部分接口失败只影响对应卡片（显示 —），不拖垮整页；全部失败才整页报错。
+ *   4. 30 秒内存缓存：切走再切回不重拉；顶栏「刷新」传 force 强刷。
+ */
+
+/** 概览取数缓存（模块级；只在内存，不落盘 —— 页面刷新即失效，符合预期）。 */
+let ovCache = null
+/** 上次概览挂载时消费掉的刷新令牌。
+ *  只有令牌**比上次新**才强制重拉 —— 否则用户点过一次刷新后，
+ *  每次切回概览都会绕过缓存（令牌一直 >0），30 秒缓存形同虚设。 */
+let ovLastToken = -1
+
+/** 审计动作的中文短名（与 privhub-admin-audit-panel 的 ACTION_LABELS 同源语义；
+ *  这里只需要展示最近活动，未知动作原样显示，不瞎翻译）。 */
+const OV_ACTION_LABELS = {
+  login: '登录', logout: '退出', register: '注册',
+  upload: '上传', mkdir: '新建文件夹', delete: '删除', rename: '重命名', move: '移动',
+  restore: '恢复', purge: '彻底删除', clean: '清理回收站',
+  'project-create': '新建项目', 'project-delete': '删除项目',
+  'user-update': '修改用户', 'user-delete': '删除用户', 'user-reset-password': '重置密码',
+}
+
 const OverviewPanel = {
   name: 'admin-overview',
   components: { AdminSkeleton, AdminErrorState },
+  props: {
+    /** 顶栏/页头「刷新」的令牌：外壳每次刷新 +1 并重挂本组件。
+     *  收到 >0 的令牌说明这次挂载是"用户要求刷新"，必须绕过 30 秒缓存。 */
+    reloadToken: { type: Number, default: 0 },
+  },
   data() {
-    return { loading: true, error: '', cards: [] }
+    return { loading: true, error: '', cards: [], recent: [], showStart: false }
   },
   methods: {
     open(key) { openAdminRoute(key) },
-    async load() {
+    actionLabel(a) { return OV_ACTION_LABELS[a] || a },
+    relTime(ts) { return relTime(ts) },
+    startUsers() { this.dismissStart(); openAdminRoute('access/users') },
+    dismissStart() {
+      this.showStart = false
+      try { localStorage.setItem('privhub_admin_start_dismissed', '1') } catch { /* 忽略 */ }
+    },
+    /** 从缓存恢复渲染（切页 30 秒内回来不重拉）。 */
+    renderCached() {
+      this.cards = ovCache.cards
+      this.recent = ovCache.recent
+      this.loading = false
+      this.error = ''
+    },
+    async load(force = false) {
+      if (!force && ovCache && Date.now() - ovCache.at < 30000) { this.renderCached(); return }
       this.loading = true
       this.error = ''
-      const [users, projects, rules, audit, trash] = await Promise.all([
-        get('/privhub/api/admin/users'),
+      /* 六个请求并发；每个只取自己需要的最小载荷：
+       *   users?limit=1 → total（总数接口，不是列表长度）
+       *   audit/stats   → entries 块数（O(1)，不拉日志本体）
+       *   audit?limit=5 → 最近活动（每条约 120B）
+       *   volumes/list  → 运维卡的卷数 / 文件数
+       * projects / acl / trash 本身就小（<300B），原样取。 */
+      const [users, projects, rules, auditStats, trash, volumes, recent] = await Promise.all([
+        get('/privhub/api/admin/users?limit=1'),
         get('/privhub/api/projects'),
         get('/privhub/api/acl/rules'),
-        get('/privhub/api/audit'),
+        get('/privhub/api/audit/stats'),
         get('/privhub/api/trash-list'),
+        get('/privhub/api/volumes/list'),
+        get('/privhub/api/audit?limit=5'),
       ])
+      const num = (r, pick) => {
+        if (!r.ok) return null
+        const v = pick(r.data)
+        return typeof v === 'number' && Number.isFinite(v) ? v : null
+      }
+      const userTotal = num(users, (d) => (typeof d.total === 'number' ? d.total : (Array.isArray(d.users) ? d.users.length : null)))
+      const auditTotal = num(auditStats, (d) => d.entries)
+      const volList = volumes.ok && Array.isArray(volumes.data.volumes) ? volumes.data.volumes : null
+      const volFiles = volList ? volList.reduce((s, v) => s + (Number(v.files) || 0), 0) : null
+
+      /* 每张卡 = 一个职责域：target 是最常用落地页，also 是同域其余子页（1 步直达）。 */
       this.cards = [
-        { key: 'access/users', icon: '👥', label: '用户', value: countOf(users, (d) => d.users), hint: '含管理员与普通用户' },
-        { key: 'access/projects', icon: '📁', label: '项目', value: countOf(projects, (d) => d.projects), hint: '当前可访问的项目' },
-        { key: 'access/acl', icon: '🔒', label: 'ACL 规则', value: countOf(rules, (d) => d.rules), hint: '文件 / 目录级访问规则' },
-        { key: 'ops/audit', icon: '🧾', label: '审计记录', value: countOf(audit, (d) => d.entries || d.logs || d.audit), hint: '可追溯的操作记录' },
-        { key: 'content/trash', icon: '🗑️', label: '回收站', value: countOf(trash, (d) => d.trash), hint: '待恢复或清理的条目' },
+        {
+          key: 'users', target: 'access/users', icon: '👥', label: '用户与角色',
+          count: userTotal, unit: '个账号',
+          desc: '账号 · 三层角色 · 项目分配',
+          also: [['access/users', '用户管理'], ['access/projects', '项目权限']],
+        },
+        {
+          key: 'projects', target: 'access/projects', icon: '📁', label: '项目与权限',
+          count: num(projects, (d) => (Array.isArray(d.projects) ? d.projects.length : null)), unit: '个项目',
+          desc: '项目访问 · 文件目录级 ACL',
+          aclCount: num(rules, (d) => (Array.isArray(d.rules) ? d.rules.length : null)),
+          also: [['access/projects', '项目权限'], ['access/acl', 'ACL 规则']],
+        },
+        {
+          key: 'content', target: 'content/trash', icon: '🗂️', label: '内容治理',
+          count: num(trash, (d) => (Array.isArray(d.trash) ? d.trash.length : null)), unit: '条待处理',
+          desc: '标签 · 模板 · 发布 · 回收站',
+          also: [['content/tags', '标签'], ['content/templates', '模板'], ['content/publish', '发布链接'], ['content/trash', '回收站']],
+        },
+        {
+          key: 'ops', target: 'ops/storage', icon: '⚙️', label: '系统运维',
+          count: volList ? volList.length : null, unit: '个存储卷',
+          desc: '存储 · 迁移 · 更新 · 自检',
+          volFiles,
+          also: [['ops/storage', '存储'], ['ops/doctor', '系统自检'], ['ops/watermark', '水印']],
+        },
+        {
+          key: 'audit', target: 'ops/audit', icon: '🧾', label: '审计日志',
+          count: auditTotal, unit: '条记录',
+          desc: '只追加可追溯的操作记录',
+          also: [['ops/audit', '审计日志'], ['ops/webhook', 'Webhook']],
+        },
       ]
-      const allFail = [users, projects, rules, audit, trash].every((r) => !r.ok)
+      this.recent = recent.ok && Array.isArray(recent.data.entries) ? recent.data.entries.slice(0, 5) : []
+      const allFail = [users, projects, rules, auditStats, trash, volumes].every((r) => !r.ok)
       this.error = allFail ? '管理数据读取失败：可能未登录、权限不足或接口不可用' : ''
       this.loading = false
+      if (!allFail) ovCache = { at: Date.now(), cards: this.cards, recent: this.recent }
     },
   },
-  mounted() { void this.load() },
+  mounted() {
+    /* 令牌比上次消费的新 = 用户点了刷新（外壳 reloadSeq+1 并重挂本组件）→ 绕过缓存。
+     * 普通切页重挂时令牌不变 → 命中 30 秒缓存。 */
+    const force = this.reloadToken > ovLastToken
+    ovLastToken = this.reloadToken
+    void this.load(force)
+    /* 「新手第一步」提示：没被手动关过就显示（与引导弹层独立，互不替代）。 */
+    try { this.showStart = localStorage.getItem('privhub_admin_start_dismissed') !== '1' } catch { this.showStart = false }
+  },
   template: `
     <div class="ad-panel">
       <AdminSkeleton v-if="loading" variant="grid" :rows="5"></AdminSkeleton>
-      <AdminErrorState v-else-if="error" :message="error" @retry="load"></AdminErrorState>
+      <AdminErrorState v-else-if="error" :message="error" @retry="load(true)"></AdminErrorState>
       <template v-else>
-        <div class="ad-cards">
-          <div v-for="c in cards" :key="c.key" class="ad-card ad-card-clickable" :title="'前往：' + c.label" @click="open(c.key)">
-            <div class="ad-card-top"><span class="ad-card-icon">{{ c.icon }}</span><span class="ad-card-label">{{ c.label }}</span></div>
-            <div class="ad-card-value">{{ c.value === null ? '—' : c.value }}</div>
-            <div class="ad-card-hint">{{ c.hint }}</div>
+        <!-- 入口卡片：一张卡 = 一个职责域（去哪儿 + 能干什么 + 真实计数）。
+             键盘可达：整卡 role=link + tabindex，Enter/Space 进入；卡内小按钮原生可聚焦。 -->
+        <div class="ad-ov-grid">
+          <div
+            v-for="c in cards" :key="c.key" class="ad-ov-card"
+            role="link" tabindex="0" :aria-label="'前往' + c.label"
+            @click="open(c.target)" @keydown.enter.prevent="open(c.target)" @keydown.space.prevent="open(c.target)"
+          >
+            <div class="ad-ov-head">
+              <span class="ad-ov-icon">{{ c.icon }}</span>
+              <span class="ad-ov-title">{{ c.label }}</span>
+              <span class="ad-ov-go">→</span>
+            </div>
+            <div class="ad-ov-desc">{{ c.desc }}</div>
+            <div class="ad-ov-nums">
+              <span v-if="c.count !== null" class="ad-ov-num">{{ c.count }} <em>{{ c.unit }}</em></span>
+              <span v-else class="ad-ov-num ad-ov-na">—</span>
+              <span v-if="c.aclCount !== null && c.aclCount !== undefined" class="ad-ov-sub">{{ c.aclCount }} 条 ACL</span>
+              <span v-if="c.volFiles !== null && c.volFiles !== undefined" class="ad-ov-sub">{{ c.volFiles }} 个文件</span>
+            </div>
+            <div class="ad-ov-also" @click.stop>
+              <button v-for="a in (c.also || [])" :key="a[0]" class="ad-ov-link" @click="open(a[0])">{{ a[1] }}</button>
+            </div>
           </div>
         </div>
-        <div class="ad-hint-block">
-          左侧导航按<strong>管理员职责</strong>分区：用户与权限、内容治理、系统运维。
-          点击卡片可直接跳转到对应管理页。本阶段各页内部仍沿用既有界面，后续再逐页优化。
+
+        <!-- 最近活动：管理员进来第一个问题往往是"刚才发生了什么"。
+             数据来自 /audit?limit=5（约 0.6KB），点任意一条进审计页看全量。 -->
+        <div class="ad-ov-recent" v-if="recent.length > 0">
+          <div class="ad-ov-recent-head">
+            <span class="ad-ov-recent-title">🕘 最近活动</span>
+            <button class="ad-ov-link" @click="open('ops/audit')">查看全部 →</button>
+          </div>
+          <div v-for="e in recent" :key="e.id" class="ad-ov-recent-row" @click="open('ops/audit')">
+            <span class="ad-ov-recent-time">{{ relTime(e.at) }}</span>
+            <span class="ad-ov-recent-user">{{ e.user }}</span>
+            <span class="ad-ov-recent-act">{{ actionLabel(e.action) }}</span>
+            <span class="ad-ov-recent-target" :title="e.target">{{ e.target || '—' }}</span>
+          </div>
+        </div>
+
+        <!-- 新手第一步：一句可执行的建议，而不是重复解释卡片（卡片自己会说话）。
+             看过引导/点过之后不再显示，避免常驻占地方（2026-11-17 减层）。 -->
+        <div v-if="showStart" class="ad-ov-start">
+          <span class="ad-ov-start-ic">👋</span>
+          <span class="ad-ov-start-tx">第一次来？建议从<b>用户管理</b>开始——账号和权限是大多数管理动作的起点。</span>
+          <button class="ad-btn ad-btn-sm ad-btn-primary" @click="startUsers">去用户管理 →</button>
+          <button class="ad-ov-start-x" title="知道了，不再显示" aria-label="关闭提示" @click="dismissStart">✕</button>
         </div>
       </template>
     </div>
@@ -682,6 +832,16 @@ const MigratePanel = {
       })
       this.busy = ''
       if (!r.ok) { adminToast(r.error || '启动搬运失败', 'error'); return }
+      /* 诚实反馈（2026-11-17 修）：后端在「没有待搬条目」时回 started:false + 说明，
+       * 以前这里无条件弹「搬运已启动」，把真相吞掉 —— 用户看到弹框却没有任何动作。
+       * 现在按 started 分支：没启动就如实讲原因，并提示「已在库里的文件请用库搬迁」。 */
+      if (r.data.started === false) {
+        this.lastResult = r.data.message || '没有待迁移的老库条目'
+        this.lastWarning = '这些文件可能早已搬进主库。要把库里的文件换盘 / 转明文，请用上方「🚚 库搬迁」，而不是老库迁移。'
+        adminToast(this.lastResult, 'warn')
+        await this.load()
+        return
+      }
       adminToast('搬运已启动，可在本页查看进度')
       await this.load()
     },

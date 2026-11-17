@@ -1,19 +1,21 @@
 /**
  * shell — 管理控制台外壳（admin-console slot 的根组件）。
  *
- * 结构：
- *   ┌ AdminTopbar：面包屑 / 全局搜索 / 刷新 / 返回文件 ─────────────┐
- *   ├ AdminSidebar（240px，可折叠 64px）┬ AdminContent ─────────────┤
- *   └───────────────────────────────────┴──────────────────────────┘
+ * 2026-11-17 减层后的结构（主人反馈：横带太多、双侧栏、可点的太多、没引导）：
+ *   ┌ AdminTopbar：位置（面包屑=页标题）/ 搜索 / 帮助 / 返回 ── 唯一横带 ┐
+ *   ├ AdminSidebar（240px，可折叠 64px）┬ 内容区（直接是页面本体）──────┤
+ *   └───────────────────────────────────┴──────────────────────────────┘
+ *   + AdminGuide（首次进入自动弹一次；顶栏 ? 可随时重看）
  *
- * 职责：
- *   - 渲染顶部栏与左侧管理导航；
- *   - 把 [[routes]] 里的每个条目解析成「要挂哪个 slot 的组件」，并渲染成内容区；
- *   - 挂载统一 toast / confirm 容器，并把 ui.js 的复用件注册进来，
- *     供本插件各页面模板直接使用（PascalCase 与 kebab-case 两种写法均可）；
- *   - 与骨架分工：**只改 hash 与状态**，视图切换交给骨架的 nav（openAdmin 等入口不变）。
+ * 减掉的：
+ *   · 框架 T2 位置链（在管理视图不渲染，见 index.html）——不再重复一条头；
+ *   · 内容区顶部的「页标题 + 刷新」条（AdminSectionHeader 不再渲染）——
+ *     页标题由面包屑末级承担（加粗），刷新收进顶栏，少一条横带；
+ *   · 顶栏的角色徽标/头像（与全局顶栏重复）。
+ *   sectionheader.js 文件保留（integrity 契约要求存在），只是不再挂进渲染。
  *
- * 渲染出的结构（对应 CSS 类）：.admin-root > .ad-topbar + .ad-body(.ad-side + .ad-content) + 弹窗
+ * 职责：渲染顶栏与左导航；把 routes 条目解析成「挂哪个 slot 的组件」；
+ *       只改 hash 与状态，视图切换交给骨架 nav。
  *
  * @module privhub-admin-console/client/shell
  */
@@ -22,9 +24,10 @@ import { nav } from './deps.js'
 import { adminState } from './store.js'
 import { ROUTE_MAP, SECTIONS } from './routes.js'
 import { enterOnce, bindPanelBus, leaveConsole, navigate } from './action.js'
+import { focusSearch } from './panelbus.js'
 import { AdminTopbar } from './topbar.js'
 import { AdminSidebar } from './sidebar.js'
-import { AdminSectionHeader } from './sectionheader.js'
+import { AdminGuide } from './guide.js'
 import {
   AdminConfirmDialog, AdminToast, AdminListDetail, AdminDataTable,
   AdminBulkBar, AdminEmptyState, AdminSkeleton, AdminErrorState,
@@ -49,7 +52,7 @@ const BUILTINS = {
 const AdminShell = {
   name: 'admin-shell',
   components: {
-    AdminTopbar, AdminSidebar, AdminSectionHeader, AdminConfirmDialog, AdminToast,
+    AdminTopbar, AdminSidebar, AdminGuide, AdminConfirmDialog, AdminToast,
     AdminListDetail, AdminDataTable, AdminBulkBar, AdminEmptyState, AdminSkeleton, AdminErrorState,
   },
   props: {
@@ -57,7 +60,7 @@ const AdminShell = {
     slotComps: { type: Object, default: () => ({}) },
   },
   data() {
-    return { st: adminState, nav, reloadSeq: 0 }
+    return { st: adminState, nav, reloadSeq: 0, guideOpen: false }
   },
   computed: {
     route() { return ROUTE_MAP[this.st.activeSubView] || null },
@@ -82,10 +85,13 @@ const AdminShell = {
       if (r.builtin) return !this.builtinComp
       return !this.hasView
     },
+    /** 面包屑 = 位置 + 页标题（末级加粗）。不再另设页标题横带。 */
     breadcrumb() {
       const arr = [{ label: '管理控制台', key: 'overview' }]
-      if (this.section) arr.push({ label: this.section.title, key: this.route ? this.route.key : 'overview' })
-      if (this.route) arr.push({ label: this.route.label })
+      if (this.section && this.route && this.route.key !== 'overview') {
+        arr.push({ label: this.section.title, key: this.route.key })
+      }
+      if (this.route && this.route.key !== 'overview') arr.push({ label: this.route.label })
       return arr
     },
     /** 内容区重挂 key：换页或点刷新都会重挂，从而真正重新拉数据。 */
@@ -103,6 +109,10 @@ const AdminShell = {
   mounted() {
     this._offPanel = bindPanelBus()
     enterOnce()
+    /* 首次进入自动给一次上手引导（看过一次就不再自动弹；顶栏 ? 可重看）。 */
+    try {
+      if (localStorage.getItem('privhub_admin_guide_seen') !== '1') this.guideOpen = true
+    } catch { /* 隐私模式：不自动弹，仍可用 ? 手动打开 */ }
   },
   beforeUnmount() {
     if (this._offPanel) this._offPanel()
@@ -113,6 +123,12 @@ const AdminShell = {
     onCrumb(item) {
       if (item && item.key) navigate(item.key)
     },
+    openGuide() { this.guideOpen = true },
+    closeGuide() {
+      this.guideOpen = false
+      try { localStorage.setItem('privhub_admin_guide_seen', '1') } catch { /* 忽略 */ }
+    },
+    onTrySearch(q) { focusSearch(q) },
     toggleMobileDetail() { this.st.mobileDetail = !this.st.mobileDetail },
     closeDrawer() { this.st.drawerOpen = false },
   },
@@ -123,6 +139,7 @@ const AdminShell = {
         @crumb="onCrumb"
         @back="backToFiles"
         @refresh="reload"
+        @help="openGuide"
       ></AdminTopbar>
 
       <div class="ad-body">
@@ -131,28 +148,6 @@ const AdminShell = {
 
         <main class="ad-content ph-scroll">
           <div class="ad-content-inner">
-            <AdminSectionHeader
-              v-if="route"
-              :title="route.label"
-              :meta="missing ? '所属插件未装载' : ''"
-              @refresh="reload"
-            >
-              <template #actions>
-                <button
-                  v-if="st.mobileDetail"
-                  class="ad-btn ad-btn-sm ad-detail-toggle"
-                  title="返回列表"
-                  @click="toggleMobileDetail"
-                >← 列表</button>
-                <button
-                  v-else-if="!st.mobileDetail && hasView"
-                  class="ad-btn ad-btn-sm ad-detail-toggle"
-                  title="查看详情"
-                  @click="toggleMobileDetail"
-                >详情 →</button>
-              </template>
-            </AdminSectionHeader>
-
             <div class="ad-view">
               <AdminErrorState
                 v-if="missing"
@@ -166,6 +161,7 @@ const AdminShell = {
                 v-else-if="builtinComp"
                 :is="builtinComp"
                 :key="viewKey"
+                :reload-token="reloadSeq"
               ></component>
 
               <component
@@ -179,6 +175,7 @@ const AdminShell = {
         </main>
       </div>
 
+      <AdminGuide :open="guideOpen" @close="closeGuide" @try-search="onTrySearch"></AdminGuide>
       <AdminConfirmDialog></AdminConfirmDialog>
       <AdminToast></AdminToast>
     </div>

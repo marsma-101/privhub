@@ -29,31 +29,34 @@ const SECTIONS = [
  * short    面包屑上的短名
  * section  所属分组
  * icon     侧栏图标
+ * primary  **该组里最常用的前几项**（2026-11-16：侧栏默认只显示 primary，
+ *          其余收进「展开更多」——19 项平铺太难扫，主人实测说"有点儿乱"）
  * view     切到骨架的哪个 activeView（'' = 本插件自渲染，不切换视图）
  * slot     承载该视图的 slot 名（view === '' 时忽略）
  * builtin  由本插件自渲染的面板（'overview' 等；view === '' 时忽略）
  * entryOf  对应的 admin-nav barItem 的 view（用于反查插件标题/图标/可用性）
  */
 const ROUTES = [
-  { key: 'overview', label: '管理概览', short: '管理概览', section: 'overview', icon: '📊', view: '', builtin: 'overview' },
+  { key: 'overview', label: '管理概览', short: '管理概览', section: 'overview', icon: '📊', view: '', builtin: 'overview', primary: true },
 
-  { key: 'access/users', label: '用户管理', short: '用户管理', section: 'access', icon: '👥', view: 'admin', slot: 'admin', entryOf: 'admin', implemented: true },
-  { key: 'access/projects', label: '项目权限', short: '项目权限', section: 'access', icon: '📁', view: '', builtin: 'projects', adminOnly: true },
+  { key: 'access/users', label: '用户管理', short: '用户管理', section: 'access', icon: '👥', view: 'admin', slot: 'admin', entryOf: 'admin', implemented: true, primary: true },
+  { key: 'access/projects', label: '项目权限', short: '项目权限', section: 'access', icon: '📁', view: '', builtin: 'projects', adminOnly: true, primary: true },
   { key: 'access/acl', label: 'ACL 规则', short: 'ACL 规则', section: 'access', icon: '🔒', view: 'acl', slot: 'acl', entryOf: 'acl', implemented: true },
   /* 功能权限开关：视图与 slot 由 privhub-admin-cap 声明（本文件只认 slot 名）。 */
   { key: 'access/features', label: '功能权限', short: '功能权限', section: 'access', icon: '🔐', view: 'admin-cap', slot: 'admin-cap', entryOf: 'admin-cap', implemented: true },
   { key: 'access/agents', label: '智能体密钥', short: '智能体密钥', section: 'access', icon: '🔌', view: 'agent', slot: 'agent-view', entryOf: 'agent', implemented: true },
 
-  { key: 'content/tags', label: '标签管理', short: '标签管理', section: 'content', icon: '🏷️', view: 'tags', slot: 'admin-tags', entryOf: 'tags', implemented: true },
+  { key: 'content/tags', label: '标签管理', short: '标签管理', section: 'content', icon: '🏷️', view: 'tags', slot: 'admin-tags', entryOf: 'tags', implemented: true, primary: true },
   { key: 'content/templates', label: '模板管理', short: '模板管理', section: 'content', icon: '📄', view: 'template', slot: 'admin-template', entryOf: 'template', implemented: true },
   { key: 'content/publish', label: '发布链接', short: '发布链接', section: 'content', icon: '🔗', view: '', builtin: 'publish', adminOnly: true },
-  { key: 'content/trash', label: '回收站', short: '回收站', section: 'content', icon: '🗑️', view: 'trash', slot: 'admin-trash', entryOf: 'trash', implemented: true },
+  { key: 'content/trash', label: '回收站', short: '回收站', section: 'content', icon: '🗑️', view: 'trash', slot: 'admin-trash', entryOf: 'trash', implemented: true, primary: true },
 
-  { key: 'ops/audit', label: '审计日志', short: '审计日志', section: 'ops', icon: '🧾', view: 'audit', slot: 'audit', entryOf: 'audit', implemented: true },
+  { key: 'ops/storage', label: '存储', short: '存储', section: 'ops', icon: '🗄️', view: '', builtin: 'storage', adminOnly: true, primary: true },
+  { key: 'ops/settings', label: '系统设置', short: '系统设置', section: 'ops', icon: '⚙️', view: 'settings', slot: 'settings', entryOf: 'settings', implemented: true, primary: true },
+  { key: 'ops/audit', label: '审计日志', short: '审计日志', section: 'ops', icon: '🧾', view: 'audit', slot: 'audit', entryOf: 'audit', implemented: true, primary: true },
   /* Webhook 订阅：视图与 slot 都由 privhub-webhook 插件声明（本文件不认识插件 id，
    * 只认这个名字；插件没装载时该条目自动显示「未安装」而不是点开空白）。 */
   { key: 'ops/webhook', label: 'Webhook 订阅', short: 'Webhook', section: 'ops', icon: '🪝', view: 'admin-webhook', slot: 'admin-webhook', entryOf: 'admin-webhook', implemented: true },
-  { key: 'ops/settings', label: '系统设置', short: '系统设置', section: 'ops', icon: '⚙️', view: 'settings', slot: 'settings', entryOf: 'settings', implemented: true },
   /* 系统更新：视图与 slot 由 privhub-update 声明；蓝绿部署下可用，直连模式显示说明。 */
   { key: 'ops/update', label: '系统更新', short: '系统更新', section: 'ops', icon: '⬆️', view: 'admin-update', slot: 'admin-update', entryOf: 'admin-update', implemented: true },
   { key: 'ops/backup', label: '自动备份', short: '自动备份', section: 'ops', icon: '💾', view: '', builtin: 'backup', adminOnly: true },
@@ -71,7 +74,6 @@ const ROUTES = [
    *   ③ 数据怎么搬：老库迁移 + 冷热搬移
    * 这样用户在一页里就能回答「我的数据在哪、是不是加密的、要不要搬」，
    * 而不是在两个页面之间来回对照（原先正是最容易配错的地方）。 */
-  { key: 'ops/storage', label: '存储', short: '存储', section: 'ops', icon: '🗄️', view: '', builtin: 'storage', adminOnly: true },
   /* 存储迁移已并入 ops/storage（第 ③ 段）。保留这个 key 作为跳转别名，
    * 避免旧书签/旧链接 404；它指向同一页。 */
   { key: 'ops/migrate', label: '存储迁移', short: '存储迁移', section: 'ops', icon: '📦', view: '', builtin: 'storage', adminOnly: true, hidden: true },
@@ -85,6 +87,34 @@ const ROUTES = [
 /** key → 条目。 */
 const ROUTE_MAP = {}
 for (const r of ROUTES) ROUTE_MAP[r.key] = r
+
+/**
+ * 顶栏搜索的别名表（2026-11-17：搜索从"假功能"做成真的）。
+ *
+ * 只放**中文叫法 / 拼音首字母 / 英文词**这三类真实会输入的词，不堆同义词。
+ * 与 label / short / key 一起构成每条路由的可搜索文本（见 searchRoutes）。
+ */
+const SEARCH_ALIASES = {
+  'overview': '概览 首页 总览 gl',
+  'access/users': '用户 账号 角色 管理员 密码 名册 yh yonghu',
+  'access/projects': '项目 权限 授权 分配 xm xiangmu',
+  'access/acl': 'acl 规则 访问控制 文件权限 guize',
+  'access/features': '功能 开关 能力 权限 cap gn',
+  'access/agents': '智能体 密钥 agent api key znt miyao',
+  'content/tags': '标签 分类 tag biaoqian bq',
+  'content/templates': '模板 模版 template muban mb',
+  'content/publish': '发布 链接 分享 外链 publish fabu fb',
+  'content/trash': '回收站 删除 恢复 清理 trash huishouzhan hsz',
+  'ops/storage': '存储 卷 磁盘 迁移 加密 明文 库 storage cunchu cc',
+  'ops/settings': '设置 配置 系统 settings shezhi sz',
+  'ops/audit': '审计 日志 记录 追溯 audit shenji sj',
+  'ops/webhook': 'webhook 订阅 回调 通知 hook',
+  'ops/update': '更新 升级 版本 update gengxin gx',
+  'ops/backup': '备份 backup beifen bf',
+  'ops/migrate': '迁移 老库 搬移 migrate qianyi qy',
+  'ops/doctor': '自检 体检 诊断 修复 doctor zijian zj',
+  'ops/watermark': '水印 watermark shuiyin sy',
+}
 
 /** 默认（空 hash / 未知路径）落到哪一条。 */
 const DEFAULT_KEY = 'overview'
@@ -154,21 +184,61 @@ function isValidKey(key) { return !!ROUTE_MAP[key] }
 
 /** 分组 + 组内条目（含可用性标记），侧栏直接用。 */
 function navModel() {
-  return SECTIONS.map((s) => ({
-    ...s,
-    /* `hidden:true` 的条目不进侧栏，但仍可通过 hash 直达 ——
-     * 用于「已合并进别处的旧入口」保留旧书签不 404（如 ops/migrate → 存储页）。 */
-    items: ROUTES.filter((r) => r.section === s.id && r.hidden !== true).map((r) => ({
-      ...r,
-      available: isAvailable(r),
-      pending: isPending(r),
-      provider: providerOf(r),
-    })),
-  }))
+  return SECTIONS.map((s) => {
+    const all = ROUTES
+      /* `hidden:true` 的条目不进侧栏，但仍可通过 hash 直达 ——
+       * 用于「已合并进别处的旧入口」保留旧书签不 404（如 ops/migrate → 存储页）。 */
+      .filter((r) => r.section === s.id && r.hidden !== true)
+      .map((r) => ({
+        ...r,
+        available: isAvailable(r),
+        pending: isPending(r),
+        provider: providerOf(r),
+      }))
+    /* 分组折叠（2026-11-16）：主人说侧栏「有点儿乱」，19 项平铺确实难扫。
+     * 默认只显示每组的 primary 项（最常用的），其余收进「更多 N 项」。
+     * 但**例外**：当前正在看的那一项即使在 more 里也要显示出来，否则
+     * 用户会以为自己的位置丢了。 */
+    const primary = all.filter((r) => r.primary === true)
+    const rest = all.filter((r) => r.primary !== true)
+    return { ...s, items: primary, more: rest, total: all.length }
+  })
+}
+
+/**
+ * 顶栏搜索：按关键词找管理页（2026-11-17，搜索从假功能做成真的）。
+ *
+ * 规则：
+ *   - 大小写不敏感；label / short / key / 别名 任一命中即算。
+ *   - **hidden 别名也能搜到**（如「迁移」→ ops/migrate → 存储页）：
+ *     用户记得的是功能名，不是我们合并后的路由结构。
+ *   - pending（插件未装载）的条目排在后面并带标记，不隐藏 ——
+ *     让用户知道"有这个功能，但当前没装"，而不是搜不到以为没有。
+ *   - 排序：label 前缀命中 > label 包含 > 其它字段命中；同级按路由表顺序。
+ *
+ * @param {string} q 关键词（空串返回 []）
+ * @returns {Array<{key,label,icon,section,available,pending}>}
+ */
+function searchRoutes(q) {
+  const s = String(q || '').trim().toLowerCase()
+  if (s === '') return []
+  const hits = []
+  for (const r of ROUTES) {
+    const label = String(r.label || '').toLowerCase()
+    const hay = [label, String(r.short || '').toLowerCase(), String(r.key || '').toLowerCase(), SEARCH_ALIASES[r.key] || ''].join(' ')
+    if (!hay.includes(s)) continue
+    const rank = label.startsWith(s) ? 0 : label.includes(s) ? 1 : 2
+    hits.push({
+      key: r.key, label: r.label, icon: r.icon, section: r.section,
+      available: isAvailable(r), pending: isPending(r), rank,
+    })
+  }
+  hits.sort((a, b) => (a.rank - b.rank) || ((a.pending ? 1 : 0) - (b.pending ? 1 : 0)))
+  return hits
 }
 
 export {
   SECTIONS, ROUTES, ROUTE_MAP, DEFAULT_KEY,
-  isAvailable, isPending, providerOf, navModel,
+  isAvailable, isPending, providerOf, navModel, searchRoutes,
   keyToHash, hashToKey, isValidKey,
 }

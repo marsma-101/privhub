@@ -96,6 +96,15 @@ const ProjectNav = {
       return this.moreGroups.some((g) => g.items.some((b) => this.isActive(b)))
     },
     trashCount() { return this.badges.trash || 0 },
+    /** 文件族的子入口列表（文件 / 搜索 / 收藏 / 回收站）。 */
+    subList() {
+      const f = this.tabs.find((t) => t.id === 'files')
+      return f ? f.subs : []
+    },
+    /** 当前是否正处在某个子视图里（决定下拉按钮要不要高亮）。 */
+    currentSubOn() {
+      return this.subList.some((s) => this.isActive(s))
+    },
   },
   watch: {
     project(v) { if (v !== this.boundProject) { this.boundProject = v; this.moreOpen = false } },
@@ -155,38 +164,45 @@ const ProjectNav = {
         <span v-if="t.id === 'files' && trashCount > 0" class="badge">{{ trashCount }}</span>
       </button>
 
+      <!-- 「⋯」= 唯一的低频入口。2026-11-16：把「文件族子入口」也并进来，
+           原来它单独占一个下拉按钮，加上 4 个场景页签后右端挤成一条窄带。
+           现在 T2 右端固定 = 4 个场景页签 + 1 个「⋯」，一眼清爽。 -->
       <button
-        v-if="moreCount > 0"
-        class="ph-scene more" :class="{ on: moreOpen || moreHasActive }" type="button"
+        v-if="moreCount > 0 || subList.length > 0"
+        class="ph-scene more" :class="{ on: moreOpen || moreHasActive || currentSubOn }" type="button"
         :aria-expanded="moreOpen ? 'true' : 'false'"
-        :title="'更多项目功能（' + moreCount + ' 项）：知识 / AI 等，低频但一条不少'"
-        aria-label="更多项目功能"
+        :title="'更多功能：文件相关（' + subList.map(x => x.title).join(' / ') + '）+ 知识与 AI 共 ' + (subList.length + moreCount) + ' 项'"
+        aria-label="更多功能"
         @click="toggleMore"
       >
         <span class="ti">⋯</span><span>更多</span>
+        <span v-if="trashCount > 0" class="badge">{{ trashCount }}</span>
       </button>
     </nav>
 
-    <!-- T3：子页签层。有文件族子入口或更多抽屉展开时才占高，否则整条不出现。 -->
-    <div v-else class="ph-t3" v-show="currentTab === 'files' || moreOpen" role="region" aria-label="子页签">
-      <span class="lab">文件</span>
-      <template v-if="currentTab === 'files'">
-        <button
-          v-for="s in (tabs.find(t => t.id === 'files') || { subs: [] }).subs" :key="s.title"
-          class="ph-sub" :class="{ on: isActive(s) }" type="button"
-          :title="s.desc || s.title" :aria-label="s.title"
-          @click="openItem(s)"
-        >
-          <span>{{ s.icon }}</span><span>{{ s.title }}</span>
-          <span v-if="(s.view || s.slot) === 'trash' && trashCount > 0" class="badge">{{ trashCount }}</span>
-        </button>
-      </template>
-      <span class="grow"></span>
-      <button v-if="moreOpen" class="ph-sub" type="button" @click="closeMore">收起更多</button>
-    </div>
-
-    <!-- 「更多」抽屉：悬浮面板，低频功能的新家。一条不删，逐项可点、逐项有说明。 -->
-    <div v-if="part === 'subs' && moreOpen" class="pnav-drawer" role="region" aria-label="更多项目功能">
+    <!-- part="subs"：2026-11-16 起这里**只输出「更多」抽屉**（不再有独立横带，
+         也不再有独立的子入口下拉按钮 —— 它们都并进了上面那个「⋯」）。
+         文件族子入口在抽屉里单列一组，排在最前（它比知识与 AI 更常用）。 -->
+    <div v-else-if="moreOpen" class="pnav-drawer" role="region" aria-label="更多功能">
+      <!-- 组①：文件相关（文件 / 搜索 / 收藏 / 回收站） -->
+      <div v-if="subList.length > 0" class="pnav-grp">
+        <div class="pnav-grp-h" title="文件族的全部子入口">
+          <span>🗄️</span><span>文件相关</span>
+          <span class="pnav-grp-n">{{ subList.length }}</span>
+        </div>
+        <div class="pnav-grp-b">
+          <button
+            v-for="s in subList" :key="s.title"
+            class="ph-sub-item" :class="{ on: isActive(s) }" type="button"
+            :title="s.desc || s.title"
+            @click="openItem(s); moreOpen = false"
+          >
+            <span class="ic">{{ s.icon }}</span>
+            <span class="tx">{{ s.title }}</span>
+            <span v-if="(s.view || s.slot) === 'trash' && trashCount > 0" class="badge">{{ trashCount }}</span>
+          </button>
+        </div>
+      </div>
       <div v-for="g in moreGroups" :key="g.id" class="pnav-grp">
         <div class="pnav-grp-h" :title="g.desc">
           <span>{{ g.icon }}</span><span>{{ g.label }}</span>

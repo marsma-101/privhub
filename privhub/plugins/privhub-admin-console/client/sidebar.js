@@ -13,9 +13,18 @@ import { adminState, setCollapsed } from './store.js'
 import { navModel } from './routes.js'
 import { openAdminRoute } from './panelbus.js'
 
+/** 组内「更多」展开状态的持久化键（2026-11-17：展开过的组，下次进来还开着）。 */
+const MORE_OPEN_KEY = 'privhub_admin_more_open'
+function readMoreOpen() {
+  try {
+    const v = JSON.parse(localStorage.getItem(MORE_OPEN_KEY) || '{}')
+    return v && typeof v === 'object' ? v : {}
+  } catch { return {} }
+}
+
 const AdminSidebar = {
   name: 'admin-sidebar',
-  data() { return { st: adminState } },
+  data() { return { st: adminState, expanded: readMoreOpen() } },
   computed: {
     groups() { return navModel() },
   },
@@ -29,14 +38,26 @@ const AdminSidebar = {
       if (it.pending) return it.label + '（所属插件未装载）'
       return it.label + (it.provider ? ' · ' + it.provider : '')
     },
+    /**
+     * 该组是否展开「更多」。
+     *
+     * 默认收起 —— 19 项平铺太难扫（主人 2026-11-16 反馈「有点儿乱」）。
+     * 但当前所在项若被收在 more 里，必须让它可见：否则用户会以为自己的位置丢了。
+     */
+    isOpen(g) {
+      if (this.expanded[g.id] === true) return true
+      return (g.more || []).some((it) => this.isActive(it.key))
+    },
+    toggle(g) {
+      this.expanded = { ...this.expanded, [g.id]: !this.isOpen(g) }
+      try { localStorage.setItem(MORE_OPEN_KEY, JSON.stringify(this.expanded)) } catch { /* 隐私模式 */ }
+    },
   },
   template: `
     <aside class="ad-side" :class="{ collapsed: st.sidebarCollapsed, open: st.drawerOpen }">
-      <div class="ad-side-head">
-        <span class="ad-side-logo">🛠️</span>
-        <span class="ad-side-title">管理控制台</span>
-        <button class="ad-iconbtn ad-side-close" title="关闭" @click="closeDrawer">✕</button>
-      </div>
+      <!-- 窄屏抽屉的关闭按钮（桌面不显示）。不再设「管理控制台」标题头——
+           那与顶栏面包屑重复，是减层要去掉的冗余（2026-11-17）。 -->
+      <button class="ad-iconbtn ad-side-close" title="关闭导航" aria-label="关闭导航" @click="closeDrawer">✕</button>
       <nav class="ad-side-body">
         <div v-for="g in groups" :key="g.id" class="ad-group">
           <div class="ad-group-title" :title="g.title">{{ g.icon }}<span class="ad-group-text">{{ g.title }}</span></div>
@@ -52,11 +73,26 @@ const AdminSidebar = {
             <span class="ad-nav-text">{{ it.label }}</span>
             <span v-if="it.pending" class="ad-nav-pending">待接入</span>
           </div>
+          <!-- 组内低频项：默认收起，点「更多 N 项」展开 -->
+          <template v-if="(g.more || []).length > 0">
+            <div
+              v-for="it in (isOpen(g) ? g.more : [])" :key="it.key"
+              class="ad-nav-item ad-nav-more-item"
+              :class="{ on: isActive(it.key), pending: it.pending }"
+              :title="tip(it)"
+              :aria-current="isActive(it.key) ? 'page' : null"
+              @click="open(it.key)"
+            >
+              <span class="ad-nav-icon">{{ it.icon }}</span>
+              <span class="ad-nav-text">{{ it.label }}</span>
+              <span v-if="it.pending" class="ad-nav-pending">待接入</span>
+            </div>
+            <button class="ad-nav-more" @click="toggle(g)">
+              {{ isOpen(g) ? '− 收起' : '+ 更多 ' + g.more.length + ' 项' }}
+            </button>
+          </template>
         </div>
       </nav>
-      <div class="ad-side-foot">
-        <span class="ad-side-foot-text">共 {{ groups.length }} 个分区</span>
-      </div>
     </aside>
   `,
 }

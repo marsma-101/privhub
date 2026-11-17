@@ -587,6 +587,30 @@ export class StorageService extends Service {
       const done = new Promise<void>((ok, fail) => { s.on('close', ok); s.on('error', fail) })
       return { stream: s, done }
     }
+    return this.encryptWriteStream(file)
+  }
+
+  /**
+   * **强制形态**写流（2026-11-17 库搬迁用）。
+   *
+   * 与 createWriteStream 的区别：后者按路径自动判明文（明文模式下所有卷根都判明文），
+   * 而库搬迁要由用户**显式指定**目标形态 —— 解密 / 加密 / 保持不变。
+   * 「保持不变」= 源是密文就仍写密文，哪怕目标在明文前缀内。所以这里必须能
+   * **绕过 isPlainPath 强制加密**，否则「加密/保持密文」在明文模式下根本写不出来。
+   *
+   * @param encrypt true=强制 PHENC1 密文；false=强制裸明文。调用方负责先建目录。
+   */
+  async createForcedWriteStream(file: string, encrypt: boolean): Promise<{ stream: Writable; done: Promise<void> }> {
+    if (!encrypt) {
+      const s = fsCreateWriteStream(file)
+      const done = new Promise<void>((ok, fail) => { s.on('close', ok); s.on('error', fail) })
+      return { stream: s, done }
+    }
+    return this.encryptWriteStream(file)
+  }
+
+  /** 加密写流的实际实现（头 + cipher 流 + 末尾 GCM tag）。createWriteStream 与强制写流共用。 */
+  private async encryptWriteStream(file: string): Promise<{ stream: Writable; done: Promise<void> }> {
     const key = await this.ensureKey()
     const iv = randomBytes(12)
     const fileStream = fsCreateWriteStream(file)

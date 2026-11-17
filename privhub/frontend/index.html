@@ -835,9 +835,11 @@
        改造前这里同时叠着 层级条 / 项目条 / 二级页签 / 文件标签 四条带，
        四条各用一套视觉语言（chip / 胶囊 / 方块 tab），看起来乱且没有层级递进。
        现在 T2 一条到底：左位置链、右场景页签，统一「下划线」语言。 */
+    /* 唯一一条框架横带。2026-11-16：由 46px 压到 40px —— 主人实测「横带太多、
+       主区域被挤掉 1/4」，所以这条只顾「我在哪 + 去哪个场景」，高度按最小可用给。 */
     .ph-t2 {
-      flex: 0 0 auto; display: flex; align-items: stretch; gap: 14px; min-height: 46px;
-      padding: 0 18px; background: var(--p-surface); border-bottom: 1px solid var(--p-border);
+      flex: 0 0 auto; display: flex; align-items: stretch; gap: 10px; min-height: 40px;
+      padding: 0 14px; background: var(--p-surface); border-bottom: 1px solid var(--p-border);
       position: relative;
     }
     .ph-t2::after {
@@ -889,39 +891,31 @@
       color: #fff; font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
     }
 
-    /* ---- T3 子页签（仅真有子屏时出现）：与 T2 同族下划线，小一号更轻 ---- */
-    .ph-t3 {
-      flex: 0 0 auto; display: flex; align-items: stretch; gap: 0; padding: 0 18px; min-height: 38px;
-      background: color-mix(in srgb, var(--p-surface2) 55%, transparent);
-      border-bottom: 1px solid var(--p-border); overflow-x: auto; scrollbar-width: none;
+    /* ---- 文件族子入口：T2 尾端的下拉（2026-11-16：原 T3 横带改下拉，省一整行） ----
+       主区域要留给文件本身；子入口（文件/搜索/收藏/回收站）平时只占一个按钮的宽度，
+       点开才浮出菜单。菜单用绝对定位，**不占布局高度**。 */
+    .ph-subs { position: relative; display: flex; align-items: stretch; flex: 0 0 auto; }
+    .ph-subs .subs-toggle .caret { font-size: 9px; opacity: .7; margin-left: 1px; }
+    .ph-subs-menu {
+      position: absolute; top: calc(100% + 6px); right: 0; z-index: var(--z-raised, 60);
+      min-width: 168px; padding: 5px; border-radius: 10px;
+      background: var(--p-surface); border: 1px solid var(--p-border);
+      box-shadow: var(--p-shadow, 0 12px 32px rgba(0,0,0,.28));
+      display: flex; flex-direction: column; gap: 1px;
     }
-    .ph-t3::-webkit-scrollbar { height: 0; }
-    .ph-t3 .lab {
-      display: flex; align-items: center; font-size: 9.5px; letter-spacing: .14em; color: var(--p-faint);
-      padding-right: 12px; margin-right: 4px; border-right: 1px solid var(--p-border);
-      white-space: nowrap; flex: 0 0 auto;
+    .ph-sub-item {
+      display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+      padding: 7px 10px; border-radius: 7px; font-size: 12.5px; color: var(--p-muted);
+      background: none; border: none; cursor: pointer; transition: .14s; white-space: nowrap;
     }
-    .ph-sub {
-      position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
-      font-size: 12px; color: var(--p-muted); white-space: nowrap; background: none; border: none;
-      cursor: pointer; transition: .15s; flex: 0 0 auto;
-    }
-    .ph-sub:hover { color: var(--p-text); }
-    .ph-sub::after {
-      content: ''; position: absolute; left: 9px; right: 9px; bottom: 0; height: 2px;
-      border-radius: 2px; background: transparent; transition: .18s;
-    }
-    .ph-sub.on { color: var(--p-cyan); font-weight: 600; }
-    .ph-sub.on::after { background: var(--p-cyan); }
-    .ph-sub.up { color: var(--p-faint); padding-right: 13px; margin-right: 5px; border-right: 1px solid var(--p-border); }
-    .ph-sub.up:hover { color: var(--p-cyan); }
-    .ph-sub.up::after { display: none; }
-    .ph-sub .badge {
+    .ph-sub-item:hover { background: var(--p-surface2); color: var(--p-text); }
+    .ph-sub-item.on { color: var(--p-cyan); font-weight: 600; background: color-mix(in srgb, var(--p-cyan) 10%, transparent); }
+    .ph-sub-item .ic { width: 16px; text-align: center; }
+    .ph-sub-item .tx { flex: 1; }
+    .ph-sub-item .badge {
       min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--p-red);
       color: #fff; font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
     }
-    .ph-t3 .grow { flex: 1; min-width: 6px; }
-    .ph-t3 .tail { display: flex; align-items: center; gap: 4px; padding-left: 10px; flex: 0 0 auto; }
 
     /* T2 右端项目元信息（节点 / 截止）：低调文字，不与导航抢注意力 */
     .ph-projmeta { display: inline-flex; align-items: center; gap: 8px; flex: 0 1 auto; overflow: hidden; padding-left: 8px; min-width: 0; }
@@ -1159,6 +1153,28 @@
       VERSION.managed = info.managed !== false
       VERSION.server = info.version
       VERSION.switchedAt = info.switchedAt || null
+      /* 版本 Cookie 只对**托管部署**（nginx + 控制层）有意义。
+       *
+       * 2026-11-16 实测事故：在 3180（直连 Node，managed:false）上刷新，
+       * 一直弹「系统已更新，当前页面属于旧版本（3.6.0）」且点刷新无用 ——
+       * 原因是浏览器里还留着**生产 3181（nginx）**写下的
+       * `privhub_client_version=3.6.0`，而 3180 的 /_version 报 3.6.2，
+       * 两者不等就判过期。可 3180 根本不用 Cookie 做门禁（nginx 才做），
+       * 这个比较在开发环境下纯属误伤，而且自己永远修不好（3180 不会写 Cookie）。
+       *
+       * 所以：未托管时**完全不读版本 Cookie**，页面版本直接取服务端值；
+       * 托管时保持原行为（Cookie 才是「这份 HTML 是哪个 release 发的」的证据）。
+       * 顺手把可能残留的旧 Cookie 清掉，避免它继续影响以后切回托管环境。 */
+      if (!VERSION.managed) {
+        const stale = readVersionCookie()
+        if (stale) {
+          try { document.cookie = 'privhub_client_version=; Max-Age=0; path=/' } catch { /* 忽略 */ }
+          console.info('[version] 未托管部署，已忽略并清除残留版本 Cookie（' + stale + '）')
+        }
+        VERSION.current = info.version
+        VERSION.checked = true
+        return
+      }
       const cookieVer = readVersionCookie()
       /* 本页版本优先取 Cookie（它跟随 HTML 响应写入）；缺失时退回当前版本，
        * 并补写 Cookie 让 nginx 的写入门有依据。 */
@@ -2185,24 +2201,31 @@
               <component v-for="c in slotComps['app-iconbar']" :is="c" :key="c.name"></component>
             </template>
 
-            <!-- 内容区：三层脊柱 T2 + T3，然后是工作区。
-                 改造前这里是 4 条并排横带（layer-bar / project-head / project-nav / tabs），
-                 各用一套视觉语言，看起来乱、且没有层级递进。现在收成两层：
-                   T2 = 位置链（layer-bar）+ 场景页签（project-nav 的主 tab）
-                   T3 = 子页签（project-nav 的子入口 / 文件标签）
-                 两个组件的 computed/methods 一个没动（回归钉着），只改它们渲染出来的形状。 -->
+            <!-- 内容区：**只有一条横带**（T2）。2026-11-16 主人实测：顶部四层
+                 （顶栏 / 位置+场景 / 文件族子入口 / 文件工具栏）吃掉约 1/4 屏高，
+                 文件列表只剩几行 —— 主页面最大的作用是「看信息和文件」，
+                 不是放按钮。所以：
+                   · T2 = 位置链 + 场景页签 + 项目元信息，**唯一一条**；
+                   · 原来的 T3（文件/搜索/收藏/回收站 子入口）不再自成一带，
+                     改为 T2 右端的一个下拉（part="subs" 由 project-nav 渲染成折叠菜单）；
+                   · 文件区自己的工具栏属于「页内」控件，保留但不叠在框架层上。
+                 两个组件的 computed/methods 一个没动（回归钉着），只改渲染形状。 -->
             <div class="ph-content">
-              <!-- T2：位置层。layer-bar 渲染成位置链，project-nav 渲染成右侧场景页签。 -->
-              <div class="ph-t2">
+              <!-- T2：唯一一条框架横带。左位置链、右场景页签、尾随一个「更多」下拉。
+                   2026-11-17：管理视图里**整条不渲染** —— 管理外壳自带位置（面包屑）
+                   与返回出口，框架再叠一条「总览 › 管理控制台」只会重复占高、
+                   让顶部看起来分了太多层（主人实测反馈）。其余视图不受影响。 -->
+              <div class="ph-t2" v-if="nav.activeView !== 'admin'">
                 <component v-for="c in slotComps['layer-bar']" :is="c" :key="'lb-'+c.name"></component>
                 <span class="grow"></span>
                 <!-- 场景页签只在**项目层**出现：管理层/个人层/AI 等不属于任何项目，
                      在那里显示「文件/看板/任务/日程」只会误导（点了还得再选项目）。 -->
                 <component v-for="c in slotComps['project-nav']" :is="c" :key="'pn-t2-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="scenes"></component>
+                <!-- 项目元信息（节点/截止）压成一行小字，不再单独占高度 -->
                 <component v-for="c in slotComps['project-head']" :is="c" :key="'ph-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="meta"></component>
+                <!-- 文件族子入口（文件/搜索/收藏/回收站）现在渲染成 T2 尾端的下拉菜单 -->
+                <component v-for="c in slotComps['project-nav']" :is="c" :key="'pn-subs-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="subs"></component>
               </div>
-              <!-- T3：子页签层。只在真有子屏时自己渲染内容（组件内部判断，空则不占高）。 -->
-              <component v-for="c in slotComps['project-nav']" :is="c" :key="'pn-t3-'+c.name" v-if="nav.project !== null && nav.activeView !== 'admin' && nav.activeView !== 'me'" part="subs"></component>
 
               <div class="body">
 

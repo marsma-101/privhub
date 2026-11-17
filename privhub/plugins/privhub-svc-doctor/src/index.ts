@@ -233,12 +233,27 @@ export class DoctorService {
     }
     const missing: string[] = []
     const sizeBad: string[] = []
+    /** 索引标 pool、字节却在老布局目录里的条目（能正常读，只是没进池）。 */
+    const legacyLayout: string[] = []
     let checked = 0
     for (const e of fi.all() as any[]) {
       if (e.isDir || e.source !== 'pool' || !e.physicalId) continue
       checked++
       const abs = typeof fi.resolvePhysical === 'function' ? fi.resolvePhysical(e) : null
       if (!abs || !existsSync(abs)) {
+        /* 老布局回退（2026-11-17 修）：改造前上传的文件直接落在
+         * `<dataFiles>/<project>/<文件名>`，索引里却没有对应的池字节。
+         * 读路径有 legacy 回退（auth.ts 的降级分支），所以**页面能正常打开**，
+         * 把它报成「打开会 404」是误报 —— 实测：这 3 个文件下载返回 200。
+         *
+         * 这里单独归为「未进池」而不是「缺失」：它不是损坏，只是还没搬进扁平池，
+         * 用「库搬迁 / 老库迁移」跑一次就能收敛。混进 missing 会让管理员以为
+         * 数据丢了，进而点「修复」把好文件从索引里摘掉 —— 那才是真的丢。 */
+        const legacyAbs = this.legacyFallbackPath(e)
+        if (legacyAbs && existsSync(legacyAbs)) {
+          if (legacyLayout.length < MAX_SAMPLES) legacyLayout.push(`${e.project}/${e.virtualPath}`)
+          continue
+        }
         if (missing.length < MAX_SAMPLES) missing.push(`${e.project}/${e.virtualPath}`)
         continue
       }
@@ -271,7 +286,43 @@ export class DoctorService {
         advice: '这些文件可能不完整。从备份恢复，或重新上传。',
       } as any
     }
+    /* 未进池（老布局）：不是错误，但值得提示 —— 用「库搬迁」跑一次即可收敛。
+     * 放在 missing 之后判断，所以真的缺失优先报 error（那才需要人管）。 */
+    if (legacyLayout.length > 0) {
+      return {
+        status: 'warn',
+        detail: `有 ${legacyLayout.length} 个文件仍在老布局目录里（能正常打开，只是还没进扁平池）`,
+        samples: legacyLayout,
+        fixable: false,
+        advice: '这不是数据损坏：文件读路径有回退，内容完好。到「存储 → 🚚 库搬迁」跑一次，'
+          + '它们就会被搬进扁平池并按你选的形态重新落盘。',
+      } as any
+    }
     return { status: 'ok', detail: `已核对 ${checked} 个池内文件，物理字节全部就位`, fixable: false } as any
+  }
+
+  /**
+   * 老布局回退路径：`<dataFiles>/<project>/<virtualPath>`。
+   *
+   * 改造前的上传直接落在项目目录里（没有扁平池）。读路径对这种条目有降级分支，
+   * 所以文件其实是好的。doctor 用它区分「没进池」和「真的丢了」。
+   * 拿不到 dataFiles 或字段缺失时返回 null（按缺失处理，保守方向）。
+   */
+  private legacyFallbackPath(e: { project?: unknown; virtualPath?: unknown }): string | null {
+    const proj = String(e.project ?? '')
+    const vp = String(e.virtualPath ?? '')
+    if (proj === '' || vp === '') return null
+    /* 必须用**文件库根**（fileindex.dataFiles），不是本类的 dataFiles ——
+     * 后者是系统数据根（privhub.dataRoot），两者在分离部署下不同盘，
+     * 拼出来的路径必然不存在，表现为「修了但没效果」。 */
+    const fi = this.fi() as { dataFiles?: unknown } | null
+    let root = ''
+    try {
+      const v = fi?.dataFiles
+      if (typeof v === 'string' && v !== '') root = v
+    } catch { root = '' }
+    if (root === '') return null
+    return join(root, proj, ...vp.split('/'))
   }
 
   /** 池 → 索引：池里存在但没有任何索引条目引用的文件（孤儿，纯占盘）。 */

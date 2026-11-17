@@ -11,6 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { basename } from 'node:path'
 import { json, readBody, hashPassword, isRole, roleAtLeast } from '../../privhub-core/src/index'
 import { registerLegacyMigration } from './migrate'
+import { registerRelocation } from './relocate'
 
 export const name = 'privhub-admin'
 export const inject = ['privhub', 'audit', 'eventBus', 'storage', 'cap']
@@ -51,18 +52,27 @@ export function apply(ctx: Context): void {
     if (ok) void audit(u, 'project-delete', String(body.name ?? ''))
   }, 'project-delete')
 
-  /* 用户管理：列出所有用户（管理员） */
+  /* 用户管理：列出所有用户（管理员）
+   *
+   * 可选 `limit=N`（2026-11-17）：概览页只需要「总数」这个数字，不需要整个名册。
+   * 不带 limit 时行为与从前完全一致（全量返回）；带 limit 时截断列表，但
+   * `total` 始终是真实总数 —— 调用方要总数就读 total，不要拿分页列表的
+   * .length 当总数（那正是概览页少报审计记录数的同类错误）。 */
   svc.route('/privhub/api/admin/users', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
     if (!ctx.cap.can(u, 'admin.users', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     // hasPersonalSpace 用于界面提示「改名会同步改个人空间文件夹」。
     // 只暴露「是否存在」，不暴露目录内容（目录名恒等于 displayName，无额外信息泄露）。
-    const users = [...svc.users.values()].map((x) => ({
+    const all = [...svc.users.values()].map((x) => ({
       username: x.username, displayName: x.displayName, role: x.role, projects: x.projects,
       hasPersonalSpace: String(x.personalDir ?? '').trim() !== '',
     }))
-    json(res, 200, { ok: true, users, allProjects: await svc.allProjects() })
+    const url = new URL(req.url ?? '/', 'http://x')
+    const rawLimit = Number(url.searchParams.get('limit'))
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 0
+    const users = limit > 0 ? all.slice(0, limit) : all
+    json(res, 200, { ok: true, users, total: all.length, allProjects: await svc.allProjects() })
   }, 'admin-users')
 
   /* 用户管理：更新角色/项目权限（管理员） */
@@ -232,4 +242,9 @@ export function apply(ctx: Context): void {
    * 塞进本文件会让「用户管理」那些短路由淹没在一屏迁移逻辑里。
    * 权限口径与本文件其余路由一致（管理员 + admin.storage/write）。 */
   registerLegacyMigration(ctx, { audit })
+
+  /* ---------- 库搬迁（池内文件 → 指定卷 + 形态变换；程序/库分离）----------
+   * 与 legacy 迁移互补：legacy 只搬外部老库，relocate 搬已在池里的全部文件，
+   * 并支持解密/加密/保持三种形态。权限口径同上（管理员 + admin.storage/write）。 */
+  registerRelocation(ctx, { audit })
 }

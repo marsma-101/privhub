@@ -166,8 +166,17 @@ styleEl.textContent = `
 .v3-main > .v3-content { flex:1; min-width:0; }
 .v3-files { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
 .v3-files-main { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
-.v3-files-head { padding:10px 16px; gap:8px; flex-wrap:wrap; }
+/* 文件区头部（2026-11-16 已删除整条）：面包屑/计数/上级/整理/详情 全部并入
+   表头行，路径显示交给框架层的 T2 位置链 —— 两处显示同一段路径等于白占一行。
+   下面这条规则保留给「网格视图」等仍可能用到 main-head 的场景；列表视图不再渲染它。 */
+.v3-files-head { display:none; }
 .v3-files-count { font-size:12px; white-space:nowrap; }
+/* 表头行右侧的工具区：计数 + ℹ详情 + ⋯整理（原第 4 层的内容）。 */
+.file-table-head .head-tools {
+  display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap;
+}
+.file-table-head .head-count { font-size:11.5px; color:var(--muted); }
+.v3-op-btn.mini { padding:2px 7px; font-size:12px; line-height:1.5; }
 .v3-headops { position:relative; display:flex; align-items:center; }
 .v3-head-menu { right:0; top:34px; min-width:210px; }
 .v3-menu-row .v3-fs.on { background:var(--accent-soft, rgba(90,130,200,.14)); color:var(--accent); font-weight:600; }

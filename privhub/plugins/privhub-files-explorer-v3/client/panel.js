@@ -965,40 +965,6 @@ const PanelV3 = {
              上传·新建·查重等动作收进右侧可伸缩边栏「操作」标签；查重不再单独占头部按钮。 -->
         <div class="v3-files">
           <div class="v3-files-main">
-            <div class="main-head v3-files-head">
-              <span class="breadcrumb">
-                <span v-for="(c, i) in crumbs" :key="i">
-                  <a v-if="i < crumbs.length - 1" @click="gotoCrumb(c.path)" style="cursor:pointer">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</a>
-                  <span v-else style="color:var(--text)">{{ i === 0 ? '📁 ' : '' }}{{ c.label }}</span>
-                  <span v-if="i < crumbs.length - 1" class="crumb"> / </span>
-                </span>
-              </span>
-              <span class="crumb v3-files-count" v-if="!nav.listLoading">{{ dirCount }} 文件夹 · {{ fileCount }} 文件</span>
-              <span class="spacer"></span>
-              <button v-if="nav.path" class="v3-op-btn" title="返回上级目录" @click="goUp">↑ 上级</button>
-              <div class="v3-headops">
-                <button class="v3-op-btn" :class="{ on: store.headMenu }" title="整理：排序 / 视图 / 筛选 / 刷新" @click.stop="toggleHeadMenu">⋯ 整理</button>
-                <div v-if="store.headMenu" class="ctx-mask" @click="store.headMenu = false"></div>
-                <div v-if="store.headMenu" class="v3-menu v3-head-menu" @click.stop>
-                  <div class="v3-menu-row"><span>排序</span>
-                    <span class="v3-fs" :class="{ on: nav.sortKey === 'name' }" @click="setSort('name')">名称</span>
-                    <span class="v3-fs" :class="{ on: nav.sortKey === 'size' }" @click="setSort('size')">大小</span>
-                    <span class="v3-fs" :class="{ on: nav.sortKey === 'type' }" @click="setSort('type')">类型</span>
-                    <span class="v3-fs" :class="{ on: nav.sortKey === 'mtime' }" @click="setSort('mtime')">时间</span>
-                  </div>
-                  <div class="v3-menu-item" @click="setSort(nav.sortKey)">{{ nav.sortAsc ? '↓ 改为降序' : '↑ 改为升序' }}<span class="v3-menu-k">{{ sortLabel }}</span></div>
-                  <div class="v3-menu-sep"></div>
-                  <div class="v3-menu-row"><span>视图</span>
-                    <span class="v3-fs" :class="{ on: nav.viewMode === 'grid' }" @click="setViewMode('grid')">▦ 网格</span>
-                    <span class="v3-fs" :class="{ on: nav.viewMode === 'list' }" @click="setViewMode('list')">☰ 列表</span>
-                  </div>
-                  <div class="v3-menu-sep"></div>
-                  <div class="v3-menu-item" @click="toggleDirOnly">{{ nav.dirOnly ? '✓ ' : '' }}只看文件夹</div>
-                  <div class="v3-menu-item" @click="refreshDir">🔄 刷新目录</div>
-                </div>
-              </div>
-              <button class="v3-op-btn" :class="{ on: detailOpen }" title="打开 / 收起右侧边栏（操作 / 详情）" @click.stop="detailToggle">{{ detailOpen ? '✖ 详情' : 'ℹ️ 详情' }}</button>
-            </div>
 
             <!-- 批量操作条：仅选中时出现（下载 / 移动 / 删除 / 全选 / 取消） -->
             <div v-if="checkedCount() > 0" class="v3-batchbar">
@@ -1044,14 +1010,45 @@ const PanelV3 = {
 
               <!-- 列表视图 -->
               <div v-else class="file-table-wrap">
-                <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px 26px">
+                <!-- 表头行：2026-11-16 起**同时承担页内工具栏**。
+                     原来这里上面还有一条 .v3-files-head（面包屑/计数/上级/整理/详情），
+                     与框架层的 T2 位置链重复显示同一段路径，等于白占一行。
+                     现在路径交给 T2，页内只留表头：勾选 + 排序 + 「⋯整理」「ℹ详情」
+                     贴在表头最右，不再另外占一条横带。 -->
+                <div class="file-table-head" style="grid-template-columns:28px 1fr 90px 120px 110px auto">
                   <span><input type="checkbox" :checked="checkedCount() > 0 && checkedCount() === entries.length" @click="selectAll" /></span>
                   <span class="col-name" style="cursor:pointer" @click="setSort('name')" title="按名称排序">名称{{ sortArrow('name') }}</span>
                   <span class="col-size" style="cursor:pointer" @click="setSort('size')" title="按大小排序">大小{{ sortArrow('size') }}</span>
                   <span class="col-type" style="cursor:pointer" @click="setSort('type')" title="按类型排序">类型{{ sortArrow('type') }}</span>
                   <span class="col-time" style="cursor:pointer" @click="setSort('mtime')" title="按修改时间排序">修改时间{{ sortArrow('mtime') }}</span>
-                  <span></span>
+                  <span class="head-tools">
+                    <button v-if="nav.path" class="v3-op-btn mini" title="返回上级目录" @click.stop="goUp">↑</button>
+                    <span class="head-count">{{ dirCount }} 夹 · {{ fileCount }} 件</span>
+                    <button class="v3-op-btn mini" :class="{ on: detailOpen }" title="打开 / 收起右侧边栏（操作 / 详情）" @click.stop="detailToggle">{{ detailOpen ? '✖' : 'ℹ' }}</button>
+                    <div class="v3-headops">
+                      <button class="v3-op-btn mini" :class="{ on: store.headMenu }" title="整理：排序 / 视图 / 筛选 / 刷新" @click.stop="toggleHeadMenu">⋯</button>
+                      <div v-if="store.headMenu" class="ctx-mask" @click="store.headMenu = false"></div>
+                      <div v-if="store.headMenu" class="v3-menu v3-head-menu" @click.stop>
+                        <div class="v3-menu-row"><span>排序</span>
+                          <span class="v3-fs" :class="{ on: nav.sortKey === 'name' }" @click="setSort('name')">名称</span>
+                          <span class="v3-fs" :class="{ on: nav.sortKey === 'size' }" @click="setSort('size')">大小</span>
+                          <span class="v3-fs" :class="{ on: nav.sortKey === 'type' }" @click="setSort('type')">类型</span>
+                          <span class="v3-fs" :class="{ on: nav.sortKey === 'mtime' }" @click="setSort('mtime')">时间</span>
+                        </div>
+                        <div class="v3-menu-item" @click="setSort(nav.sortKey)">{{ nav.sortAsc ? '↓ 改为降序' : '↑ 改为升序' }}<span class="v3-menu-k">{{ sortLabel }}</span></div>
+                        <div class="v3-menu-sep"></div>
+                        <div class="v3-menu-row"><span>视图</span>
+                          <span class="v3-fs" :class="{ on: nav.viewMode === 'grid' }" @click="setViewMode('grid')">▦ 网格</span>
+                          <span class="v3-fs" :class="{ on: nav.viewMode === 'list' }" @click="setViewMode('list')">☰ 列表</span>
+                        </div>
+                        <div class="v3-menu-sep"></div>
+                        <div class="v3-menu-item" @click="toggleDirOnly">{{ nav.dirOnly ? '✓ ' : '' }}只看文件夹</div>
+                        <div class="v3-menu-item" @click="refreshDir">🔄 刷新目录</div>
+                      </div>
+                    </div>
+                  </span>
                 </div>
+
                 <div
                   v-for="e in entries" :key="e.name"
                   class="file-table-row" :class="{ sel: isChecked(e.name) || (nav.selected && nav.selected.name === e.name), dir: e.isDir }"
