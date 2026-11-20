@@ -29,6 +29,7 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join, basename } from 'node:path'
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -70,6 +71,13 @@ writeFileSync(join(DATA, 'git-backup', 'config'), '[core]\n\trepositoryformatver
  * （本仓在静态服务里踩过同类前缀 bug，这里顺手钉一根） */
 mkdirSync(join(DATA, 'logs-extra'), { recursive: true })
 writeFileSync(join(DATA, 'logs-extra', 'notes.json'), '{"a":1}\n', 'utf8')
+/* 缺陷 3.1：子目录系统数据（应被递归扫出） */
+mkdirSync(join(DATA, 'doc-versions'), { recursive: true })
+writeFileSync(join(DATA, 'doc-versions', 'doc-1.json'), '{"v":2}\n', 'utf8')
+/* 缺陷 3.1/3.2：迁移明文备份（应被扫出，kind=bak，可显式清理） */
+writeFileSync(join(DATA, 'invites.json.plain-20261120-000000.bak'), INVITES, 'utf8')
+/* 缺陷 3.1/3.3：孤儿 tmp 不在这里预置 —— 插件挂载时的启动清理会立刻把它删掉（行为正确），
+ * 所以第 5 段在挂载之后现造一个再验证清理。 */
 
 process.env.PRIVHUB_ROOT = TESTROOT
 
@@ -107,12 +115,18 @@ console.log('\n── 1. 扫描：只列该迁的，不列危险品 ──')
 const found = await svc.scanPlaintextSystemFiles()
 const names = found.map((f) => basename(f.file)).sort()
 ok(names.includes('comments.json') && names.includes('invites.json'),
-  `扫出两个明文系统数据文件（实测 ${names.join(', ')}）`)
+  `扫出顶层明文系统数据文件（实测 ${names.join(', ')}）`)
+ok(names.includes('doc-1.json'), '缺陷 3.1：子目录系统数据（data/doc-versions/）也被递归扫出')
+ok(names.includes('invites.json.plain-20261120-000000.bak'), '缺陷 3.1/3.2：迁移明文备份（*.plain-*.bak）出现在扫描结果里')
+ok(!names.some((n) => n.endsWith('.tmp')) || found.filter((f) => f.kind === 'tmp').length === 0,
+  '预置孤儿 tmp 已被启动清理删掉（缺陷 3.3 行为：挂载即清，清单里不留 tmp）')
 ok(!names.includes('secret.key'), '密钥文件不在待迁移清单里')
 ok(!names.includes('audit.jsonl'), '审计文件不在待迁移清单里')
 ok(!names.some((n) => n.endsWith('.log')), '日志不在待迁移清单里')
 ok(!names.includes('HEAD') && !names.includes('config'), 'git 备份内部文件不在待迁移清单里')
-ok(found.every((f) => f.file.endsWith('.json')), '只收 data/ 顶层的 *.json（不递归 —— 递归正是灾难的来源）')
+ok(found.filter((f) => f.kind === 'bak').length === 1, 'kind 归类正确：bak=1 个（缺陷 3.1）')
+ok(found.every((f) => f.kind === 'json' || f.kind === 'bak' || f.kind === 'tmp'),
+  '每个结果都带 kind 字段（json/bak/tmp 三类）')
 
 /* ================= 三、守卫：拒绝要出声 ================= */
 
@@ -155,9 +169,13 @@ ok(sibling[0].status === 'migrated',
 
 console.log('\n── 3. 迁移：先备份、原子写、回读校验 ──')
 const before = readFileSync(join(DATA, 'comments.json'))
-const res = await svc.migrateFilesToEncrypted(found.map((f) => f.file))
+/* 缺陷 3.1 之后扫描结果含 .bak/.tmp：迁移口径与生产路由一致，只迁 kind=json 的系统数据。
+ * 给备份再套一层加密只会造出 `*.bak.plain-*.bak` 套娃；tmp 该清理不该加密。 */
+const res = await svc.migrateFilesToEncrypted(found.filter((f) => f.kind === 'json').map((f) => f.file))
 const migrated = res.filter((r) => r.status === 'migrated')
-ok(migrated.length === 2, `两个明文文件都被迁移（实测 ${res.map((r) => basename(r.file) + '=' + r.status).join(', ')}）`)
+ok(migrated.length === 3, `三个明文系统数据文件都被迁移（顶层 2 + 子目录 doc-1；实测 ${res.map((r) => basename(r.file) + '=' + r.status).join(', ')}）`)
+ok(res.find((r) => basename(r.file) === 'notes.json')?.status === 'already-encrypted',
+  'logs-extra 的 notes.json 在前面已被迁过，这里如实回 already-encrypted（快照是迁移前取的，幂等兜底）')
 
 const cRes = res.find((r) => basename(r.file) === 'comments.json')
 ok(await svc.isEncrypted(cRes.file), '迁移后文件头是 PHENC1（真的变成密文了，不是写了个空壳）')
@@ -175,7 +193,36 @@ ok(await svc.readText(inv.file) === INVITES, '免登录邀请码文件迁移后�
 
 const again = await svc.migrateFilesToEncrypted([cRes.file])
 ok(again[0].status === 'already-encrypted', '重复迁移是幂等的（回 already-encrypted，不会又套一层）')
-ok((await svc.scanPlaintextSystemFiles()).length === 0, '迁移后扫描结果为空 —— 界面上的「还有几个明文」会归零')
+/* 迁移后：剩余明文 = 预置 .bak + 迁移新产生的 .bak（它们不该被「迁移」，走 3.2 显式清理） */
+const afterMigrate = await svc.scanPlaintextSystemFiles()
+ok(afterMigrate.length >= 1 && afterMigrate.every((f) => f.kind === 'bak'),
+  '迁移后扫描只剩 .bak 备份（系统数据 json 全部归零；备份不走迁移口径）')
+
+/* ================= 五、缺陷 3.2/3.3：备份可列举可清理、孤儿 tmp 启动清理 ================= */
+
+console.log('\n── 4. 明文备份：可列举、可显式清理、拒绝越界删除 ──')
+const backups = await svc.listPlainBackups()
+ok(backups.length === 5, `listPlainBackups 收齐 5 个备份（预置 1 + 四次迁移产生 4：顶层2+doc-1+logs-extra；实测 ${backups.length}：${backups.map((b) => basename(b.file)).join(', ')}）`)
+ok(backups.every((b) => typeof b.bytes === 'number' && typeof b.at === 'number'), '备份条目带体积与时间')
+/* 防误删闸：data/ 之外、非 .bak 模式，都必须拒绝 */
+const badDel = await svc.deletePlainBackups([join(TESTROOT, 'outside-root', 'x.bak'), join(DATA, 'comments.json')])
+ok(badDel.deleted === 0 && badDel.failed.length === 2, '越界路径与非备份名的删除请求全部被拒（防误删硬闸）')
+const delAll = await svc.deletePlainBackups()
+ok(delAll.deleted === backups.length && delAll.failed.length === 0, `无参删除清掉全部备份（实测删了 ${delAll.deleted} 个）`)
+ok((await svc.listPlainBackups()).length === 0, '清理后备份清单归零')
+
+console.log('\n── 5. 孤儿 tmp：启动清理删别人的，不删本进程的 ──')
+/* 挂载时启动清理已经跑过（data/ 里那时没有 tmp），这里现造一个再显式调一次验证判定逻辑 */
+const orphanTmp = join(DATA, 'sessions.json.12345.deadbeef.tmp')
+writeFileSync(orphanTmp, '{}\n', 'utf8')
+const aliveTmp = join(DATA, `alive.json.${process.pid}.ab12cd34.tmp`)
+writeFileSync(aliveTmp, '{}\n', 'utf8')
+const nCleaned = await svc.cleanupOrphanTmp()
+ok(nCleaned >= 1, `cleanupOrphanTmp 删掉了孤儿 tmp（实测 ${nCleaned} 个）`)
+ok(!existsSync(join(DATA, 'sessions.json.12345.deadbeef.tmp')), '别人的 pid（12345）残留被删')
+ok(existsSync(aliveTmp), `本进程 pid（${process.pid}）正在写的 tmp **没被误删**`)
+await rm(aliveTmp, { force: true })
+ok((await svc.scanPlaintextSystemFiles()).length === 0, 'tmp 清完后扫描归零 —— 界面上的「还有几个明文」会归零')
 
 /* ================= 五、失败路径：宁可留明文，不留半截密文 ================= */
 
@@ -198,7 +245,7 @@ ok(Buffer.compare(pubNow, PUBLISH) === 0, '失败后内容与迁移前逐字节�
 
 /* ================= 六、加密关闭时不做事 ================= */
 
-console.log('\n── 5. 加密关闭：拒绝而不是「假装迁了」 ──')
+console.log('\n── 6. 加密关闭：拒绝而不是「假装迁了」 ──')
 const ctx2 = new Context()
 console.warn = realConsoleWarn   // 这一段不需要告警，还原真实通道免得静默出错
 await ctx2.plugin({ name: mod.name, apply: mod.apply, Config: mod.Config }, { enabled: false, keyFile: '', auditMagic: 'PHAUD1\0' })
@@ -209,9 +256,9 @@ ok(readFileSync(join(DATA, 'publish.json'), 'utf8').startsWith('[ {"token"'), '�
 
 /* ================= 收尾 ================= */
 
-/* 顺带记录：备份文件是怎么堆的 —— 运维需要知道它们会留在原地 */
+/* 备份已被第 4 段显式清理（这正是 3.2 的行为）：如实报告，不再留「越堆越多」的旧叙事 */
 const bakCount = readdirSync(DATA).filter((n) => /\.plain-.*\.bak$/.test(n)).length
-console.log(`     [实测] data/ 下留了 ${bakCount} 个 .plain-*.bak 备份（迁移的明文存证，由运维决定何时清理）`)
+console.log(`     [实测] data/ 下剩 ${bakCount} 个 .plain-*.bak 备份（已在测试中走 deletePlainBackups 显式清理）`)
 
 try { await ctx.stop?.() } catch { /* 忽略 */ }
 try { await ctx2.stop?.() } catch { /* 忽略 */ }

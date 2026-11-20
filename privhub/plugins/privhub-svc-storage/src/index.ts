@@ -144,11 +144,13 @@ async function findCiphertextFile(root: string, maxFiles = 500): Promise<string 
   return null
 }
 
-/** 一个仍以明文落盘的系统数据文件。 */
+/** 一个仍以明文落盘的系统数据文件（或迁移备份 / 临时残留，缺陷 3.1） */
 export interface PlaintextFile {
   /** 绝对路径 */
   file: string
   bytes: number
+  /** 文件名归类：json=系统数据；bak=迁移明文备份；tmp=临时残留。旧调用方可不读这个字段。 */
+  kind?: 'json' | 'bak' | 'tmp'
 }
 
 /** 单文件迁移结果。「拒绝」是一种结果，不是沉默 —— 调用方必须能看出哪些没动、以及为什么。 */
@@ -812,26 +814,135 @@ export class StorageService extends Service {
   }
 
   /**
-   * 扫描「由 ctx.storage 管理、但仍以明文落盘」的系统数据文件。
+   * 扫描「由 ctx.storage 管理、但仍以明文落盘」的系统数据文件（缺陷 3.1 扩口径）。
    *
-   * 只扫 `data/` **顶层**的 `*.json`，不递归：系统 JSON 全部住在那一层，
-   * 而递归正是上面那四类灾难的来源。已加密的、隐藏的、以及被守卫拒绝的都不出现在结果里
-   * （守卫拒绝项由 `migrateFilesToEncrypted` 显式报告，不在这里吞掉）。
+   * 从「只扫 data/ 顶层 *.json」扩为「白名单目录递归 + 按文件名判形态」：
+   *   · 递归子目录（深度 ≤4），因为系统数据确实有住子目录里的
+   *     （doc-versions / rag-corpus / taskboards / agent-idem …）；
+   *   · 形态白名单：`*.json`（系统数据）、`*.plain-*.bak`（迁移明文备份）、`*.tmp`（残留）；
+   *     其余扩展名一律跳过 —— data/ 里的 .log、审计块等不该出现在这份清单里；
+   *   · 禁区：`logs/`、`git-backup/` 绝不进入也绝不报告（与 refuseReason 同一两类）；
+   *     `secret.key` 永不报告；
+   *   · 已加密的按文件头跳过（isEncrypted），明文才算「待处理」。
    */
   async scanPlaintextSystemFiles(): Promise<PlaintextFile[]> {
     const dir = join(dataRootDir, 'data')
-    let entries: Dirent[]
-    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return [] }
+    const files = await this.walkPlainCandidates(dir)
     const out: PlaintextFile[] = []
-    for (const e of entries) {
-      if (!e.isFile() || e.name.startsWith('.') || !e.name.toLowerCase().endsWith('.json')) continue
-      const full = join(dir, e.name)
+    for (const full of files) {
+      const name = basename(full).toLowerCase()
+      let kind: PlaintextFile['kind'] = 'json'
+      if (name.endsWith('.bak')) kind = 'bak'
+      else if (name.endsWith('.tmp')) kind = 'tmp'
       if (await this.isEncrypted(full)) continue
       const s = await stat(full).catch(() => null)
-      out.push({ file: full, bytes: s ? s.size : 0 })
+      out.push({ file: full, bytes: s ? s.size : 0, kind })
     }
     return out.sort((a, b) => a.file.localeCompare(b.file))
   }
+
+  /**
+   * 递归收集 data/ 下「形态白名单」候选文件（不判加密，只判文件名与禁区）。
+   * 深度限制 4 层防失控；符号链接跳过（与 findCiphertextFile 同口径，防跑出数据根）。
+   */
+  private async walkPlainCandidates(root: string): Promise<string[]> {
+    const out: string[] = []
+    const isJson = (n: string): boolean => n.toLowerCase().endsWith('.json')
+    const isBak = (n: string): boolean => /\.plain-[^.]+\.bak$/i.test(n)
+    const isTmp = (n: string): boolean => n.toLowerCase().endsWith('.tmp')
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      let entries: Dirent[]
+      try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue
+        const full = join(dir, e.name)
+        if (e.isDirectory()) {
+          if (depth >= 4) continue
+          if (e.name === 'logs' || e.name === 'git-backup') continue
+          await walk(full, depth + 1)
+          continue
+        }
+        if (!e.isFile() || e.name.startsWith('.')) continue
+        if (!isJson(e.name) && !isBak(e.name) && !isTmp(e.name)) continue
+        if (full === resolve(this.keyFile)) continue // secret.key 永不报告
+        out.push(full)
+      }
+    }
+    await walk(root, 0)
+    return out
+  }
+
+  /** data/ 下所有 `*.plain-*.bak` 迁移备份（缺陷 3.2：可列举才能显式清理）。 */
+  async listPlainBackups(): Promise<Array<{ file: string; bytes: number; at: number }>> {
+    const dir = join(dataRootDir, 'data')
+    const files = (await this.walkPlainCandidates(dir)).filter((f) => /\.plain-[^.]+\.bak$/i.test(basename(f)))
+    const out: Array<{ file: string; bytes: number; at: number }> = []
+    for (const full of files) {
+      const s = await stat(full).catch(() => null)
+      if (!s) continue
+      out.push({ file: full, bytes: s.size, at: s.mtimeMs })
+    }
+    return out.sort((a, b) => a.file.localeCompare(b.file))
+  }
+
+  /**
+   * 删除明文迁移备份（缺陷 3.2）。无参 = 删全部扫描到的；传 files = 只删列出的。
+   * 传名单时路径必须仍在 data/ 下且匹配 `*.plain-*.bak` —— 这是防误删的硬闸，
+   * 不符合的按 refused 进 failed，不静默跳过。
+   */
+  async deletePlainBackups(files?: string[]): Promise<{ deleted: number; failed: Array<{ file: string; reason: string }> }> {
+    const dataDir = join(dataRootDir, 'data')
+    const underData = (f: string): boolean => {
+      const d = resolve(dataDir)
+      const n = resolve(f)
+      return n === d || n.startsWith(d.endsWith(sep) ? d : d + sep)
+    }
+    let targets: string[]
+    const failed: Array<{ file: string; reason: string }> = []
+    if (files === undefined) {
+      targets = (await this.listPlainBackups()).map((b) => b.file)
+    } else {
+      targets = []
+      for (const f of files) {
+        if (!underData(f)) { failed.push({ file: f, reason: '不在系统数据根（data/）下，拒绝删除' }); continue }
+        if (!/\.plain-[^.]+\.bak$/i.test(basename(f))) { failed.push({ file: f, reason: '文件名不符合 *.plain-*.bak 备份模式，拒绝删除' }); continue }
+        targets.push(f)
+      }
+    }
+    let deleted = 0
+    for (const f of targets) {
+      try {
+        await rm(f, { force: true })
+        deleted++
+        console.warn('[storage] 已删除明文迁移备份：' + f)
+      } catch (e) {
+        failed.push({ file: f, reason: msgOf(e) })
+      }
+    }
+    return { deleted, failed }
+  }
+
+  /* 启动清理（缺陷 3.3）：删 data/ 下的孤儿 `*.tmp`。
+   * 孤儿判定：文件名含 `.<pid>.`（D7 唯一临时名口径）但 pid ≠ 当前进程 → 上次崩溃残留；
+   * 不含 pid 的固定名 tmp（如 volumes.json.tmp 类，虽然它们在 config/ 不在 data/，
+   * 但万一有别的固定名 tmp 落进 data/ 也一并收掉）→ 同样是残留。
+   * `*.plain-*.bak` **不动** —— 那是迁移的明文存证，走 listPlainBackups/deletePlainBackups
+   * 的显式管理（缺陷 3.2），启动清理无权擅删备份。 */
+  async cleanupOrphanTmp(): Promise<number> {
+    const dir = join(dataRootDir, 'data')
+    const files = (await this.walkPlainCandidates(dir)).filter((f) => basename(f).toLowerCase().endsWith('.tmp'))
+    let n = 0
+    for (const f of files) {
+      const m = basename(f).match(/\.(\d+)\.[0-9a-f]+\.tmp$/i)
+      if (m && Number(m[1]) === process.pid) continue // 本进程正在写的 tmp，不碰
+      await rm(f, { force: true }).catch(() => { /* 删不掉下次启动再试 */ })
+      n++
+    }
+    if (n > 0) console.warn('[storage] 启动清理：已删除 ' + n + ' 个残留临时文件：'
+      + files.filter((f) => basename(f).toLowerCase().endsWith('.tmp') && !existsSync(f)).map((f) => basename(f)).join('、'))
+    return n
+  }
+
 
   /**
    * 把指定文件迁移为密文（安全版）。四道保险，缺一不可：
@@ -898,6 +1009,10 @@ export function apply(ctx: Context, config: Config): void {
    * 只报告、**不擅自迁移** —— 启动时静默改写用户数据是比「明文」更糟的问题
    * （没法复核、没处回退）。真正的迁移由管理员在管理端显式触发，走备份+校验那条路。 */
   void (async () => {
+    /* 缺陷 3.3：启动清理孤儿 tmp（在明文自检之前跑 —— 清完再报，别把 tmp 误报成待迁移）。 */
+    try { await svc.cleanupOrphanTmp() } catch (e) {
+      console.warn('[storage] 临时文件清理失败（不影响启动）：' + msgOf(e))
+    }
     try {
       const files = await svc.scanPlaintextSystemFiles()
       if (files.length === 0) return

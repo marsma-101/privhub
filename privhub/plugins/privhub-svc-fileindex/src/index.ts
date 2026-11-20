@@ -1146,13 +1146,16 @@ export class FileIndexService extends Service {
     return { scanned, failed }
   }
 
-  /** 清理池里的半截临时文件（启动时调；迁移被打断后会留下）。 */
+  /** 清理池里的半截临时文件（启动时调；迁移/搬迁被打断后会留下）。
+   *  缺陷 3.3：加上 relocate 搬迁残留的 `*.relocate.tmp`（池在 data-files/，
+   *  svc-storage 的 data/ 清理覆盖不到它）。 */
   async cleanPartialFiles(): Promise<number> {
     let n = 0
     try {
       const ents = await readdir(this.poolDir, { withFileTypes: true })
       for (const d of ents) {
-        if (!d.isFile() || !d.name.endsWith('.part')) continue
+        if (!d.isFile()) continue
+        if (!d.name.endsWith('.part') && !d.name.endsWith('.relocate.tmp')) continue
         await unlink(join(this.poolDir, d.name)).catch(() => { /* 删不掉就下次再试 */ })
         n++
       }
@@ -1204,7 +1207,7 @@ export function apply(ctx: Context, config: Config): void {
     /* 启动清理：迁移被打断留下的 .part 文件。 */
     try {
       const n = await svc.cleanPartialFiles()
-      if (n > 0) console.warn('[fileindex] 已清理 ' + n + ' 个迁移残留半截文件（.part）')
+      if (n > 0) console.warn('[fileindex] 已清理 ' + n + ' 个迁移/搬迁残留半截文件（.part / .relocate.tmp）')
     } catch (e) {
       /* 清理失败不该阻断启动，但**必须留痕**：残留的 .part 会一直堆在池目录里，
        * 占用空间且让「池里有几万个文件」的统计越来越失真。

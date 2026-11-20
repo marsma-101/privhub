@@ -200,12 +200,13 @@ export function apply(ctx: Context): void {
     if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
     const files = await ctx.storage.scanPlaintextSystemFiles()
     /* 只回文件名与体积，不回绝对路径：管理员要判断的是「哪个文件、多大」，
-     * 盘符与目录结构对这件事没有帮助，少泄露一点是一点。 */
+     * 盘符与目录结构对这件事没有帮助，少泄露一点是一点。
+     * 缺陷 3.1：kind 透传（json / bak / tmp），界面按形态打标记。 */
     json(res, 200, {
       ok: true,
       encryptionEnabled: ctx.storage.active,
       total: files.length,
-      files: files.map((f) => ({ name: basename(f.file), bytes: f.bytes })),
+      files: files.map((f) => ({ name: basename(f.file), bytes: f.bytes, kind: f.kind })),
     })
   }, 'storage-plaintext')
 
@@ -216,7 +217,11 @@ export function apply(ctx: Context): void {
     if (!ctx.cap.can(u, 'admin.storage', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
     if (!ctx.storage.active) return json(res, 400, { ok: false, error: '加密未启用（storage.enabled=false），迁移无意义' })
-    const files = (await ctx.storage.scanPlaintextSystemFiles()).map((f) => f.file)
+    /* 缺陷 3.1 之后扫描结果含 .bak/.tmp：迁移只针对真正的系统数据（kind=json）。
+     * 给备份套一层加密只会造出 `*.bak.plain-*.bak` 套娃备份，tmp 该被清理而不是被加密
+     * （tmp 清理在启动时做，备份清理在下面的 backups/delete 路由做）。 */
+    const files = (await ctx.storage.scanPlaintextSystemFiles())
+      .filter((f) => f.kind === 'json').map((f) => f.file)
     if (files.length === 0) return json(res, 200, { ok: true, migrated: 0, failed: 0, results: [] })
 
     const results = await ctx.storage.migrateFilesToEncrypted(files)
@@ -236,6 +241,39 @@ export function apply(ctx: Context): void {
       })),
     })
   }, 'storage-migrate')
+
+  /* ---------- 缺陷 3.2：明文迁移备份的列举与显式清理 ----------
+   * 迁移会留 `<file>.plain-<时间戳>.bak` 在原地（这是「明文不丢」的代价），
+   * 此前既看不见也清不掉，只能越堆越多。两条路由与 plaintext/migrate 同权限口径。 */
+
+  /* 列出迁移明文备份（管理员） */
+  svc.route('/privhub/api/storage/backups', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (!ctx.cap.can(u, 'admin.storage', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
+    if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' })
+    const backups = await ctx.storage.listPlainBackups()
+    json(res, 200, {
+      ok: true,
+      total: backups.length,
+      files: backups.map((b) => ({ name: basename(b.file), bytes: b.bytes, at: b.at })),
+    })
+  }, 'storage-backups')
+
+  /* 删除迁移明文备份（管理员，写路由走审计） */
+  svc.route('/privhub/api/storage/backups/delete', async (req, res) => {
+    const u = svc.requireUser(req, res)
+    if (!u) return
+    if (!ctx.cap.can(u, 'admin.storage', 'write')) return json(res, 403, { ok: false, error: '仅管理员' })
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
+    let body: any = {}
+    try { body = JSON.parse(await readBody(req)) } catch { return json(res, 400, { ok: false, error: 'invalid json' }) }
+    const files = Array.isArray(body.files) ? body.files.map(String) : undefined
+    const r = await ctx.storage.deletePlainBackups(files)
+    json(res, 200, { ok: r.failed.length === 0, deleted: r.deleted, failed: r.failed })
+    void audit(u, 'storage-backups-delete', 'deleted=' + r.deleted
+      + (r.failed.length ? ' failed=' + r.failed.map((f) => basename(f.file)).join(',') : ''))
+  }, 'storage-backups-delete')
 
   /* ---------- 老库迁移（两遍：只读扫描建索引 → 后台慢速搬字节）----------
    * 放在独立模块里：这部分有后台循环、in-flight 单飞、进度落盘，

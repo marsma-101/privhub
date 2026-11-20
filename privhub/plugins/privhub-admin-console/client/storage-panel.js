@@ -95,6 +95,14 @@ export const StoragePanel = {
       /* 2026-11-17 重设计：三段式标签页。默认停在「总览」，
        * 因为大多数人进来只想看「我的数据在哪、多大、有没有问题」。 */
       tab: 'overview',
+      /* 缺陷 2.3：系统数据明文清单（GET /storage/plaintext）。
+       * null = 尚未取到；接口失败也保持 null（不猜）。 */
+      plainFiles: null,
+      plainFilesBusy: false,
+      plainResults: null,
+      /* 缺陷 3.2：明文迁移备份清单（GET /storage/backups）。null = 未取到，不猜。 */
+      plainBackups: null,
+      plainBackupsBusy: false,
     }
   },
   computed: {
@@ -186,9 +194,64 @@ export const StoragePanel = {
       return null
     },
   },
-  mounted() { void this.load() },
+  mounted() { void this.load(); void this.loadPlain() },
   methods: {
     fmt: fmtBytes,
+    /** 缺陷 2.3：拉取系统数据明文清单（GET /storage/plaintext）。失败保持 null，不猜。
+     *  缺陷 3.2：同时拉取迁移备份清单（GET /storage/backups），失败互不影响。 */
+    async loadPlain() {
+      const r = await vget('/privhub/api/storage/plaintext')
+      this.plainFiles = r.ok ? r.data : null
+      const rb = await vget('/privhub/api/storage/backups')
+      this.plainBackups = rb.ok ? rb.data : null
+    },
+    /** 缺陷 3.1：文件行 kind 标记文本。 */
+    kindLabel(kind) {
+      if (kind === 'bak') return '.bak 备份'
+      if (kind === 'tmp') return '.tmp 残留'
+      return 'JSON 数据'
+    },
+    /** 缺陷 3.2：清理迁移明文备份（POST /storage/backups/delete）。 */
+    async deletePlainBackups() {
+      const d = this.plainBackups
+      if (!d || !(d.total > 0)) return
+      const ok = await confirmAction({
+        title: '清理明文迁移备份',
+        message: '将删除 ' + d.total + ' 个迁移产生的明文备份（.bak）。\n'
+          + '备份里可能是这些系统数据最后的明文副本，确认迁移无误后再清理。确定执行吗？',
+        confirmText: '清理备份',
+      })
+      if (!ok) return
+      this.plainBackupsBusy = true
+      const r = await vsend('/privhub/api/storage/backups/delete', {})
+      this.plainBackupsBusy = false
+      if (!r.ok && !r.data) { adminToast(r.error || '清理失败', 'error'); return }
+      const res = r.data || {}
+      const failed = (res.failed || []).length
+      adminToast('清理完成：删除 ' + (res.deleted || 0) + ' 个' + (failed ? '，失败 ' + failed + ' 个' : ''), failed ? 'error' : 'ok')
+      await this.loadPlain()
+    },
+    /** 缺陷 2.3：一键迁移系统数据明文 → 密文（POST /storage/migrate）。 */
+    async migratePlain() {
+      const d = this.plainFiles
+      if (!d || !(d.total > 0)) return
+      const ok = await confirmAction({
+        title: '系统数据迁移为密文',
+        message: '将把 ' + d.total + ' 个明文系统文件加密落盘（逐个生成备份后再替换）。\n迁移过程中这些数据不可写。确定执行吗？',
+        confirmText: '开始迁移',
+      })
+      if (!ok) return
+      this.plainFilesBusy = true
+      const r = await vsend('/privhub/api/storage/migrate', {})
+      this.plainFilesBusy = false
+      if (!r.ok) { adminToast(r.error || '迁移失败', 'error'); return }
+      const res = r.data
+      const done = res.migrated || 0
+      const failed = res.failed || 0
+      this.plainResults = res.results || []
+      adminToast('迁移完成：成功 ' + done + ' 个' + (failed ? '，失败 ' + failed + ' 个' : ''), failed ? 'error' : 'ok')
+      await this.loadPlain()
+    },
     pct(v) {
       const s = (v && v.stat) || {}
       return Number(s.usedPercent) || 0
@@ -210,14 +273,20 @@ export const StoragePanel = {
       const r = await vget('/privhub/api/volumes/list')
       if (!r.ok) { this.error = r.error; this.data = null }
       else this.data = r.data
-      /* 数据形态：取真实生效值。取不到就保持 null（界面显示「未知」），
+      /* 数据形态：取真实生效值。issue #4 · 4.1：settings.plainStorage 是写入通道的值
+       * （默认 false），实际落盘形态由 main.ts 启动期判定（默认 true=明文），
+       * 二者会打架 —— 照 settings 显示就是假显示。所以显示一律读 GET 下发的
+       * effective.fileLibPlain（svc-storage 的真实生效值）；取不到才回退
+       * settings.plainStorage（旧后端兼容），再取不到 null（界面显示「未知」），
        * 绝不默认成「明文」或「加密」—— 猜错比不显示更糟。 */
       const s = await vget('/privhub/api/settings')
-      if (s.ok && s.data && s.data.settings && typeof s.data.settings.plainStorage === 'boolean') {
-        this.plainLib = s.data.settings.plainStorage
-      } else {
-        this.plainLib = null
-      }
+      const eff = s.ok && s.data && s.data.effective && typeof s.data.effective.fileLibPlain === 'boolean'
+        ? s.data.effective.fileLibPlain
+        : null
+      const fromSettings = s.ok && s.data && s.data.settings && typeof s.data.settings.plainStorage === 'boolean'
+        ? s.data.settings.plainStorage
+        : null
+      this.plainLib = eff !== null ? eff : fromSettings
       this.loading = false
     },
     /** 切换「用户文件明文落盘」。如实提交、如实回读，失败就还原勾选。 */
@@ -231,7 +300,13 @@ export const StoragePanel = {
         if (ev && ev.target) ev.target.checked = !want
         return
       }
-      const applied = r.data && r.data.settings ? r.data.settings.plainStorage : want
+      /* 回读同理用生效值（issue #4 · 4.1）：POST 响应里也带 effective（仍是保存前的
+       * 生效值 —— 开关需重启才生效），有就用它，没有回退 settings.plainStorage。 */
+      const effNow = r.data && r.data.effective && typeof r.data.effective.fileLibPlain === 'boolean'
+        ? r.data.effective.fileLibPlain
+        : null
+      const applied = effNow !== null ? effNow
+        : (r.data && r.data.settings && typeof r.data.settings.plainStorage === 'boolean' ? r.data.settings.plainStorage : want)
       this.plainLib = typeof applied === 'boolean' ? applied : want
       this.plainSaving = true
       adminToast('已保存：用户文件将' + (this.plainLib ? '明文' : '加密') + '落盘（重启后生效）', 'ok')
@@ -518,10 +593,66 @@ export const StoragePanel = {
                 <summary>三类数据分别是什么形态？</summary>
                 <div class="st-details-body">
                   <div>· <strong>用户文件</strong>（上传的文档/图片）：受上面开关控制。</div>
-                  <div>· <strong>系统数据</strong>（账号、审计、会话、密钥）：<strong>始终加密</strong>。</div>
+                  <div>· <strong>系统数据</strong>（账号、审计、会话、密钥）：目标形态为加密，当前仍有 {{ (plainFiles && plainFiles.total) || 0 }} 个明文文件待迁移（见下方清单）。</div>
                   <div>· <strong>历史密文</strong>（老库遗留）：读取时自动解密；搬迁后按当前模式落盘。</div>
                 </div>
               </details>
+
+              <!-- 缺陷 2.3：系统数据明文清单 + 一键迁移（API 已有，此前无 UI）。 -->
+              <div class="st-details" style="margin-top:12px;padding:12px;border:1px solid var(--admin-border);border-radius:8px">
+                <div style="font-weight:600;margin-bottom:6px">🧾 系统数据明文清单</div>
+                <div v-if="plainFiles === null" class="ad-dim">读取明文清单失败。</div>
+                <template v-else>
+                  <div v-if="!plainFiles.encryptionEnabled" class="ad-dim">加密未启用，无需迁移。</div>
+                  <template v-else>
+                    <div v-if="plainFiles.total > 0" class="ad-dim" style="margin-bottom:8px">
+                      目标形态为加密，当前仍有 <strong>{{ plainFiles.total }}</strong> 个明文文件待迁移。
+                    </div>
+                    <div v-else class="ad-dim">系统数据已全部加密 ✅</div>
+                    <div v-if="plainFiles.files && plainFiles.files.length" style="margin:8px 0;line-height:1.8">
+                      <div v-for="f in plainFiles.files" :key="f.name" class="ad-dim">
+                        · <code>{{ f.name }}</code>（{{ fmt(f.bytes) }}）
+                        <span class="ad-chip">{{ kindLabel(f.kind) }}</span>
+                      </div>
+                    </div>
+                    <div class="ad-actions" style="margin-top:8px" v-if="plainFiles.total > 0">
+                      <button class="ad-btn ad-btn-primary ad-btn-sm" :disabled="plainFilesBusy" @click="migratePlain">
+                        {{ plainFilesBusy ? '迁移中…' : '一键迁移为密文' }}
+                      </button>
+                    </div>
+                    <div v-if="plainResults && plainResults.length" style="margin-top:8px;line-height:1.7">
+                      <div style="font-weight:600;margin-bottom:4px">迁移结果</div>
+                      <div v-for="r in plainResults" :key="r.name" class="ad-dim">
+                        · {{ r.name }}：{{ r.status }}{{ r.reason ? '（' + r.reason + '）' : '' }}
+                      </div>
+                    </div>
+
+                    <!-- 缺陷 3.2：明文迁移备份区（可列举 + 显式清理） -->
+                    <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--admin-border)">
+                      <div style="font-weight:600;margin-bottom:6px">🗃 明文备份</div>
+                      <div v-if="plainBackups === null" class="ad-dim">读取备份清单失败。</div>
+                      <template v-else>
+                        <div v-if="!plainBackups.total" class="ad-dim">暂无迁移备份。</div>
+                        <template v-else>
+                          <div class="ad-dim" style="margin-bottom:8px">
+                            共 <strong>{{ plainBackups.total }}</strong> 个迁移明文备份：
+                          </div>
+                          <div style="margin:8px 0;line-height:1.8">
+                            <div v-for="b in plainBackups.files" :key="b.name" class="ad-dim">
+                              · <code>{{ b.name }}</code>（{{ fmt(b.bytes) }}，{{ new Date(b.at).toLocaleString() }}）
+                            </div>
+                          </div>
+                          <div class="ad-actions" style="margin-top:8px">
+                            <button class="ad-btn ad-btn-sm" :disabled="plainBackupsBusy" @click="deletePlainBackups">
+                              {{ plainBackupsBusy ? '清理中…' : '清理备份' }}
+                            </button>
+                          </div>
+                        </template>
+                      </template>
+                    </div>
+                  </template>
+                </template>
+              </div>
             </template>
           </div>
         </template>

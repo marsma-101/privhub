@@ -126,6 +126,9 @@ function readStoreConfig(): Record<string, unknown> {
 function writeStoreConfig(next: Record<string, unknown>): void {
   mkdirSync(dirname(STORE_CONFIG_FILE), { recursive: true })
   const tmp = STORE_CONFIG_FILE + '.tmp'
+  /* 缺陷 3.3：写前先清同名残留。固定名 tmp 崩溃时可能留下旧残留，
+   * Windows 上 rename 遇已存在目标会失败 —— 先 force 删一次（不存在则无事）。 */
+  try { rmSync(tmp, { force: true }) } catch { /* 删不掉就让它交给 rename 报错 */ }
   writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
   renameSync(tmp, STORE_CONFIG_FILE)
 }
@@ -166,12 +169,37 @@ interface StorageLike {
 export function apply(ctx: Context): void {
   const svc = ctx.privhub
 
+  /* 缺陷 3.3：启动时清一次 config/ 下本插件的固定名 tmp 残留（崩溃时 rename 前的孤儿）。
+   * config/ 不归 svc-storage 管（它只清 data/），这里自己清自己的。 */
+  {
+    const stale = STORE_CONFIG_FILE + '.tmp'
+    try {
+      if (existsSync(stale)) {
+        rmSync(stale, { force: true })
+        console.warn('[settings] 启动清理：已删除残留临时文件 store.json.tmp')
+      }
+    } catch (e) {
+      console.warn('[settings] 启动清理 store.json.tmp 失败（不影响启动）：' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+
   /* 读设置（登录即可读） / 写设置（仅管理员），同一路径按 method 区分 */
   svc.route('/privhub/api/settings', async (req, res) => {
     const u = svc.requireUser(req, res)
     if (!u) return
     if (req.method === 'GET') {
-      json(res, 200, { ok: true, settings: await loadSettings(ctx.storage), restartRequired: [] })
+      /* issue #4 · 4.1：settings.plainStorage 只是「写入通道」的值（DEFAULT_SETTINGS
+       * 合并默认 false），而实际落盘形态由 main.ts 启动期判定（env > 显式 false >
+       * 默认 true=明文）并固化进 svc-storage（getter `fileLibPlain`）。两者会打架：
+       * 默认部署下 settings 说「加密」、实际是明文 —— 前端照 settings 显示就是假显示。
+       * 所以 GET 额外下发 `effective.fileLibPlain`（真实生效值）；前端显示一律用它，
+       * settings.plainStorage 保持不动（它仍是 POST 的写入通道）。 */
+      json(res, 200, {
+        ok: true,
+        settings: await loadSettings(ctx.storage),
+        restartRequired: [],
+        effective: { fileLibPlain: ctx.storage.fileLibPlain === true, source: 'storage' },
+      })
       return
     }
     if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })

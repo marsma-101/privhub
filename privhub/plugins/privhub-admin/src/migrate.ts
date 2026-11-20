@@ -24,6 +24,9 @@
  * 迁移的默认目标是「72GB 老库」，同步路由会在几分钟后超时，用户看到的是失败，
  * 而服务端其实还在搬。所以：POST 立即 202 返回、后台慢跑，客户端轮询
  * `GET /legacy-status` 看进度、用 `POST /legacy-cancel` 刹车。
+ * **扫描也已后台化（2026-11-20，issue #4 · 4.3）**：大库扫描同样会在路由内
+ * 跑到超时（scanLegacyRoot 逐文件 stat + plainSize），与搬运同构 —— POST 只做
+ * 校验 + 置 run/busy，立即回 202；进度与结果一律看 `GET /legacy-status`。
  *
  * @module privhub-admin/migrate
  */
@@ -31,6 +34,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { join, resolve, isAbsolute } from 'node:path'
 import { stat, readdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { json, readJsonBody } from '../../privhub-core/src/index'
 import type { FileIndexService } from '../../privhub-svc-fileindex/src/index'
 import type { FileEntry } from '../../privhub-svc-fileindex/src/core'
@@ -51,6 +55,62 @@ const DEFAULT_GAP_MS = 40
 
 const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 const sleep = (ms: number): Promise<void> => new Promise((r) => { const t = setTimeout(r, ms); if (typeof t.unref === 'function') t.unref() })
+
+/* issue #4 · 4.4：密钥错配预检（migrate 与 relocate 共用）。
+ *
+ * 为什么不用 readRange：svc-storage 的 readRange 对密文走「解头 → 解尾 tag →
+ * 凑够就停」—— 部分区间读**提前 break，不走 final()**，GCM tag 根本不校验
+ * （源码注释 §「认证」原文：「部分区间读不会 ⇒ 未经认证的明文」），测不出
+ * 密钥错配。所以必须整读（readBuffer / decryptBuffer，读文件末尾触发
+ * final() 的 tag 校验）。为避免大文件 OOM，只挑 **<1MB** 的密文样本整读。
+ *
+ * 判定特征：decryptBuffer 抛出的错要么 name==='PrivHubKeyMismatchError'（svc-storage
+ * explainKeyMismatch 归一），要么是 GCM 原生 "Unsupported state or unable to
+ * authenticate data" —— 按这两类识别，避免误伤普通 IO 错误。 */
+export const KEY_MISMATCH_SAMPLES = 3
+export const KEY_MISMATCH_SAMPLE_MAX_BYTES = 1048576
+
+/** 错误是否为「密钥错配 / GCM 认证失败」特征。 */
+export function isKeyMismatchError(e: unknown): boolean {
+  if (e instanceof Error && e.name === 'PrivHubKeyMismatchError') return true
+  return /Unsupported state|authenticat/i.test(msgOf(e))
+}
+
+/**
+ * 从队列里抽样做密钥错配预检。
+ *
+ * 只挑「盘上存在且 isEncrypted 为真」的源，顺序找够 `KEY_MISMATCH_SAMPLES` 个
+ * （或扫完为止）就停；全库没有密文样本 → 跳过预检（无样本可测，不算失败）。
+ * 每个样本 readBuffer 整读（见上方说明：<1MB 才选，readRange 不校验 tag）。
+ *
+ * @returns null = 无密文样本/全部通过（预检不拦截）；string = 预检失败的原因
+ */
+export async function probeKeyMismatch(
+  ctx: { storage: { isEncrypted(p: string): Promise<boolean>; readBuffer(p: string): Promise<Buffer> } },
+  entries: ReadonlyArray<{ resolve: () => string | null }>,
+): Promise<string | null> {
+  const checked: string[] = []
+  for (const e of entries) {
+    if (checked.length >= KEY_MISMATCH_SAMPLES) break
+    const p = e.resolve()
+    if (!p) continue
+    let enc: boolean
+    try { enc = await ctx.storage.isEncrypted(p) } catch { continue } // 盘上读不了 → 留给逐条处理去报
+    if (!enc) continue
+    try {
+      const st = await (await import('node:fs/promises')).stat(p)
+      if (!st.isFile() || st.size >= KEY_MISMATCH_SAMPLE_MAX_BYTES) continue // 大样本不整读（OOM 风险），换下一个
+      checked.push(p)
+      await ctx.storage.readBuffer(p) // 整读 → 读到末尾 → final() 校验 GCM tag
+    } catch (err) {
+      if (isKeyMismatchError(err)) {
+        return '密钥校验预检失败：' + msgOf(err)
+      }
+      // 非 mismatch 错误（IO/权限等）不拦截 —— 预检只管密钥这一件事
+    }
+  }
+  return null
+}
 
 /** 落盘的进度快照（只存跨进程有意义的部分；运行态是内存）。 */
 interface PersistedProgress {
@@ -408,65 +468,59 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
      * 却以为 N 个要重搬。`force` 参数保留解析（向后兼容旧调用方），已无作用。 */
     const alreadyInPool = fi.all().filter((e) => !e.isDir && e.source === 'pool').length
 
-    const startAt = Date.now()
-    run = { ...emptyRun(), running: true, kind: 'scan', startedAt: startAt }
+    /* issue #4 · 4.3：扫描后台化（与搬运同构）。路由内只做校验 + 置 run/busy，
+     * scanLegacyRoot 挪进后台异步（等 gate 闸门），立即回 202。
+     * busy 保持非 null（Promise）—— 单飞 409 依赖它；扫描期间也要占住。 */
+    run = { ...emptyRun(), running: true, kind: 'scan', startedAt: Date.now() }
 
     /** 扫描的取消标志：`scanLegacyRoot` 在每层循环里读它（协作式取消）。 */
     const signal = { get aborted(): boolean { return run.cancelRequested } }
 
-    type ScanResult = { scanned: number; created: number; updated: number; failed: Array<{ path: string; error: string }> }
-    let result: ScanResult = { scanned: 0, created: 0, updated: 0, failed: [] }
-    try {
-      result = await fi.scanLegacyRoot({
-        oldRoot: root.root,
-        computeSha: body.computeSha === true,
-        ...(Array.isArray(body.projects) && body.projects.length
-          ? { projects: body.projects.filter((p): p is string => typeof p === 'string') }
-          : {}),
-        signal,
-        /* 老库多半是 PHENC1 密文：登记时就把 `size` 换成明文长度，
-         * 否则索引里记的是含 36 字节头的长度 —— 前端显示偏大，
-         * 且迁移时的大小校验永远对不上（那会让迁移一条都成功不了）。 */
-        plainSizeOf: (abs, diskSize) => ctx.storage.plainSize(abs).catch(() => diskSize),
-        onProgress: (done, _total, current) => {
-          run.done = done
-          run.lastPath = current
-        },
-      })
-      progress = { ...progress, total: result.scanned, scannedAt: Date.now(), oldRoot: root.root }
-    } catch (e) {
-      run.lastError = '扫描失败：' + msgOf(e)
-    } finally {
-      run = { ...run, running: false, finishedAt: Date.now() }
-    }
+    busy = (async () => {
+      await gate
+      try {
+        const result = await fi.scanLegacyRoot({
+          oldRoot: root.root,
+          computeSha: body.computeSha === true,
+          ...(Array.isArray(body.projects) && body.projects.length
+            ? { projects: body.projects.filter((p): p is string => typeof p === 'string') }
+            : {}),
+          signal,
+          /* 老库多半是 PHENC1 密文：登记时就把 `size` 换成明文长度，
+           * 否则索引里记的是含 36 字节头的长度 —— 前端显示偏大，
+           * 且迁移时的大小校验永远对不上（那会让迁移一条都成功不了）。 */
+          plainSizeOf: (abs, diskSize) => ctx.storage.plainSize(abs).catch(() => diskSize),
+          onProgress: (done, _total, current) => {
+            run.done = done
+            run.lastPath = current
+          },
+        })
+        progress = { ...progress, total: result.scanned, scannedAt: Date.now(), oldRoot: root.root }
+        await saveProgress({ total: result.scanned, scannedAt: Date.now(), oldRoot: root.root })
+        void hooks.audit(u, 'storage-legacy-scan', 'legacy',
+          'scanned=' + result.scanned + ' created=' + result.created + ' updated=' + result.updated
+          + ' failed=' + result.failed.length + (run.cancelRequested ? '（已取消，结果为部分）' : ''))
+      } catch (e) {
+        run.lastError = '扫描失败：' + msgOf(e)
+      } finally {
+        busy = null
+        run = { ...run, running: false, finishedAt: Date.now() }
+      }
+    })()
 
-    await saveProgress({ total: result.scanned, scannedAt: Date.now(), oldRoot: root.root })
-    void hooks.audit(u, 'storage-legacy-scan', 'legacy',
-      'scanned=' + result.scanned + ' created=' + result.created + ' updated=' + result.updated
-      + ' failed=' + result.failed.length + (run.cancelRequested ? '（已取消，结果为部分）' : ''))
-    /* 失败明细原样回，但**截断**：一个坏目录能产生上万条，
-     * 全塞进 HTTP 响应只会让管理端卡死。完整条数在 failed.length。 */
-    json(res, 200, {
-      ok: result.failed.length === 0 && !run.lastError,
-      /* 回显「本次扫的是哪个根」—— 直接来自调用方传入的 oldRoot（已归一为绝对路径），
-       * **不是**从条目上读（`legacyRoot` 属于索引内部账，指向前端会多泄露一个盘符）；
-       * 跨盘迁移时这一行是管理员核对「我扫对盘了吗」的唯一依据。 */
+    /* 202：任务已受理，进度与结果一律看 GET /legacy-status（issue #4 · 4.3）。
+     * 大库扫描同样会在同步路由里跑到超时，所以与搬运同构后台化。 */
+    json(res, 202, {
+      ok: true, started: true, kind: 'scan',
+      note: '扫描已在后台执行，进度见 GET /legacy-status',
+      /* 回显「本次扫的是哪个根」—— 直接来自调用方传入的 oldRoot（已归一为绝对路径）。 */
       oldRoot: root.root,
-      scanned: result.scanned,
-      created: result.created,
-      updated: result.updated,
-      failed: result.failed.length,
-      errors: result.failed.slice(0, MAX_FAILED_KEPT),
-      cancelled: run.cancelRequested,
-      /* 提示（不是错误）：已有池字节的条目本次只刷新元数据，不会重搬。
-       * 单独一个字段而不是塞进 error，是因为它不该让调用方把整次扫描当失败。 */
+      /* 提示（不是错误）：已有池字节的条目本次只刷新元数据，不会重搬。 */
       ...(alreadyInPool > 0
         ? { notice: '已有 ' + alreadyInPool + ' 个文件在池中，本次扫描只刷新元数据，不会重复搬运' }
         : {}),
       ...(root.warning ? { warning: root.warning } : {}),
-      ...(run.lastError ? { error: run.lastError } : {}),
     })
-    busy = null
   }, 'storage-legacy-scan')
 
   /* ---------------- 路由：第二遍搬迁（后台） ---------------- */
@@ -615,6 +669,20 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
      * 而 onActivate 的语义就是"这个 Promise 解开之前不许干活"。 */
     await gate
 
+    /* issue #4 · 4.4：密钥错配预检 —— 搬运启动前抽最多 3 个 <1MB 的密文样本整读，
+     * 触发 GCM tag 校验；错配就整批不启动（moved=0，不假装搬成功）。 */
+    {
+      const samples = queue.slice(0, 50).map((e) => ({ resolve: () => fi.resolvePhysical(e) }))
+      const bad = await probeKeyMismatch(ctx, samples)
+      if (bad !== null) {
+        run.lastError = bad
+        run.lastPath = ''
+        console.error('[admin] ' + bad + '（迁移未启动）')
+        void hooks.audit({ username: 'system' }, 'storage-legacy-migrate', 'legacy', 'key-mismatch-abort：' + bad)
+        return
+      }
+    }
+
     let cursor = 0
     const worker = async (): Promise<void> => {
       for (;;) {
@@ -643,7 +711,21 @@ export function registerLegacyMigration(ctx: Context, hooks: MigrateHooks): void
              * 会让管理端误判为仍需人工处理。 */
             failed.delete(e.id)
           } else {
-            recordFailure(e, 'migrateEntry 返回 false（源缺失/大小校验不一致/写池失败，详见服务日志）')
+            /* issue #4 · 4.6：migrateEntry 只返回 boolean（服务签名不动，跨插件
+             * 影响面大）—— 归因在**调用方侧**做：调用 migrateEntry 之前已经做过
+             * resolvePhysical 与 plainSize，用它们的真实结果写原因，代替原先
+             * 一句笼统的「源缺失/大小校验不一致/写池失败」。判定顺序：
+             *   ① resolvePhysical 为 null / 盘上不存在 → 源缺失；
+             *   ② plainSize 抛过错（此时 plainLen===undefined 且 abs 在）→ 读取源失败；
+             *   ③ 前两项都正常 → 写池失败（详见服务日志）。 */
+            const src = fi.resolvePhysical(e)
+            if (src === null || !existsSync(src)) {
+              recordFailure(e, '源缺失：' + (src ?? '索引无物理路径'))
+            } else if (plainLen === undefined) {
+              recordFailure(e, '读取源失败（可能是密钥错配或文件损坏）：' + src)
+            } else {
+              recordFailure(e, '写池失败（磁盘空间/权限），详见服务日志')
+            }
           }
         } catch (err) {
           recordFailure(e, msgOf(err))

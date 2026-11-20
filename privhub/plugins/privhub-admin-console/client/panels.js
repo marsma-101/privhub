@@ -804,13 +804,19 @@ const MigratePanel = {
       })
       this.busy = ''
       if (!r.ok) { adminToast(r.error || '扫描失败', 'error'); return }
-      this.lastResult = '扫描完成：登记 ' + (r.data.created || 0) + ' 条，更新 ' + (r.data.updated || 0)
-        + ' 条' + (r.data.failed && r.data.failed.length ? '，失败 ' + r.data.failed.length : '')
-      /* 后端可能带回 warning（就地迁移 / 目录结构可疑）。2026-11-16 补：
-       * 以前这条 warning 被丢掉了，于是"填了当前库根"这种最常见的误解
-       * 完全没有任何提示，用户只会看到"点了没反应"。 */
+      /* issue #4 · 4.3：扫描已后台化 —— 后端回 202 { started:true }（不再同步回
+       * scanned/created/updated）。复用本面板既有的轮询机制（load()/startPoll
+       * 轮询 GET /legacy-status），扫完 running=false 自动停。 */
+      if (r.data && r.data.started === false) {
+        this.lastResult = r.data.message || '没有可扫描的内容'
+        adminToast(this.lastResult, 'warn')
+        await this.load()
+        return
+      }
+      this.lastResult = '扫描已在后台执行' + (r.data.warning ? '（' + r.data.warning + '）' : '')
+        + (r.data.notice ? '。' + r.data.notice : '')
       this.lastWarning = typeof r.data.warning === 'string' ? r.data.warning : ''
-      adminToast(this.lastResult)
+      adminToast('扫描已启动，可在本页查看进度')
       await this.load()
     },
     /** 第二遍：空闲把老库字节慢慢复制到新扁平池。 */

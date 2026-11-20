@@ -254,6 +254,9 @@ export class VolumeService extends Service {
         volumes: this.store.volumes.map((v) => ({ id: v.id, root: v.root, role: v.role, enabled: v.enabled })),
       }
       const tmp = join(cfgDir, 'volumes.json.tmp')
+      /* 缺陷 3.3：写前先清同名残留。固定名 tmp 崩溃时可能留下旧残留，
+       * Windows 上 rename 遇已存在目标会失败 —— 先 force 删一次（不存在则无事）。 */
+      await fsp.rm(tmp, { force: true })
       await fsp.writeFile(tmp, JSON.stringify(plain, null, 2), 'utf8')
       await fsp.rename(tmp, join(cfgDir, 'volumes.json'))
     } catch (e) {
@@ -759,6 +762,21 @@ export function apply(ctx: Context, config: Config): void {
    * 后者需要服务实例可被反射取到，所以这里挂到 ctx 上（而不是 ctx.set）。 */
   const svc = new VolumeService(ctx, config)
   ;(ctx as unknown as Record<string, unknown>).volumes = svc
+  /* 缺陷 3.3：启动时清一次 config/ 下本插件的固定名 tmp 残留（崩溃时 rename 前的孤儿）。
+   * config/ 不归 svc-storage 管（它只清 data/），所以这里自己清自己的。 */
+  void (async () => {
+    try {
+      const cfgDir0 = process.env.PRIVHUB_CONFIG_DIR?.trim()
+        || join(process.env.PRIVHUB_ROOT?.trim() || process.cwd(), 'config')
+      const stale = join(cfgDir0, 'volumes.json.tmp')
+      if (existsSync(stale)) {
+        await fsp.rm(stale, { force: true })
+        console.warn('[volumes] 启动清理：已删除残留临时文件 volumes.json.tmp')
+      }
+    } catch (e) {
+      console.warn('[volumes] 启动清理 volumes.json.tmp 失败（不影响启动）：' + (e instanceof Error ? e.message : String(e)))
+    }
+  })()
   void svc.ready.then(() => {
     console.log('[volumes] 存储卷就绪：' + svc.list().length + ' 个卷'
       + (svc.list().length === 0 ? '（单卷模式，落默认库根）' : ''))

@@ -32,6 +32,10 @@ const MODE_HINT = {
   keep: '保持不变：源是密文就仍密文、源是明文就仍明文，原样字节复制。',
 }
 
+/* 哨兵值：默认库根（就地换形态，不换盘）。真实卷 id 形如 V0000…（svc-volumes 生成），
+ * 这个字符串不可能与任何真实卷 id 相撞。发给后端时映射为 targetVolumeId=null。 */
+const DEFAULT_ROOT_ID = '__default_root__'
+
 export const RelocatePanel = {
   name: 'admin-relocate-panel',
   data() {
@@ -39,13 +43,15 @@ export const RelocatePanel = {
       loading: true, error: '',
       volumes: [], status: null,
       targetVolumeId: '', mode: 'decrypt',
-      deleteSource: false, setDefault: true,
+      deleteSource: false, setDefault: false,
       busy: false, lastMsg: '',
       _timer: null,
     }
   },
   computed: {
-    targetVol() { return this.volumes.find((v) => v.id === this.targetVolumeId) || null },
+    targetVol() { return this.targetVolumeId === DEFAULT_ROOT_ID ? null : (this.volumes.find((v) => v.id === this.targetVolumeId) || null) },
+    /* 是否选择了「默认库根（就地）」哨兵：就地换形态没有「切默认卷」语义。 */
+    isDefaultRoot() { return this.targetVolumeId === DEFAULT_ROOT_ID },
     modeHint() { return MODE_HINT[this.mode] || '' },
     running() { return !!(this.status && this.status.running) },
     pct() {
@@ -58,12 +64,25 @@ export const RelocatePanel = {
     summary() {
       const s = this.status
       if (!s) return ''
+      /* issue #4 · 4.2：就地形态变换（默认库根/targetVolumeId=null）搬完时 pending 口径
+       * 仍是池内总数，无法归零 —— 用后端抽样统计 poolCipherSample 给「解密完成」
+       * 一个可验证终点：抽样 n 条中 c 条仍是密文；c=0 即「抽样全部为明文 ✅」。 */
+      const sample = (!s.running && (this.isDefaultRoot || s.targetVolumeId === null) && s.poolCipherSample)
+        ? s.poolCipherSample : null
+      const cipherNote = sample
+        ? (sample.cipher === 0 ? '（抽样全部为明文 ✅）' : `（抽样 ${sample.checked} 条中 ${sample.cipher} 条仍是密文）`)
+        : ''
       if (s.running) return '搬迁中：' + s.done + ' / ' + s.target + '（成功 ' + s.moved + '，跳过 ' + s.skipped + '，失败 ' + s.failed + '）'
-      if (s.finishedAt) return '上次搬迁：成功 ' + s.moved + '，跳过 ' + s.skipped + '，失败 ' + s.failed + (s.target ? '（共 ' + s.target + '）' : '')
-      return '待搬到该卷的文件：' + (s.poolPending ?? '—') + ' 个（池内共 ' + (s.poolTotal ?? '—') + ' 个）'
+      if (s.finishedAt) return '上次搬迁：成功 ' + s.moved + '，跳过 ' + s.skipped + '，失败 ' + s.failed + (s.target ? '（共 ' + s.target + '）' : '') + cipherNote
+      return '待搬到该卷的文件：' + (s.poolPending ?? '—') + ' 个（池内共 ' + (s.poolTotal ?? '—') + ' 个）' + cipherNote
     },
-    /* 目标卷的池目录路径（告诉用户文件到底在哪，而不是让他去翻盘符）。 */
+    /* 目标卷的池目录路径（告诉用户文件到底在哪，而不是让他去翻盘符）。
+     * 「默认库根」时用 relocate-status 的 dataFiles（data-files 绝对路径）拼 \.pool。 */
     targetPoolPath() {
+      if (this.isDefaultRoot) {
+        const df = this.status && this.status.dataFiles
+        return df ? String(df).replace(/[\\/]+$/, '') + '\\.pool' : ''
+      }
       const v = this.targetVol
       if (!v) return ''
       return String(v.root).replace(/[\\/]+$/, '') + '\\.pool'
@@ -81,8 +100,11 @@ export const RelocatePanel = {
       if (!vols.ok && !st.ok) { this.error = '读取存储状态失败：' + (vols.error || st.error); this.loading = false; return }
       this.volumes = (vols.data && vols.data.volumes) || []
       this.status = st.data || null
-      /* 默认目标：第一个非系统卷（最符合「分离」意图）；没有就留空让用户选。 */
-      if (!this.targetVolumeId && this.separableVolumes.length) this.targetVolumeId = this.separableVolumes[0].id
+      /* 默认目标：第一个非系统卷（最符合「分离」意图）；没有（单卷部署）就选默认库根。 */
+      if (!this.targetVolumeId) {
+        if (this.separableVolumes.length) this.targetVolumeId = this.separableVolumes[0].id
+        else this.targetVolumeId = DEFAULT_ROOT_ID
+      }
       this.loading = false
       if (this.running) this.startPoll()
     },
@@ -100,33 +122,49 @@ export const RelocatePanel = {
     async refreshVolumes() { const r = await rget('/privhub/api/volumes/list'); if (r.ok) this.volumes = (r.data && r.data.volumes) || [] },
     async start() {
       if (!this.targetVolumeId) { adminToast('请先选择目标卷（要搬到哪块盘）', 'error'); return }
+      /* 哨兵 → 后端约定：targetVolumeId=null = 默认库根（就地换形态，不换盘）。 */
+      const isDefaultRoot = this.isDefaultRoot
       const vol = this.targetVol
+      const targetText = isDefaultRoot
+        ? '默认库根（就地）'
+        : (vol ? vol.label + '（' + vol.root + '）' : this.targetVolumeId)
       const modeText = this.mode === 'decrypt' ? '解密成明文' : this.mode === 'encrypt' ? '加密成密文' : '保持不变'
       const ok = await confirmAction({
         title: '开始库搬迁',
-        message: '将把库里的文件字节搬到卷「' + (vol ? vol.label + '（' + vol.root + '）' : this.targetVolumeId) + '」。\n\n'
+        message: '将把库里的文件字节搬到「' + targetText + '」。\n\n'
           + '· 形态：' + modeText + '\n'
           + '· ' + (this.deleteSource ? '搬完会删除源文件（真正的移动）' : '源文件保留（可回退，确认无误后再手动清理）') + '\n'
-          + '· ' + (this.setDefault ? '搬完把默认写入卷切到目标卷（实现程序与库分离）' : '不切换默认写入卷') + '\n\n'
-          + '低并发后台执行，可随时停止；已完成的不会重搬。',
+          + (isDefaultRoot
+            ? ''
+            : '· ' + (this.setDefault
+              ? '搬完把默认写入卷切到目标卷（实现程序与库分离）。注意：旧文件不会跟过去（源保留时），搬完后新上传将全部落到目标卷\n'
+              : '· 不切换默认写入卷\n'))
+          + (isDefaultRoot ? '\n· 就地换形态：不换盘，只变换加密形态。\n' : '')
+          + '\n低并发后台执行，可随时停止；已完成的不会重搬。',
         confirmText: '开始搬迁',
       })
       if (!ok) return
       this.busy = true; this.lastMsg = ''
       const r = await rsend('/privhub/api/storage/relocate', {
-        targetVolumeId: this.targetVolumeId, mode: this.mode,
-        deleteSource: this.deleteSource, setDefault: this.setDefault,
+        targetVolumeId: isDefaultRoot ? null : this.targetVolumeId, mode: this.mode,
+        deleteSource: this.deleteSource, setDefault: isDefaultRoot ? false : this.setDefault,
       })
       if (!r.ok) { this.busy = false; adminToast(r.error || '启动搬迁失败', 'error'); return }
       /* 诚实反馈：后端说没启动（没东西可搬）就如实讲，不再假报「已启动」。 */
       if (r.data.started === false) {
         this.busy = false
         this.lastMsg = r.data.message || '没有可搬迁的文件'
+        /* 缺陷 2.2：后端检测到 legacy 文件时（legacyPending>0），追加可行动引导。 */
+        if (r.data.legacyPending > 0) {
+          this.lastMsg += ' 检测到 ' + r.data.legacyPending + ' 个文件仍在外部老库布局，请先在『搬迁与整理』页底部的『老库迁移』执行 扫描 → 搬运（自动解密入池），完成后再回来做库搬迁'
+        }
         adminToast(this.lastMsg, 'warn')
         await this.load()
+        /* relocate-status 不带 legacyPending；把本次响应里的值并进 status，供模板提示块展示。 */
+        if (r.data.legacyPending > 0 && this.status) this.status = { ...this.status, legacyPending: r.data.legacyPending }
         return
       }
-      this.lastMsg = '已启动：' + r.data.queued + ' 个文件 → ' + (r.data.targetLabel || '目标卷') + '（' + modeText + '）'
+      this.lastMsg = '已启动：' + r.data.queued + ' 个文件 → ' + (isDefaultRoot ? '默认库根（就地）' : (r.data.targetLabel || '目标卷')) + '（' + modeText + '）'
       adminToast('库搬迁已启动')
       await this.load()
       this.startPoll()
@@ -155,12 +193,13 @@ export const RelocatePanel = {
         <label class="ad-label">目标卷（搬到哪）</label>
         <select class="ad-input" v-model="targetVolumeId">
           <option value="" disabled>选择目标卷…</option>
+          <option :value="'__default_root__'">默认库根（就地换形态，不换盘）</option>
           <option v-for="v in separableVolumes" :key="v.id" :value="v.id" :disabled="v.enabled === false">
             {{ v.label }} — {{ v.root }}{{ v.enabled === false ? '（已停用）' : '' }}
           </option>
         </select>
         <div v-if="separableVolumes.length === 0" class="ad-dim" style="margin-top:4px;color:var(--ad-warn)">
-          还没有可分离的目标卷。先在上方「存储卷」挂一块新盘（程序目录之外的路径）。
+          单卷部署可直接选「默认库根」就地换形态；要分离程序与库，先在存储卷挂新盘。
         </div>
       </div>
 
@@ -180,10 +219,13 @@ export const RelocatePanel = {
         <div class="ad-dim" style="margin-top:6px;line-height:1.6">{{ modeHint }}</div>
       </div>
 
-      <label class="ad-check">
+      <label class="ad-check" v-if="!isDefaultRoot">
         <input type="checkbox" v-model="setDefault" />
         搬完把默认写入卷切到目标卷（实现程序与库分离，新文件直接落新盘）
       </label>
+      <div v-else class="ad-dim" style="margin-top:4px;line-height:1.6">
+        就地换形态：不换盘，没有「切默认卷」语义，默认写入卷保持不变。
+      </div>
       <label class="ad-check">
         <input type="checkbox" v-model="deleteSource" />
         搬完删除源文件（真正的移动；不勾则保留源，可回退）
@@ -213,6 +255,13 @@ export const RelocatePanel = {
         检测到 <strong>{{ dangling }}</strong> 个条目的字节不在索引记录的位置（搬迁中断所致，
         表现为「页面看得见但打开 404」）。<strong>再点一次「开始搬迁」即可自动修复</strong> ——
         程序会到各卷池里按 ID 找回真实字节并修正索引。
+      </div>
+
+      <!-- 缺陷 2.2：老布局文件未迁入池时，库搬迁天然无候选 —— 空状态区给出醒目引导。 -->
+      <div v-if="status && status.legacyPending" class="ad-warn-block" style="margin-top:10px;line-height:1.7">
+        检测到 <strong>{{ status.legacyPending }}</strong> 个文件仍在外部老库布局，
+        请先在本页底部的<strong>「老库迁移」</strong>执行 <strong>扫描 → 搬运</strong>（自动解密入池），
+        完成后再回来做库搬迁。
       </div>
 
       <div v-if="status && (status.running || status.finishedAt)" style="margin-top:12px">

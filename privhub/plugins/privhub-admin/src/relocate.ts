@@ -25,6 +25,10 @@
  *   4. **单飞**：一个进程同时只允许一个搬迁（busy）。
  *   5. **形态强制**：明文模式下通用写流会强制明文，故「加密/保持密文」必须走
  *      storage.createForcedWriteStream 绕过 isPlainPath —— 否则写不出密文。
+ *   6. **按模式精确比对期望长度**（2026-11-20，与 migrateEntry 同口径）：搬完对 tmp
+ *      按 isEncrypted 判形态，并按模式核对期望长度（decrypt: tmpSize===srcPlain；
+ *      encrypt: tmpSize-36===srcPlain，密文头 20 + tag 16；keep: 同形态同盘上长度）。
+ *      校验失败 throw，走 catch 记 failed 并清 tmp，源不会被删。
  *
  * @module privhub-admin/relocate
  */
@@ -35,6 +39,7 @@ import { existsSync, createReadStream as fsCreateReadStream, createWriteStream a
 import { mkdir, stat, rename, unlink } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { json, readJsonBody } from '../../privhub-core/src/index'
+import { probeKeyMismatch, isKeyMismatchError } from './migrate'
 import type { FileIndexService } from '../../privhub-svc-fileindex/src/index'
 import type { FileEntry } from '../../privhub-svc-fileindex/src/core'
 import { linkIntoMirror, resetMirror, MIRROR_DIRNAME, type MirrorItem } from './mirror'
@@ -91,6 +96,8 @@ interface RunState {
   healed?: number
   /** 本轮在镜像区建成「原名可见」链接的文件数。 */
   mirrored?: number
+  /** issue #4 · 4.5：deleteSource 时为「源卷 ≠ 目标卷」的卷重建镜像的数量。 */
+  srcMirrorRebuilt?: number
 }
 
 function emptyRun(): RunState {
@@ -260,6 +267,15 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
 
     const queue = candidatesOf(fi, project)
     if (queue.length === 0) {
+      /* 缺陷 2.2：使用端文件可能全在老布局（source==='legacy'），此时池内候选为 0
+       * 属于正常状态而非无活可干 —— 空转提示必须给出可行动的引导，而不是让用户以为搬迁坏了。 */
+      const legacyPending = fi.all().filter((e) => !e.isDir && e.source === 'legacy').length
+      if (legacyPending > 0) {
+        return json(res, 200, {
+          ok: true, started: false, pending: 0, legacyPending,
+          message: '检测到 ' + legacyPending + ' 个文件仍在外部老库布局，请先在『搬迁与整理』页底部的『老库迁移』执行 扫描 → 搬运（自动解密入池），完成后再回来做库搬迁',
+        })
+      }
       return json(res, 200, { ok: true, started: false, pending: 0, message: '没有可搬迁的池内文件' + (project ? '（项目「' + project + '」）' : '') })
     }
 
@@ -270,7 +286,23 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
     void (async () => {
       await gate
       try {
+        /* issue #4 · 4.4：密钥错配预检 —— 启动搬迁前抽最多 3 个 <1MB 的密文样本
+         * 整读触发 GCM tag 校验（readRange 部分读不校验 tag，不能用）；错配则
+         * 整批不启动（moved=0），lastError 交代原因，审计记 key-mismatch-abort。 */
+        {
+          const samples = queue.slice(0, 50).map((e) => ({ resolve: () => fi.resolvePhysical(e) }))
+          const bad = await probeKeyMismatch(ctx, samples)
+          if (bad !== null) {
+            run.lastError = bad
+            console.error('[relocate] ' + bad + '（搬迁未启动）')
+            void hooks.audit(u, 'storage-relocate', targetLabel, 'key-mismatch-abort：' + bad)
+            return
+          }
+        }
         await mkdir(destPool, { recursive: true })
+        /* issue #4 · 4.5：记下每个条目搬前所在卷 —— deleteSource=true 时这些
+         * 源卷的 .library-view 硬链接会指向已删字节，收尾要对它们重建镜像。 */
+        const srcVols = new Set<string | null>()
         for (const e of queue) {
           if (run.cancelRequested) break
           run.lastPath = e.virtualPath
@@ -298,11 +330,15 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
 
             /* 「保持」模式且源已在目标卷 → 无需搬（形态也不变）。 */
             const srcVol = e.volumeId ?? null
+            srcVols.add(srcVol)
             if (mode === 'keep' && srcVol === targetVolumeId) { run.skipped++; continue }
 
             const ext = e.ext ? '.' + e.ext : ''
             const finalPath = join(destPool, e.physicalId + ext)
             const tmpPath = finalPath + '.' + process.pid + '.relocate.tmp'
+
+            /* 取源的明文长度（写之前）：用于搬完后按模式精确比对。 */
+            const srcPlain = await ctx.storage.plainSize(src)
 
             /* 形态决策：
              *   decrypt → 读流自动解密成明文，强制明文写；
@@ -318,9 +354,35 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
               await done // 等 GCM tag 写完 / 文件 close
             }
 
-            /* 校验：目标字节数 > 0（0 字节源文件合法，单独放行）。 */
-            const dstSize = (await stat(tmpPath)).size
-            if (st.size > 0 && dstSize === 0) throw new Error('目标文件为空（写入异常）')
+            /* 校验（2026-11-20，与 migrateEntry 同口径）：按模式精确比对期望长度，
+             * 形态也用 isEncrypted 复核。0 字节源单独处理：encrypt 模式下
+             * createForcedWriteStream 仍会写出 PHENC1 头（36 字节，无正文），
+             * 所以 0 字节源的期望长度同样按模式算（decrypt=0、encrypt=36、keep=源长），
+             * 而不是「0 进 0 出」。 */
+            const tmpStat = await stat(tmpPath)
+            const dstSize = tmpStat.size
+            const ZERO_CIPHER = 36 // 0 字节正文的 PHENC1 密文：头 20 + tag 16
+            if (st.size === 0) {
+              const want = mode === 'decrypt' ? 0 : mode === 'encrypt' ? ZERO_CIPHER : 0
+              if (dstSize !== want) {
+                throw new Error(`0 字节源校验失败：期望 ${want} 字节（${mode} 模式），实际 ${dstSize} 字节（写入异常）`)
+              }
+            } else if (mode === 'decrypt') {
+              const tmpEnc = await ctx.storage.isEncrypted(tmpPath)
+              if (tmpEnc || dstSize !== srcPlain) {
+                throw new Error(`decrypt 模式校验失败：期望明文长度 ${srcPlain}，实际盘上长度 ${dstSize}${tmpEnc ? '（tmp 仍是密文形态）' : ''}`)
+              }
+            } else if (mode === 'encrypt') {
+              const tmpEnc = await ctx.storage.isEncrypted(tmpPath)
+              if (!tmpEnc || dstSize - 36 !== srcPlain) {
+                throw new Error(`encrypt 模式校验失败：期望密文长度 ${srcPlain + 36}（明文 ${srcPlain} + 头 20 + tag 16），实际盘上长度 ${dstSize}${tmpEnc ? '' : '（tmp 不是密文形态）'}`)
+              }
+            } else { // keep：与源同形态且同盘上长度
+              const [tmpEnc, srcEnc] = [await ctx.storage.isEncrypted(tmpPath), await ctx.storage.isEncrypted(src)]
+              if (tmpEnc !== srcEnc || dstSize !== st.size) {
+                throw new Error(`keep 模式校验失败：期望${srcEnc ? '密文' : '明文'}且盘上长度 ${st.size}，实际${tmpEnc ? '密文' : '明文'}盘上长度 ${dstSize}`)
+              }
+            }
             await rename(tmpPath, finalPath)
 
             /* 改索引指向新卷 → 立即落盘（之后才允许删源）。 */
@@ -334,8 +396,10 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
             run.moved++
           } catch (err) {
             run.failedCount++
-            run.lastError = e.virtualPath + '：' + msgOf(err)
-            if (failed.length < 200) failed.push({ id: e.id, path: e.virtualPath, error: msgOf(err) })
+            /* issue #4 · 4.4 补：单条命中密钥错配特征时，原因里点名（而不是笼统的 IO 文案）。 */
+            const reason = isKeyMismatchError(err) ? '密钥校验失败（密钥错配或密文损坏）：' + msgOf(err) : msgOf(err)
+            run.lastError = e.virtualPath + '：' + reason
+            if (failed.length < 200) failed.push({ id: e.id, path: e.virtualPath, error: reason })
             /* 清掉可能残留的 tmp（尽力）。 */
             const ext = e.ext ? '.' + e.ext : ''
             await unlink(join(destPool, e.physicalId + ext + '.' + process.pid + '.relocate.tmp')).catch(() => {})
@@ -351,6 +415,26 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
         const mRoot = mirrorRootOf(vols, targetVolumeId)
         if (mRoot) {
           run.mirrored = await buildMirror(fi, mRoot, queue)
+        }
+
+        /* issue #4 · 4.5：deleteSource 且源卷 ≠ 目标卷时，源卷的 .library-view
+         * 硬链接已指向被删的源字节（死链）—— 与 mirror-rebuild 路由同口径
+         * （resetMirror + buildMirror）逐个重建。失败只 warn，不影响搬迁结果。 */
+        if (deleteSource) {
+          const staleVols = [...srcVols].filter((v) => v !== targetVolumeId)
+          let rebuilt = 0
+          for (const v of staleVols) {
+            const svRoot = mirrorRootOf(vols, v)
+            if (!svRoot) continue
+            try {
+              await resetMirror(svRoot)
+              await buildMirror(fi, svRoot)
+              rebuilt++
+            } catch (err) {
+              console.warn('[relocate] 源卷镜像重建失败（不影响搬迁结果）：' + svRoot + ' — ' + msgOf(err))
+            }
+          }
+          if (rebuilt > 0 || staleVols.length > 0) run.srcMirrorRebuilt = rebuilt
         }
 
         /* 切默认写入卷（实现程序/库分离）：仅当指定了目标卷且用户要求。 */
@@ -432,6 +516,26 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
         dangling = n
       } catch { dangling = null }
     }
+    /* issue #4 · 4.2：就地形态变换（targetVolumeId=null）搬完时 pending 仍是池内总数
+     * —— 索引不记录每条落盘形态，没法按形态算差集，「解密完成」没有可验证终点。
+     * 修法（抽样统计，最小改动）：非 running 时对池内条目抽样（前 200 条），
+     * 逐条 resolvePhysical + isEncrypted 数「盘上仍是密文」的条数，下发
+     * poolCipherSample: { checked, cipher }。前端摘要据此给出可验证文案。 */
+    let poolCipherSample: { checked: number; cipher: number } | null = null
+    if (fi && !run.running && tgt === null && allPool.length > 0) {
+      const sample = allPool.slice(0, 200)
+      const results = await Promise.all(sample.map(async (e) => {
+        try {
+          const p = fi.resolvePhysical(e)
+          if (!p || !existsSync(p)) return { checked: true, cipher: false } // 解析失败/不存在计入 checked 不算 cipher
+          return { checked: true, cipher: (await ctx.storage.isEncrypted(p)) === true }
+        } catch { return { checked: true, cipher: false } }
+      }))
+      poolCipherSample = {
+        checked: results.length,
+        cipher: results.reduce((acc, r) => acc + (r.cipher ? 1 : 0), 0),
+      }
+    }
     json(res, 200, {
       ok: true,
       indexReady: fi !== null,
@@ -442,6 +546,8 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
       skipped: run.skipped,
       healed: run.healed || 0,
       mirrored: run.mirrored || 0,
+      /* issue #4 · 4.5：deleteSource 时重建了几个「源卷 ≠ 目标卷」的镜像（0/undefined = 无需重建）。 */
+      srcMirrorRebuilt: run.srcMirrorRebuilt ?? 0,
       failed: run.failedCount,
       cancelRequested: run.cancelRequested,
       lastPath: run.lastPath,
@@ -452,6 +558,9 @@ export function registerRelocation(ctx: Context, hooks: RelocateHooks): void {
       finishedAt: run.finishedAt || null,
       poolPending: pending,
       poolTotal: allPool.length,
+      /* issue #4 · 4.2：就地形态变换的抽样统计（非 running 且 targetVolumeId=null 才算）。
+       * cipher=0 表示抽样全部明文 —— 「解密完成」的可验证终点。 */
+      poolCipherSample,
       dangling,
       defaultVolumeId: vols?.defaultVolumeId ?? null,
       dataFiles: resolve(svc.dataRoot),
