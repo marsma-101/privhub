@@ -31,6 +31,11 @@
  *      校验失败 throw，走 catch 记 failed 并清 tmp，源不会被删。
  *
  * @module privhub-admin/relocate
+ *
+ * ⚠ 过渡期说明（2026-11-20 存储搬迁重构）：本模块功能已由 privhub-storeops（搬移）/
+ * privhub-svc-storeinfo（扫描登记）+ privhub-store-ops（前端『存储运维』页）接管；
+ * 本路由保留至新链路实测稳定后退役。新旧路由行为一致性由 tests/storeops-verify.mjs
+ * 的『旧 relocate 路由仍可用』断言钉住。
  */
 
 import type { Context } from '@deepseek-ai/cordis'

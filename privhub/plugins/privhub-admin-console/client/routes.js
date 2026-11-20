@@ -80,6 +80,10 @@ const ROUTES = [
   /* 系统自检（v6 改造）：扁平存储把「文件在哪」搬进了主索引，索引与磁盘
    * 可能不一致而两边单独看都正常。这一页主动扫出这类不一致并能一键修复，
    * 让问题在程序内被发现，而不是等用户点到那个具体文件才报错。 */
+  /* 存储运维（超管）：全库扫描登记与物理搬移（含个人空间）。
+   * 视图与 slot 由 privhub-store-ops 声明（client-only 插件，v2 存储重构阶段 3）；
+   * 入口 capFeature=admin.storage（minRole=system_admin）过滤，插件未装载显示「未安装」。 */
+  { key: 'ops/storeops', label: '存储运维（超管）', short: '存储运维', section: 'ops', icon: '🧬', view: 'admin-storeops', slot: 'admin-storeops', entryOf: 'admin-storeops', implemented: true },
   { key: 'ops/doctor', label: '系统自检', short: '自检', section: 'ops', icon: '🩺', view: '', builtin: 'doctor', adminOnly: true },
   { key: 'ops/watermark', label: '水印配置', short: '水印配置', section: 'ops', icon: '💧', view: '', builtin: 'watermark', adminOnly: true },
 ]
@@ -114,6 +118,7 @@ const SEARCH_ALIASES = {
   'ops/migrate': '迁移 老库 搬移 migrate qianyi qy',
   'ops/doctor': '自检 体检 诊断 修复 doctor zijian zj',
   'ops/watermark': '水印 watermark shuiyin sy',
+  'ops/storeops': '存储运维 扫描 建库 搬移 超管 storeops sm',
 }
 
 /** 默认（空 hash / 未知路径）落到哪一条。 */

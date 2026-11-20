@@ -878,11 +878,42 @@ export class FileIndexService extends Service {
     onProgress?: (done: number, total: number, current: string) => void
     signal?: { aborted: boolean }
   }): Promise<{ scanned: number; created: number; updated: number; failed: BatchResult['failed'] }> {
-    const root = resolve(opts.oldRoot)
+    return this.scanRoot({ ...opts, root: opts.oldRoot, source: 'legacy' })
+  }
+
+  /**
+   * 通用「扫一个根目录、把里面的文件登记进索引」（2026-11-20 存储搬迁重构 §五.1）。
+   *
+   * 原来只有 `scanLegacyRoot`（语义绑定老库迁移）；storeinfo 需要对**任意已注册卷**
+   * 做同一件事。两份拷贝必然漂移（940-960 行「不得把 pool 翻回 legacy」的教训就是
+   * 从拷贝分叉里长出来的），所以这里提取成参数化公共实现，老函数改为一行薄壳。
+   *
+   * @param opts.source 语义标记（'legacy' = 老库迁移：未进池的条目刷 legacy/legacyRoot）。
+   *   注意：新登记条目**一律**落 legacy 形状（理由见 createFile 分支注释）；
+   *   source 只控制「更新已有条目时是否翻 legacy 标记」。
+   * @param opts.skipDirs 额外要跳过的目录名（如 `.library-view`；`.pool`/`.trash`
+   *   与一切 `.` 开头的隐藏项本来就跳）。
+   * @param opts.onEntry 每条文件登记/更新后的回调（storeinfo 用它补 physicalPath/access/personal）。
+   *   回调抛错只吞掉记 failed，不阻断整批。
+   */
+  async scanRoot(opts: {
+    root: string
+    source: 'legacy' | (string & {})
+    computeSha?: boolean
+    projects?: string[]
+    skipDirs?: string[]
+    plainSizeOf?: (absPath: string, diskSize: number) => Promise<number>
+    onProgress?: (done: number, total: number, current: string) => void
+    signal?: { aborted: boolean }
+    onEntry?: (absPath: string, entry: FileEntry, kind: 'created' | 'updated') => void | Promise<void>
+  }): Promise<{ scanned: number; created: number; updated: number; failed: BatchResult['failed'] }> {
+    const root = resolve(opts.root)
     const failed: BatchResult['failed'] = []
     let scanned = 0
     let created = 0
     let updated = 0
+    const extraSkip = new Set(opts.skipDirs ?? [])
+    const isLegacy = opts.source === 'legacy'
 
     /** 递归走目录；跳过隐藏系统目录与扁平池/回收站。 */
     const walk = async (dir: string, relDir: string): Promise<void> => {
@@ -891,7 +922,7 @@ export class FileIndexService extends Service {
       try {
         const ents = await readdir(dir, { withFileTypes: true })
         names = ents
-          .filter((d) => !d.name.startsWith('.'))
+          .filter((d) => !d.name.startsWith('.') && !extraSkip.has(d.name))
           .map((d) => d.name)
       } catch (e) { failed.push({ path: dir, error: msgOf(e) }); return }
       for (const nm of names) {
@@ -902,6 +933,7 @@ export class FileIndexService extends Service {
         if (opts.projects && !opts.projects.includes(project)) continue
         let st
         try { st = await stat(abs) } catch (e) { failed.push({ path: abs, error: msgOf(e) }); continue }
+        /* 符号链接/连接点：不跟随，防止扫描逃出卷根（与 listFiles 同口径）。 */
         if (st.isSymbolicLink()) continue
         if (st.isDirectory()) {
           /* 顶层目录是「项目」本身，不建索引行；其下的子目录要建。 */
@@ -922,7 +954,7 @@ export class FileIndexService extends Service {
         const vp = rel.slice(project.length + 1)
         if (vp === '') continue
         scanned++
-        /* 索引里的 `size` 一律是**明文**大小。老库是密文时 `stat` 拿到的是
+        /* 索引里的 `size` 一律是**明文**大小。根下是密文时 `stat` 拿到的是
          * 含 36 字节头的长度，必须换算，否则前端显示偏大、迁移校验必失败。 */
         let plainSize = st.size
         if (opts.plainSizeOf) {
@@ -935,6 +967,8 @@ export class FileIndexService extends Service {
         if (opts.computeSha) {
           try { sha = await hashFile(abs) } catch { /* 算不出就算了，不影响登记 */ }
         }
+        let entry: FileEntry
+        let kind: 'created' | 'updated'
         const existing = this.getByPath(project, vp)
         if (existing && !existing.isDir) {
           /* 重新扫描时**绝不能**把已经搬进池的条目翻回 legacy。
@@ -944,14 +978,14 @@ export class FileIndexService extends Service {
            * 就把每个字节**再复制一遍**（72GB 级库是小时级 IO），而且 migrateEntry
            * 每次分配新 physicalId，池里旧副本全成孤儿、引用计数也对不上。
            *
-           * 正确语义：扫描只负责「登记老库里有什么」，不负责「决定字节在哪」。
+           * 正确语义：扫描只负责「登记根目录里有什么」，不负责「决定字节在哪」。
            * 只有还没有池字节的条目才该被标成 legacy；已迁移的保持 pool 不变，
-           * 但元数据（大小/mtime/指纹）仍然刷新 —— 老库若被改动，这里能反映出来。
+           * 但元数据（大小/mtime/指纹）仍然刷新 —— 根若被改动，这里能反映出来。
            */
           existing.size = plainSize
           existing.mtime = st.mtimeMs
           existing.at = Date.now()
-          if (existing.source !== 'pool' || !existing.physicalId) {
+          if (isLegacy && (existing.source !== 'pool' || !existing.physicalId)) {
             existing.source = 'legacy'
             existing.legacyPath = vp
             /* 记住这份老库来自哪个根：新库与老库可能在不同盘（E→F 的典型场景），
@@ -961,9 +995,16 @@ export class FileIndexService extends Service {
           if (sha) existing.sha256 = sha
           this.markDirty()
           updated++
+          entry = existing
+          kind = 'updated'
         } else {
           if (existing) this.unadopt(existing)
-          this.createFile({
+          /* 新登记一律用 legacy 形状（legacyPath + legacyRoot=root）：扫到的字节
+           * 就在 `<root>/<project>/<relPath>`，legacy 解析口径正好拼回这个位置，
+           * 且能过 normalizeStore 的重载裁决（pool 形状必须有 physicalId，
+           * `physicalId:null + source:'pool'` 会在重启后被静默丢弃 —— 这个坑
+           * 不能埋给后来的调用方）。source 参数只作语义标记，不改变落库形状。 */
+          entry = this.createFile({
             project,
             virtualPath: vp,
             physicalId: null,
@@ -973,11 +1014,17 @@ export class FileIndexService extends Service {
             legacyPath: vp,
             ...(sha ? { sha256: sha } : {}),
           })
-          /* createFile 不接受 legacyRoot（它是「物理字节在哪」的临时线索，
-           * 不是文件身份的一部分），这里补上。 */
-          const fresh = this.getByPath(project, vp)
-          if (fresh) { fresh.legacyRoot = root; this.markDirty() }
+          {
+            /* createFile 不接受 legacyRoot（它是「物理字节在哪」的临时线索，
+             * 不是文件身份的一部分），这里补上。 */
+            const fresh = this.getByPath(project, vp)
+            if (fresh) { fresh.legacyRoot = root; this.markDirty() }
+          }
           created++
+          kind = 'created'
+        }
+        try { await opts.onEntry?.(abs, entry, kind) } catch (e) {
+          failed.push({ path: abs, error: msgOf(e) })
         }
         opts.onProgress?.(scanned, 0, abs)
       }

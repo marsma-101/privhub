@@ -89,6 +89,20 @@ export interface FileEntry {
    * 搬完后这个字段会被清掉（字节已经进池，不再需要知道它从哪儿来）。
    */
   legacyRoot?: string
+  /**
+   * 完整路径快照（v2 修订 · 存储搬迁重构）。扫描登记/搬移成功时写入，
+   * 供超管「存储运维」面板直接展示「实际位置」。volumeId+池 ID 仍是权威判定，
+   * 卷根换盘由重新扫描刷正快照；旧索引文件没有此列 → 缺省 undefined，零迁移。
+   */
+  physicalPath?: string
+  /**
+   * 权限占位结构（v2 修订）。本轮**只存/显示，不做控制逻辑**：
+   * 扫描按现状自动填初始值（个人空间→owner+personal，项目→project），
+   * 为后续单文件精细权限预留。搬移/加解密不碰它；文件页不读它。
+   */
+  access?: { owner?: string; visibility?: 'project' | 'personal' | 'restricted'; readOnly?: boolean }
+  /** 个人空间标记（v2 修订）：true = 该条目属于某用户的个人空间。仅 storeinfo 功能可见；用户侧链路照旧。 */
+  personal?: boolean
   /** 回收站标记：true = 已删除但物理字节还在（虚拟回收站）。 */
   trashed?: boolean
   /** 进回收站的时间（epoch 毫秒）。 */
@@ -283,6 +297,19 @@ export function normalizeStore(raw: unknown): FileIndexStore {
       createdAt: num(o.createdAt, 0),
       at: num(o.at, 0),
       ...(typeof o.sha256 === 'string' && o.sha256 !== '' ? { sha256: o.sha256 } : {}),
+      /* v2 新增可选列：宽容读取 —— 旧索引文件没有这三列时缺省 undefined，
+       * 不写迁移代码强刷（下游插件零感知）。形状不对的值一律丢弃该列而不是丢条目。 */
+      ...(typeof o.physicalPath === 'string' && o.physicalPath !== '' ? { physicalPath: o.physicalPath } : {}),
+      ...(o.personal === true ? { personal: true } : {}),
+      ...(((): { access?: FileEntry['access'] } => {
+        const a = o.access as Record<string, unknown> | undefined
+        if (!a || typeof a !== 'object') return {}
+        const vis = a.visibility === 'personal' || a.visibility === 'restricted' ? a.visibility : 'project'
+        const out: NonNullable<FileEntry['access']> = { visibility: vis }
+        if (typeof a.owner === 'string' && a.owner !== '') out.owner = a.owner
+        if (a.readOnly === true) out.readOnly = true
+        return { access: out }
+      })()),
     })
   }
   return { version: STORE_VERSION, entries }

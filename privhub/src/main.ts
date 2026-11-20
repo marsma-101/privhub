@@ -51,6 +51,8 @@ import * as svcFileindex from '../plugins/privhub-svc-fileindex/src/index.ts'
 /* 存储卷管理（多盘 / 分层存储）：决定「物理字节落在哪块盘」。
  * 挂载早于 fileindex —— 索引条目要记 volumeId，写入路由也要先问它选卷。 */
 import * as svcVolumes from '../plugins/privhub-svc-volumes/src/index.ts'
+import * as svcStoreinfo from '../plugins/privhub-svc-storeinfo/src/index.ts'
+import * as storeops from '../plugins/privhub-storeops/src/index.ts'
 /* F14 ACL 守卫：必须早于 auth/files/trash/admin 注册路由（核心装配，手动挂载） */
 import * as adminAcl from '../plugins/privhub-admin-acl/src/index.ts'
 
@@ -71,6 +73,10 @@ const CORE_PLUGINS = new Set([
   /* 存储卷管理：多盘挂载 / 容量水位 / 分层搬移（hot→cold）。
    * 单卷部署时它什么都不做（`volumes.length === 0` → 落默认库根，行为与改造前完全一致）。 */
   'privhub-svc-volumes',
+  /* 存储信息收集（存储搬迁重构 §二）：通用卷扫描登记进 fileindex（system_admin 专属）。 */
+  'privhub-svc-storeinfo',
+  /* 存储搬移执行（存储搬迁重构 §二 阶段 2）：搬移循环（system_admin 专属）。 */
+  'privhub-storeops',
   /* 功能权限开关（功能 × 普通用户级别的集中表；管理员恒为 write）。挂载早于所有消费方。 */
   'privhub-svc-cap',
   'privhub-core', 'privhub-admin-acl', 'privhub-auth', 'privhub-files', 'privhub-trash',
@@ -343,6 +349,14 @@ async function main(): Promise<void> {
    * 挂载位置在 L2、但它的 inject 含 privhub（L1）—— cordis 会把它挂在「待激活」状态，
    * 等 core 提供 ctx.privhub 后自动激活；这不影响装配顺序，也不成环（core 不 inject 它）。 */
   await mount(svcFileindex, { file: '', poolDir: '' })
+  /* 存储信息收集（存储搬迁重构 §二，2026-11-20）：通用卷扫描登记 + physicalPath/access/personal。
+   * 只读索引+登记，不搬字节。挂 fileindex/volumes 之后（消费它们）；
+   * inject 含 privhub，与 fileindex 同机制待 core 就绪后激活。system_admin 专属。 */
+  await mount(svcStoreinfo)
+  /* 存储搬移执行（存储搬迁重构 阶段 2）：搬移循环自 admin/relocate.ts 平移。
+   * 挂在 svcStoreinfo 之后（消费它的 scanVolume/status，reflect 探测）；
+   * inject 含 privhub，与 storeinfo 同机制待 core 就绪后激活。system_admin 专属。 */
+  await mount(storeops)
   console.log('[startup] L2 服务装配完成 +' + (Date.now() - bootT0) + 'ms')
 
   /* 3. L1 六枢纽 */

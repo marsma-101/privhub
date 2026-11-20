@@ -407,11 +407,13 @@ ok(routes.SECTIONS.length === 4, `侧栏分为 4 组（实际 ${routes.SECTIONS.
  *
  * 本轮新增 ops/storage「存储卷」（builtin 面板，由本插件自渲染）；
  * 上一轮新增 ops/doctor「系统自检」、再上一轮 ops/migrate「存储迁移」、
- * 再上一轮 ops/update。 */
-ok(routes.ROUTES.length === 19, `管理路由 19 条（实际 ${routes.ROUTES.length}）`)
+ * 再上一轮 ops/update；
+ * 本轮再增 ops/storeops「存储运维（超管）」（slot=admin-storeops，
+ * 由 privhub-store-ops 承载，v2 存储重构阶段 3）。 */
+ok(routes.ROUTES.length === 20, `管理路由 20 条（实际 ${routes.ROUTES.length}）`)
 /* 关键路由必须在册 —— 比数字更能说明「功能真的接上了」。
  * 少一条 = 侧栏里没有入口，功能等于没装。 */
-for (const key of ['ops/storage', 'ops/doctor', 'ops/migrate', 'ops/backup', 'ops/settings']) {
+for (const key of ['ops/storage', 'ops/doctor', 'ops/migrate', 'ops/backup', 'ops/settings', 'ops/storeops']) {
   ok(routes.ROUTES.some((r) => r.key === key), `路由表含 ${key}`)
 }
 ok(routes.ROUTES.find((r) => r.key === 'ops/storage')?.builtin === 'storage',

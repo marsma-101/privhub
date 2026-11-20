@@ -659,6 +659,7 @@ export const StoragePanel = {
 
         <!-- ③ 搬迁与整理 -->
         <template v-else-if="tab === 'relocate'">
+          <div class="ad-dim" style="margin-bottom:8px;line-height:1.7">🛈 新版『存储运维（超管）』页已上线（控制台侧栏），提供全量扫描建库与全库搬移；本页功能保留过渡。</div>
           <relocate-panel @changed="load"></relocate-panel>
 
           <details class="st-details">

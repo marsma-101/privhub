@@ -1,0 +1,21 @@
+{
+  "id": "privhub-store-ops",
+  "title": "存储运维（超管）",
+  "icon": "🧬",
+  "description": "全库扫描登记与物理搬移（含个人空间）；仅系统管理员。v2 存储重构阶段 3 前端面板",
+  "slots": [
+    "admin-storeops"
+  ],
+  "barItems": [
+    {
+      "icon": "🧬",
+      "title": "存储运维（超管）",
+      "slot": "admin-nav",
+      "view": "admin-storeops",
+      "adminOnly": true,
+      "capFeature": "admin.storage",
+      "desc": "全库扫描登记（含个人空间）与物理搬移；仅系统管理员。",
+      "doc": "05-管理与运维.md"
+    }
+  ]
+}
